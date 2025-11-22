@@ -97,6 +97,71 @@
             font-weight: 600;
         }
         
+        .sets-list {
+            background: #f9f9f9;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 20px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        
+        .sets-list-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 12px;
+        }
+        
+        .set-item {
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .set-item-info {
+            flex: 1;
+        }
+        
+        .set-item-number {
+            font-weight: 700;
+            color: #667eea;
+            margin-right: 8px;
+        }
+        
+        .set-item-data {
+            font-size: 14px;
+            color: #666;
+        }
+        
+        .set-item-delete {
+            background: #ff4444;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            padding: 6px 12px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .set-item-delete:active {
+            background: #cc0000;
+            transform: scale(0.95);
+        }
+        
+        .empty-sets {
+            text-align: center;
+            color: #999;
+            font-size: 14px;
+            padding: 20px;
+        }
+        
         .button-group {
             display: flex;
             flex-direction: column;
@@ -150,7 +215,12 @@
         </div>
         
         <div id="bufferInfo" class="buffer-info hidden">
-            В буфере: <span id="bufferCount">0</span> упражнение(й)
+            В буфере: <span id="bufferCount">0</span> подход(ов)
+        </div>
+        
+        <div id="setsList" class="sets-list hidden">
+            <div class="sets-list-title">📋 Добавленные подходы:</div>
+            <div id="setsListContent"></div>
         </div>
         
         <div class="picker-group">
@@ -173,7 +243,7 @@
                 ➕ Добавить в сет (+)
             </button>
             <button class="btn btn-primary" id="saveBtn">
-                💾 Сохранить и закрыть
+                💾 Сохранить все подходы и закрыть
             </button>
         </div>
     </div>
@@ -426,19 +496,55 @@
         function updateBufferInfo() {
             const bufferInfoEl = document.getElementById('bufferInfo');
             const bufferCountEl = document.getElementById('bufferCount');
+            const setsListEl = document.getElementById('setsList');
+            const setsListContentEl = document.getElementById('setsListContent');
             
             if (workoutBuffer.length > 0) {
                 bufferInfoEl.classList.remove('hidden');
                 bufferCountEl.textContent = workoutBuffer.length;
+                setsListEl.classList.remove('hidden');
+                
+                // Отображаем список подходов
+                setsListContentEl.innerHTML = '';
+                workoutBuffer.forEach((set, index) => {
+                    const setItem = document.createElement('div');
+                    setItem.className = 'set-item';
+                    setItem.innerHTML = `
+                        <div class="set-item-info">
+                            <span class="set-item-number">Подход ${index + 1}:</span>
+                            <span class="set-item-data">${set.weight}кг × ${set.reps} (отдых: ${set.rest}с)</span>
+                        </div>
+                        <button class="set-item-delete" onclick="removeSet(${index})">✕</button>
+                    `;
+                    setsListContentEl.appendChild(setItem);
+                });
             } else {
                 bufferInfoEl.classList.add('hidden');
+                setsListEl.classList.add('hidden');
+                setsListContentEl.innerHTML = '<div class="empty-sets">Нет добавленных подходов</div>';
             }
         }
+        
+        // Удаление подхода из буфера
+        function removeSet(index) {
+            workoutBuffer.splice(index, 1);
+            updateBufferInfo();
+        }
+        
+        // Делаем функцию доступной глобально
+        window.removeSet = removeSet;
         
         // Кнопка "Добавить в сет"
         document.getElementById('addToSetBtn').addEventListener('click', function() {
             const current = getCurrentValues();
             
+            // Проверяем, что данные валидны
+            if (current.weight === 0 && current.reps === 0) {
+                alert('Пожалуйста, введите вес и количество повторов');
+                return;
+            }
+            
+            // Добавляем подход в буфер
             workoutBuffer.push({
                 exercise: exerciseName,
                 weight: current.weight,
@@ -449,10 +555,14 @@
             updateBufferInfo();
             
             // Визуальная обратная связь
+            const originalText = this.textContent;
             this.textContent = '✅ Добавлено!';
             setTimeout(() => {
-                this.textContent = '➕ Добавить в сет (+)';
+                this.textContent = originalText;
             }, 1000);
+            
+            // Прокручиваем к списку подходов
+            document.getElementById('setsList').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         });
         
         // Кнопка "Сохранить"
@@ -487,8 +597,12 @@
                     });
                 }
                 
-                // Если буфер пуст, добавляем текущие значения
+                // Если буфер пуст, проверяем текущие значения и добавляем
                 if (workoutBuffer.length === 0) {
+                    if (current.weight === 0 && current.reps === 0) {
+                        alert('Пожалуйста, добавьте хотя бы один подход или введите данные');
+                        return;
+                    }
                     workoutBuffer.push({
                         exercise: exerciseName,
                         weight: current.weight,
@@ -523,8 +637,9 @@
                 console.log('Sending data string:', dataString);
                 console.log('Data length:', dataString.length);
                 
-                // Показываем alert для отладки
-                alert('Отправка данных: ' + dataString.substring(0, 100) + '...');
+                // Показываем информацию о сохранении
+                const setsCount = workoutBuffer.length;
+                console.log(`Сохранение ${setsCount} подходов...`);
                 
                 try {
                     // Проверяем, что мы в Telegram
@@ -551,7 +666,7 @@
                     if (typeof tg.sendData === 'function') {
                         tg.sendData(dataString);
                         console.log('✅ tg.sendData() вызван успешно');
-                        alert('Данные отправлены! Проверьте логи бота.');
+                        // Не показываем alert, чтобы не мешать
                     } else {
                         console.error('❌ tg.sendData не является функцией!');
                         alert('Ошибка: tg.sendData не доступен!');
