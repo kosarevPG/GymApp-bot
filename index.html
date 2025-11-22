@@ -456,8 +456,9 @@
         });
         
         // Кнопка "Сохранить"
-        document.getElementById('saveBtn').addEventListener('click', function() {
+        document.getElementById('saveBtn').addEventListener('click', async function() {
             try {
+                console.log('=== НАЧАЛО СОХРАНЕНИЯ ===');
                 // Добавляем текущие значения в буфер, если они еще не там
                 const current = getCurrentValues();
                 
@@ -523,23 +524,40 @@
                 console.log('Data length:', dataString.length);
                 
                 try {
+                    // Проверяем, что мы в Telegram
+                    if (!tg.isExpanded) {
+                        console.warn('WebApp не развернут, пытаемся развернуть...');
+                        tg.expand();
+                    }
+                    
+                    console.log('Попытка отправить данные через tg.sendData()...');
+                    console.log('tg.sendData доступен:', typeof tg.sendData === 'function');
+                    console.log('Данные для отправки:', dataString);
+                    
                     // Отправляем данные в бот
                     tg.sendData(dataString);
-                    console.log('✅ Data sent successfully via tg.sendData()');
+                    console.log('✅ tg.sendData() вызван успешно');
                     
-                    // Небольшая задержка перед закрытием, чтобы данные успели отправиться
-                    setTimeout(() => {
-                        console.log('Closing WebApp...');
-                        tg.close();
-                    }, 500); // Увеличена задержка до 500мс
+                    // Ждем немного, чтобы убедиться, что данные отправились
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    console.log('✅ Задержка завершена, закрываем WebApp...');
+                    
+                    // Закрываем WebApp
+                    tg.close();
+                    console.log('✅ WebApp закрыт');
                 } catch (error) {
-                    console.error('Error sending data:', error);
+                    console.error('❌ Ошибка при отправке данных:', error);
+                    console.error('Стек ошибки:', error.stack);
                     alert('Ошибка при отправке данных: ' + error.message);
+                    // Не закрываем WebApp при ошибке
                 }
                 
             } catch (error) {
-                console.error('Error saving data:', error);
+                console.error('❌ КРИТИЧЕСКАЯ ОШИБКА при сохранении:', error);
+                console.error('Стек ошибки:', error.stack);
                 alert('Ошибка при сохранении: ' + error.message);
+            } finally {
+                console.log('=== КОНЕЦ СОХРАНЕНИЯ ===');
             }
         });
     </script>
