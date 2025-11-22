@@ -350,7 +350,10 @@ async def handle_webapp_data(message: Message):
         
         # Сохраняем в Google Sheets
         logger.info("Сохранение данных в Google Sheets...")
+        logger.info(f"Payload для сохранения: {payload}")
+        logger.info(f"Set group ID: {set_group_id}")
         success = sheets_manager.save_workout_log(payload, set_group_id)
+        logger.info(f"Результат сохранения: success={success}")
         
         if success:
             exercise_count = len(payload)

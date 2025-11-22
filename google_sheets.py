@@ -169,6 +169,9 @@ class GoogleSheetsManager:
             True если успешно, False в случае ошибки
         """
         try:
+            logger.info(f"Начало сохранения данных в LOG. Количество записей: {len(workout_data)}")
+            logger.info(f"Данные для сохранения: {workout_data}")
+            
             timestamp = datetime.now().strftime("%d.%m.%Y %H:%M")
             rows_to_add = []
             
@@ -183,12 +186,30 @@ class GoogleSheetsManager:
                 ]
                 rows_to_add.append(row)
             
+            logger.info(f"Подготовлено {len(rows_to_add)} строк для добавления: {rows_to_add}")
+            
+            # Проверяем, что лист существует
+            if not self.log_sheet:
+                logger.error("Лист LOG не найден!")
+                return False
+            
             # Добавляем все строки одним запросом
+            logger.info("Вызов append_rows...")
             self.log_sheet.append_rows(rows_to_add)
-            logger.info(f"Сохранено {len(rows_to_add)} записей в LOG")
+            logger.info(f"✅ Успешно сохранено {len(rows_to_add)} записей в LOG")
+            
+            # Проверяем, что данные действительно сохранились
+            try:
+                all_values = self.log_sheet.get_all_values()
+                logger.info(f"Всего строк в LOG после сохранения: {len(all_values)}")
+            except Exception as check_error:
+                logger.warning(f"Не удалось проверить сохранение: {check_error}")
+            
             return True
         except Exception as e:
-            logger.error(f"Ошибка сохранения в LOG: {e}")
+            logger.error(f"❌ Ошибка сохранения в LOG: {e}", exc_info=True)
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return False
     
     def add_exercise(self, exercise_name: str, muscle_group: str, photo_file_id: str = "") -> bool:
