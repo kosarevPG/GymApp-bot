@@ -2,8 +2,9 @@ services:
   - type: web
     name: gym-logger-bot
     env: python
+    pythonVersion: "3.11"
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
     startCommand: python bot.py
     envVars:
       - key: BOT_TOKEN
