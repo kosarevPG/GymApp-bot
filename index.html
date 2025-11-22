@@ -253,17 +253,26 @@
     
     <script>
         // Инициализация Telegram Web App
-        const tg = window.Telegram.WebApp;
+        const tg = window.Telegram?.WebApp;
         
         if (!tg) {
-            console.error('Telegram WebApp SDK not loaded');
-            alert('Ошибка: Telegram WebApp SDK не загружен');
+            console.error('❌ Telegram WebApp SDK not loaded');
+            console.error('window.Telegram:', window.Telegram);
+            console.error('Это означает, что WebApp открыт НЕ через Telegram!');
+            alert('⚠️ ВНИМАНИЕ: WebApp должен быть открыт через Telegram!\n\nЕсли вы открыли его в браузере, данные не будут отправляться.\n\nЗакройте это окно и откройте WebApp через кнопку в боте.');
         } else {
             tg.ready();
             tg.expand();
-            console.log('Telegram WebApp initialized');
+            console.log('✅ Telegram WebApp initialized');
             console.log('Telegram WebApp version:', tg.version);
             console.log('Telegram WebApp platform:', tg.platform);
+            console.log('Telegram WebApp initData:', tg.initData ? 'present' : 'missing');
+            console.log('Telegram WebApp initDataUnsafe:', tg.initDataUnsafe ? 'present' : 'missing');
+            
+            // Проверяем, что мы действительно в Telegram
+            if (!tg.initData && !tg.initDataUnsafe) {
+                console.warn('⚠️ WebApp может быть открыт не через Telegram!');
+            }
         }
         
         // Парсинг URL параметров
@@ -661,22 +670,39 @@
                     console.log('Данные для отправки:', dataString);
                     console.log('Количество подходов:', workoutBuffer.length);
                     
+                    // Проверяем, что мы действительно в Telegram
+                    if (!tg.initData || !tg.initDataUnsafe) {
+                        console.warn('⚠️ WebApp может быть открыт не через Telegram!');
+                        alert('⚠️ Внимание: WebApp должен быть открыт через Telegram. Если вы открыли его в браузере, данные не отправятся.');
+                    }
+                    
                     // Отправляем данные в бот
                     console.log('Отправка данных через tg.sendData()...');
-                    tg.sendData(dataString);
-                    console.log('✅ tg.sendData() вызван');
-                    
-                    // Показываем пользователю, что данные отправлены
-                    const setsCount = workoutBuffer.length;
-                    alert(`✅ Отправлено ${setsCount} подходов! Проверьте сообщение от бота.`);
-                    
-                    // Ждем, чтобы данные успели отправиться
-                    await new Promise(resolve => setTimeout(resolve, 1500));
-                    console.log('Задержка завершена, закрываем WebApp...');
-                    
-                    // Закрываем WebApp
-                    tg.close();
-                    console.log('✅ WebApp закрыт');
+                    try {
+                        tg.sendData(dataString);
+                        console.log('✅ tg.sendData() вызван успешно');
+                        
+                        // Показываем пользователю, что данные отправлены
+                        const setsCount = workoutBuffer.length;
+                        alert(`✅ Отправлено ${setsCount} подходов! Проверьте сообщение от бота.`);
+                        
+                        // Ждем дольше, чтобы данные успели отправиться
+                        console.log('Ожидание отправки данных...');
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                        console.log('Задержка завершена, закрываем WebApp...');
+                        
+                        // Закрываем WebApp
+                        if (tg.close) {
+                            tg.close();
+                            console.log('✅ WebApp закрыт');
+                        } else {
+                            console.warn('⚠️ tg.close() не доступен');
+                        }
+                    } catch (sendError) {
+                        console.error('❌ Ошибка при вызове tg.sendData():', sendError);
+                        alert('Ошибка отправки данных: ' + sendError.message);
+                        throw sendError;
+                    }
                 } catch (error) {
                     console.error('❌ КРИТИЧЕСКАЯ ОШИБКА:', error);
                     console.error('Стек:', error.stack);
