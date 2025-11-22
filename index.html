@@ -643,47 +643,44 @@
                 
                 try {
                     // Проверяем, что мы в Telegram
-                    console.log('tg объект:', tg);
-                    console.log('tg.initData:', tg.initData);
-                    console.log('tg.initDataUnsafe:', tg.initDataUnsafe);
-                    console.log('tg.version:', tg.version);
-                    console.log('tg.platform:', tg.platform);
+                    console.log('=== ПРОВЕРКА TELEGRAM WEBAPP ===');
+                    console.log('tg объект существует:', !!tg);
+                    console.log('tg.version:', tg?.version);
+                    console.log('tg.platform:', tg?.platform);
+                    console.log('tg.isExpanded:', tg?.isExpanded);
                     
-                    if (!tg.isExpanded) {
-                        console.warn('WebApp не развернут, пытаемся развернуть...');
-                        tg.expand();
-                    }
-                    
-                    console.log('Попытка отправить данные через tg.sendData()...');
-                    console.log('tg.sendData доступен:', typeof tg.sendData === 'function');
-                    console.log('Данные для отправки:', dataString);
-                    console.log('Длина данных:', dataString.length);
-                    
-                    // Проверяем все методы tg
-                    console.log('Все методы tg:', Object.keys(tg).filter(key => typeof tg[key] === 'function'));
-                    
-                    // Отправляем данные в бот
-                    if (typeof tg.sendData === 'function') {
-                        tg.sendData(dataString);
-                        console.log('✅ tg.sendData() вызван успешно');
-                        // Не показываем alert, чтобы не мешать
-                    } else {
-                        console.error('❌ tg.sendData не является функцией!');
-                        alert('Ошибка: tg.sendData не доступен!');
+                    // Проверяем доступность sendData
+                    if (!tg || typeof tg.sendData !== 'function') {
+                        console.error('❌ tg.sendData не доступен!');
+                        console.log('Доступные методы:', Object.keys(tg || {}));
+                        alert('Ошибка: Telegram WebApp SDK не работает. Убедитесь, что WebApp открыт через Telegram.');
                         return;
                     }
                     
-                    // Ждем немного, чтобы убедиться, что данные отправились
-                    await new Promise(resolve => setTimeout(resolve, 2000));
-                    console.log('✅ Задержка завершена, закрываем WebApp...');
+                    console.log('✅ tg.sendData доступен');
+                    console.log('Данные для отправки:', dataString);
+                    console.log('Количество подходов:', workoutBuffer.length);
+                    
+                    // Отправляем данные в бот
+                    console.log('Отправка данных через tg.sendData()...');
+                    tg.sendData(dataString);
+                    console.log('✅ tg.sendData() вызван');
+                    
+                    // Показываем пользователю, что данные отправлены
+                    const setsCount = workoutBuffer.length;
+                    alert(`✅ Отправлено ${setsCount} подходов! Проверьте сообщение от бота.`);
+                    
+                    // Ждем, чтобы данные успели отправиться
+                    await new Promise(resolve => setTimeout(resolve, 1500));
+                    console.log('Задержка завершена, закрываем WebApp...');
                     
                     // Закрываем WebApp
                     tg.close();
                     console.log('✅ WebApp закрыт');
                 } catch (error) {
-                    console.error('❌ Ошибка при отправке данных:', error);
-                    console.error('Стек ошибки:', error.stack);
-                    alert('Ошибка при отправке данных: ' + error.message);
+                    console.error('❌ КРИТИЧЕСКАЯ ОШИБКА:', error);
+                    console.error('Стек:', error.stack);
+                    alert('Ошибка: ' + error.message + '\n\nПроверьте консоль для деталей.');
                     // Не закрываем WebApp при ошибке
                 }
                 
