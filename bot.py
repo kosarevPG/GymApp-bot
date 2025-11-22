@@ -374,6 +374,21 @@ async def handle_webapp_data(message: Message):
         await message.answer("❌ Произошла ошибка при сохранении")
 
 
+# ==================== ОТЛАДОЧНЫЙ ОБРАБОТЧИК ====================
+
+@dp.message()
+async def debug_all_messages(message: Message):
+    """Отладочный обработчик всех сообщений."""
+    # Пропускаем web_app_data - они обрабатываются отдельно
+    if message.web_app_data:
+        logger.info(f"DEBUG: Получено сообщение с web_app_data от {message.from_user.id}")
+        return
+    
+    logger.info(f"DEBUG: Получено обычное сообщение: '{message.text}' от {message.from_user.id}")
+    logger.info(f"DEBUG: Тип сообщения: {type(message)}")
+    logger.info(f"DEBUG: Атрибуты сообщения: {dir(message)}")
+
+
 # ==================== ЗАПУСК БОТА ====================
 
 # Определяем режим работы: webhook или polling
