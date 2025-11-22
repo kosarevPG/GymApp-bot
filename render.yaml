@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: gym-logger-bot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: WEBAPP_URL
+        sync: false
+      - key: SPREADSHEET_ID
+        sync: false
+      - key: GOOGLE_CREDENTIALS_JSON
+        sync: false
+      - key: USE_WEBHOOK
+        value: "false"
+      - key: PORT
+        fromService:
+          type: web
+          name: gym-logger-bot
+          property: port
+
