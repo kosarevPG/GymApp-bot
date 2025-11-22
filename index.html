@@ -184,8 +184,15 @@
     <script>
         // Инициализация Telegram Web App
         const tg = window.Telegram.WebApp;
-        tg.ready();
-        tg.expand();
+        
+        if (!tg) {
+            console.error('Telegram WebApp SDK not loaded');
+            alert('Ошибка: Telegram WebApp SDK не загружен');
+        } else {
+            tg.ready();
+            tg.expand();
+            console.log('Telegram WebApp initialized');
+        }
         
         // Парсинг URL параметров
         const urlParams = new URLSearchParams(window.location.search);
@@ -371,6 +378,7 @@
                 // Fallback режим - обычные number inputs
                 weight = parseFloat(weightInput.value) || 0;
                 reps = parseInt(repsInput.value) || 0;
+                // В fallback режиме отдых вводится в секундах напрямую
                 rest = parseInt(restInput.value) || 60;
             } else {
                 // Режим с барабанами
@@ -447,45 +455,74 @@
         
         // Кнопка "Сохранить"
         document.getElementById('saveBtn').addEventListener('click', function() {
-            // Добавляем текущие значения в буфер, если они еще не там
-            const current = getCurrentValues();
-            const currentExists = workoutBuffer.some(item => 
-                item.exercise === exerciseName &&
-                item.weight === current.weight &&
-                item.reps === current.reps &&
-                item.rest === current.rest
-            );
-            
-            if (!currentExists) {
-                workoutBuffer.push({
-                    exercise: exerciseName,
-                    weight: current.weight,
-                    reps: current.reps,
-                    rest: current.rest
-                });
+            try {
+                // Добавляем текущие значения в буфер, если они еще не там
+                const current = getCurrentValues();
+                
+                console.log('Current values:', current);
+                console.log('Exercise name:', exerciseName);
+                
+                // Проверяем, что данные валидны
+                if (current.weight === 0 && current.reps === 0) {
+                    alert('Пожалуйста, введите вес и количество повторов');
+                    return;
+                }
+                
+                const currentExists = workoutBuffer.some(item => 
+                    item.exercise === exerciseName &&
+                    item.weight === current.weight &&
+                    item.reps === current.reps &&
+                    item.rest === current.rest
+                );
+                
+                if (!currentExists) {
+                    workoutBuffer.push({
+                        exercise: exerciseName,
+                        weight: current.weight,
+                        reps: current.reps,
+                        rest: current.rest
+                    });
+                }
+                
+                // Если буфер пуст, добавляем текущие значения
+                if (workoutBuffer.length === 0) {
+                    workoutBuffer.push({
+                        exercise: exerciseName,
+                        weight: current.weight,
+                        reps: current.reps,
+                        rest: current.rest
+                    });
+                }
+                
+                // Формируем итоговый JSON
+                const finalData = {
+                    type: "workout_data",
+                    payload: workoutBuffer
+                };
+                
+                console.log('Sending data:', finalData);
+                
+                // Проверяем, что Telegram WebApp SDK доступен
+                if (!tg || !tg.sendData) {
+                    console.error('Telegram WebApp SDK not available');
+                    alert('Ошибка: Telegram WebApp SDK не доступен');
+                    return;
+                }
+                
+                // Отправляем данные в бот
+                tg.sendData(JSON.stringify(finalData));
+                
+                console.log('Data sent successfully');
+                
+                // Небольшая задержка перед закрытием, чтобы данные успели отправиться
+                setTimeout(() => {
+                    tg.close();
+                }, 100);
+                
+            } catch (error) {
+                console.error('Error saving data:', error);
+                alert('Ошибка при сохранении: ' + error.message);
             }
-            
-            // Если буфер пуст, добавляем текущие значения
-            if (workoutBuffer.length === 0) {
-                workoutBuffer.push({
-                    exercise: exerciseName,
-                    weight: current.weight,
-                    reps: current.reps,
-                    rest: current.rest
-                });
-            }
-            
-            // Формируем итоговый JSON
-            const finalData = {
-                type: "workout_data",
-                payload: workoutBuffer
-            };
-            
-            // Отправляем данные в бот
-            tg.sendData(JSON.stringify(finalData));
-            
-            // Закрываем WebApp
-            tg.close();
         });
     </script>
 </body>
