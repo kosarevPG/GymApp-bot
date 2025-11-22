@@ -678,17 +678,36 @@
                     
                     // Отправляем данные в бот
                     console.log('Отправка данных через tg.sendData()...');
+                    console.log('Данные для отправки (строка):', dataString);
+                    console.log('Длина данных:', dataString.length);
+                    console.log('Тип данных:', typeof dataString);
+                    
                     try {
+                        // Проверяем, что данные не пустые
+                        if (!dataString || dataString.length === 0) {
+                            throw new Error('Данные для отправки пустые!');
+                        }
+                        
+                        // Проверяем, что это строка
+                        if (typeof dataString !== 'string') {
+                            console.warn('⚠️ Данные не строка, преобразуем...');
+                            dataString = String(dataString);
+                        }
+                        
+                        // Отправляем данные
+                        console.log('Вызов tg.sendData() с данными:', dataString.substring(0, 100) + '...');
                         tg.sendData(dataString);
                         console.log('✅ tg.sendData() вызван успешно');
                         
                         // Показываем пользователю, что данные отправлены
                         const setsCount = workoutBuffer.length;
-                        alert(`✅ Отправлено ${setsCount} подходов! Проверьте сообщение от бота.`);
+                        const alertMessage = `✅ Отправлено ${setsCount} подходов!\n\nДанные: ${dataString.substring(0, 50)}...\n\nПроверьте сообщение от бота.`;
+                        alert(alertMessage);
+                        console.log('Alert показан пользователю');
                         
                         // Ждем дольше, чтобы данные успели отправиться
-                        console.log('Ожидание отправки данных...');
-                        await new Promise(resolve => setTimeout(resolve, 2000));
+                        console.log('Ожидание отправки данных (3 секунды)...');
+                        await new Promise(resolve => setTimeout(resolve, 3000));
                         console.log('Задержка завершена, закрываем WebApp...');
                         
                         // Закрываем WebApp
@@ -699,8 +718,11 @@
                             console.warn('⚠️ tg.close() не доступен');
                         }
                     } catch (sendError) {
-                        console.error('❌ Ошибка при вызове tg.sendData():', sendError);
-                        alert('Ошибка отправки данных: ' + sendError.message);
+                        console.error('❌ КРИТИЧЕСКАЯ ОШИБКА при вызове tg.sendData():', sendError);
+                        console.error('Тип ошибки:', typeof sendError);
+                        console.error('Сообщение ошибки:', sendError.message);
+                        console.error('Стек ошибки:', sendError.stack);
+                        alert('❌ Ошибка отправки данных: ' + sendError.message + '\n\nПроверьте консоль для деталей.');
                         throw sendError;
                     }
                 } catch (error) {
