@@ -192,6 +192,8 @@
             tg.ready();
             tg.expand();
             console.log('Telegram WebApp initialized');
+            console.log('Telegram WebApp version:', tg.version);
+            console.log('Telegram WebApp platform:', tg.platform);
         }
         
         // Парсинг URL параметров
@@ -503,21 +505,37 @@
                 console.log('Sending data:', finalData);
                 
                 // Проверяем, что Telegram WebApp SDK доступен
-                if (!tg || !tg.sendData) {
+                if (!tg) {
                     console.error('Telegram WebApp SDK not available');
                     alert('Ошибка: Telegram WebApp SDK не доступен');
                     return;
                 }
                 
-                // Отправляем данные в бот
-                tg.sendData(JSON.stringify(finalData));
+                if (!tg.sendData) {
+                    console.error('tg.sendData is not available');
+                    console.log('Available tg methods:', Object.keys(tg));
+                    alert('Ошибка: метод sendData не доступен');
+                    return;
+                }
                 
-                console.log('Data sent successfully');
+                const dataString = JSON.stringify(finalData);
+                console.log('Sending data string:', dataString);
+                console.log('Data length:', dataString.length);
                 
-                // Небольшая задержка перед закрытием, чтобы данные успели отправиться
-                setTimeout(() => {
-                    tg.close();
-                }, 100);
+                try {
+                    // Отправляем данные в бот
+                    tg.sendData(dataString);
+                    console.log('✅ Data sent successfully via tg.sendData()');
+                    
+                    // Небольшая задержка перед закрытием, чтобы данные успели отправиться
+                    setTimeout(() => {
+                        console.log('Closing WebApp...');
+                        tg.close();
+                    }, 500); // Увеличена задержка до 500мс
+                } catch (error) {
+                    console.error('Error sending data:', error);
+                    alert('Ошибка при отправке данных: ' + error.message);
+                }
                 
             } catch (error) {
                 console.error('Error saving data:', error);
