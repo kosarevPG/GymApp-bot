@@ -376,6 +376,26 @@ async def handle_webapp_data(message: Message):
 
 # ==================== ОТЛАДОЧНЫЙ ОБРАБОТЧИК ====================
 
+@dp.update.outer_middleware()
+async def log_all_updates(handler, event, data):
+    """Логирование всех обновлений для отладки."""
+    logger.info("=" * 60)
+    logger.info(f"ПОЛУЧЕНО ОБНОВЛЕНИЕ: {type(event)}")
+    logger.info(f"Update ID: {event.update_id if hasattr(event, 'update_id') else 'N/A'}")
+    
+    if hasattr(event, 'message'):
+        msg = event.message
+        logger.info(f"Message type: {type(msg)}")
+        logger.info(f"From user: {msg.from_user.id if msg.from_user else 'N/A'}")
+        logger.info(f"Has web_app_data: {hasattr(msg, 'web_app_data') and msg.web_app_data is not None}")
+        if hasattr(msg, 'web_app_data') and msg.web_app_data:
+            logger.info(f"WEB_APP_DATA: {msg.web_app_data.data}")
+        if hasattr(msg, 'text'):
+            logger.info(f"Text: {msg.text}")
+    
+    logger.info("=" * 60)
+    return await handler(event, data)
+
 @dp.message()
 async def debug_all_messages(message: Message):
     """Отладочный обработчик всех сообщений."""
@@ -385,8 +405,6 @@ async def debug_all_messages(message: Message):
         return
     
     logger.info(f"DEBUG: Получено обычное сообщение: '{message.text}' от {message.from_user.id}")
-    logger.info(f"DEBUG: Тип сообщения: {type(message)}")
-    logger.info(f"DEBUG: Атрибуты сообщения: {dir(message)}")
 
 
 # ==================== ЗАПУСК БОТА ====================
