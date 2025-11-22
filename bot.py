@@ -393,9 +393,21 @@ async def log_all_updates(handler, event, data):
     if msg:
         logger.info(f"Message type: {type(msg)}")
         logger.info(f"From user: {msg.from_user.id if msg.from_user else 'N/A'}")
-        logger.info(f"Has web_app_data: {hasattr(msg, 'web_app_data') and msg.web_app_data is not None}")
-        if hasattr(msg, 'web_app_data') and msg.web_app_data:
-            logger.info(f"🎯 WEB_APP_DATA НАЙДЕН! Данные: {msg.web_app_data.data}")
+        
+        # Детальная проверка web_app_data
+        has_web_app_data_attr = hasattr(msg, 'web_app_data')
+        web_app_data_value = getattr(msg, 'web_app_data', None)
+        logger.info(f"Has web_app_data attribute: {has_web_app_data_attr}")
+        logger.info(f"web_app_data value: {web_app_data_value}")
+        logger.info(f"web_app_data is not None: {web_app_data_value is not None}")
+        
+        if has_web_app_data_attr and web_app_data_value is not None:
+            logger.info(f"🎯🎯🎯 WEB_APP_DATA НАЙДЕН! 🎯🎯🎯")
+            logger.info(f"web_app_data type: {type(web_app_data_value)}")
+            logger.info(f"web_app_data.data: {web_app_data_value.data if hasattr(web_app_data_value, 'data') else 'N/A'}")
+        else:
+            logger.info("⚠️ web_app_data НЕ найден в сообщении")
+            
         if hasattr(msg, 'text') and msg.text:
             logger.info(f"Text: {msg.text}")
     else:
