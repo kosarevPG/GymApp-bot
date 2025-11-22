@@ -145,15 +145,31 @@ class GoogleSheetsManager:
             Кортеж (last_weight, last_reps). Если данных нет, возвращает (0, 0)
         """
         try:
+            # Проверяем, что лист не пустой
+            all_values = self.last_results_sheet.get_all_values()
+            if len(all_values) <= 1:  # Только заголовки или пусто
+                logger.debug(f"Лист LAST_RESULTS пуст или содержит только заголовки")
+                return (0, 0)
+            
             all_results = self.last_results_sheet.get_all_records()
+            if not all_results:
+                logger.debug(f"Нет записей в LAST_RESULTS")
+                return (0, 0)
+            
             for result in all_results:
                 if result.get("Exercise Name", "").strip() == exercise_name.strip():
                     last_weight = float(result.get("Last Weight", 0) or 0)
                     last_reps = int(result.get("Last Reps", 0) or 0)
+                    logger.debug(f"Найдены последние результаты для {exercise_name}: вес={last_weight}, повторы={last_reps}")
                     return (last_weight, last_reps)
+            
+            logger.debug(f"Упражнение {exercise_name} не найдено в LAST_RESULTS")
+            return (0, 0)
+        except IndexError as e:
+            logger.warning(f"Лист LAST_RESULTS пуст или не имеет заголовков для {exercise_name}: {e}")
             return (0, 0)
         except Exception as e:
-            logger.error(f"Ошибка получения последних результатов для {exercise_name}: {e}")
+            logger.error(f"Ошибка получения последних результатов для {exercise_name}: {e}", exc_info=True)
             return (0, 0)
     
     def save_workout_log(self, workout_data: List[Dict], set_group_id: str) -> bool:
