@@ -1,14 +1,11 @@
 """
 Модуль для работы с Google Sheets API.
-Обеспечивает чтение и запись данных в таблицу с тремя листами:
-- LOG: журнал тренировок
-- EXERCISES: справочник упражнений
-- LAST_RESULTS: кэш последних результатов
+Оптимизирован для стабильного парсинга данных.
 """
 
 import gspread
 from google.oauth2.service_account import Credentials
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 import logging
 import os
 import json
@@ -17,640 +14,245 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
-class GoogleSheetsManager:
-    """Класс для управления данными в Google Sheets."""
+class DataParser:
+    """Вспомогательный класс для парсинга грязных данных из таблиц."""
     
-    def __init__(self, credentials_path: str = None, spreadsheet_id: str = None, credentials_json: str = None):
-        """
-        Инициализация менеджера Google Sheets.
-        
-        Args:
-            credentials_path: Путь к JSON файлу с credentials для Google API (для локальной разработки)
-            spreadsheet_id: ID Google Spreadsheet (можно передать или взять из env)
-            credentials_json: JSON строка с credentials (для деплоя на Render.com)
-        """
+    @staticmethod
+    def to_float(value: Any, default: float = 0.0) -> float:
+        if value is None:
+            return default
         try:
-            scope = [
-                'https://spreadsheets.google.com/feeds',
-                'https://www.googleapis.com/auth/drive'
-            ]
+            # Заменяем запятую на точку и убираем пробелы
+            clean_val = str(value).replace(',', '.').strip()
+            # Обработка текста с единицами измерения ("1.5 мин")
+            for suffix in ["мин", "сек", "s", "m"]:
+                if suffix in clean_val.lower():
+                    clean_val = clean_val.lower().replace(suffix, "").strip()
+            if not clean_val:
+                return default
+            return float(clean_val)
+        except (ValueError, TypeError):
+            return default
+
+    @staticmethod
+    def to_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(DataParser.to_float(value, default))
+        except (ValueError, TypeError):
+            return default
+
+    @staticmethod
+    def parse_rest_to_minutes(value: Any) -> float:
+        """Умный парсинг отдыха: конвертирует секунды (>100) в минуты."""
+        val = str(value).lower()
+        num = DataParser.to_float(val)
+        
+        # Явное указание секунд
+        if "сек" in val or "s" in val:
+            return num / 60.0
+        # Эвристика: если число больше 59, скорее всего это секунды
+        if num > 59:
+            return num / 60.0
+        return num
+
+    @staticmethod
+    def parse_date(date_str: Any) -> datetime:
+        """Универсальный парсер даты."""
+        s = str(date_str).strip().split(',')[0].strip() # Отсекаем время
+        formats = [
+            "%Y.%m.%d", "%d.%m.%Y", "%Y-%m-%d", "%d-%m-%Y",
+            "%Y/%m/%d", "%d/%m/%Y"
+        ]
+        for fmt in formats:
+            try:
+                return datetime.strptime(s, fmt)
+            except ValueError:
+                continue
+        return datetime.min
+
+
+class GoogleSheetsManager:
+    def __init__(self, credentials_path: str = None, spreadsheet_id: str = None, credentials_json: str = None):
+        try:
+            scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
             
-            # Приоритет: credentials_json (для Render) > credentials_path (локально)
             if credentials_json:
-                # Читаем из переменной окружения (JSON строка)
-                creds_info = json.loads(credentials_json)
-                creds = Credentials.from_service_account_info(creds_info, scopes=scope)
-                logger.info("Google Sheets credentials загружены из переменной окружения")
+                creds = Credentials.from_service_account_info(json.loads(credentials_json), scopes=scope)
             elif credentials_path and os.path.exists(credentials_path):
-                # Читаем из файла (локальная разработка)
                 creds = Credentials.from_service_account_file(credentials_path, scopes=scope)
-                logger.info(f"Google Sheets credentials загружены из файла: {credentials_path}")
             else:
-                # Пытаемся прочитать из переменной окружения GOOGLE_CREDENTIALS_JSON
                 creds_env = os.getenv("GOOGLE_CREDENTIALS_JSON")
-                if creds_env:
-                    creds_info = json.loads(creds_env)
-                    creds = Credentials.from_service_account_info(creds_info, scopes=scope)
-                    logger.info("Google Sheets credentials загружены из GOOGLE_CREDENTIALS_JSON")
-                else:
-                    raise ValueError("Не указаны credentials. Используйте credentials_path, credentials_json или GOOGLE_CREDENTIALS_JSON")
+                if not creds_env:
+                    raise ValueError("Credentials not found")
+                creds = Credentials.from_service_account_info(json.loads(creds_env), scopes=scope)
             
             self.client = gspread.authorize(creds)
+            self.spreadsheet_id = spreadsheet_id or os.getenv("SPREADSHEET_ID")
+            if not self.spreadsheet_id:
+                raise ValueError("SPREADSHEET_ID missing")
             
-            # Получаем spreadsheet_id из параметра или переменной окружения
-            if not spreadsheet_id:
-                spreadsheet_id = os.getenv("SPREADSHEET_ID")
-            
-            if not spreadsheet_id:
-                raise ValueError("SPREADSHEET_ID не указан")
-            
-            self.spreadsheet = self.client.open_by_key(spreadsheet_id)
-            self.log_sheet = self.spreadsheet.worksheet('LOG')
-            self.exercises_sheet = self.spreadsheet.worksheet('EXERCISES')
-            self.last_results_sheet = self.spreadsheet.worksheet('LAST_RESULTS')
-            logger.info("Google Sheets подключен успешно")
+            self.spreadsheet = self.client.open_by_key(self.spreadsheet_id)
+            self._init_sheets()
+            logger.info("Google Sheets connected")
         except Exception as e:
-            logger.error(f"Ошибка подключения к Google Sheets: {e}")
+            logger.error(f"GSheets init error: {e}")
             raise
-    
-    def get_muscle_groups(self) -> List[str]:
-        """
-        Получить список уникальных групп мышц из листа EXERCISES.
-        
-        Returns:
-            Список уникальных групп мышц
-        """
+
+    def _init_sheets(self):
+        """Ленивая или кэшированная инициализация листов."""
+        self.log_sheet = self.spreadsheet.worksheet('LOG')
+        self.exercises_sheet = self.spreadsheet.worksheet('EXERCISES')
         try:
-            # Читаем колонку B (группы мышц), пропуская заголовок
-            groups = self.exercises_sheet.col_values(2)[1:]  # [1:] пропускает заголовок
-            unique_groups = list(set([g.strip() for g in groups if g.strip()]))
-            return sorted(unique_groups)
-        except Exception as e:
-            logger.error(f"Ошибка получения групп мышц: {e}")
+            self.last_results_sheet = self.spreadsheet.worksheet('LAST_RESULTS')
+        except:
+            self.last_results_sheet = None
+
+    def _get_log_records(self, exercise_filter: str = None) -> List[Dict]:
+        """Получает и нормализует записи из LOG."""
+        all_values = self.log_sheet.get_all_values()
+        if len(all_values) < 2: 
             return []
-    
-    def get_exercises_by_group(self, muscle_group: str) -> List[Dict[str, str]]:
-        """
-        Получает упражнения выбранной группы с описанием и фото.
-        
-        Args:
-            muscle_group: Название группы мышц
             
-        Returns:
-            Список словарей с данными упражнений: [{"name": "...", "desc": "...", "image": "..."}, ...]
-        """
+        headers = [h.strip() for h in all_values[0]]
+        col_map = {name: idx for idx, name in enumerate(headers)}
+        
+        # Проверка обязательных колонок
+        required = ["Date", "Exercise", "Weight", "Reps"]
+        if not all(k in col_map for k in required):
+            logger.error(f"Missing headers in LOG. Found: {headers}")
+            return []
+
+        results = []
+        for row in all_values[1:]:
+            # Безопасное получение значения по индексу
+            def get_val(col_name):
+                idx = col_map.get(col_name)
+                if idx is not None and idx < len(row):
+                    return row[idx]
+                return ""
+
+            ex_name = get_val("Exercise")
+            if exercise_filter and ex_name.strip() != exercise_filter.strip():
+                continue
+
+            results.append({
+                "date_obj": DataParser.parse_date(get_val("Date")), # Для сортировки
+                "date": get_val("Date"), # Оригинальная строка
+                "exercise": ex_name,
+                "weight": DataParser.to_float(get_val("Weight")),
+                "reps": DataParser.to_int(get_val("Reps")),
+                "rest": DataParser.parse_rest_to_minutes(get_val("Rest")),
+                "order": DataParser.to_int(get_val("Order")),
+                "set_group_id": get_val("Set_Group_ID")
+            })
+        return results
+
+    def get_muscle_groups(self) -> List[str]:
+        try:
+            groups = self.exercises_sheet.col_values(2)[1:]
+            return sorted(list(set(g.strip() for g in groups if g.strip())))
+        except Exception as e:
+            logger.error(f"Get groups error: {e}")
+            return []
+
+    def get_exercises_by_group(self, muscle_group: str) -> List[Dict]:
         try:
             all_data = self.exercises_sheet.get_all_records()
-            # Фильтруем и собираем объект
-            exercises = []
-            for row in all_data:
-                if row.get('Muscle Group', '').strip() == muscle_group.strip():
-                    exercises.append({
-                        'name': row.get('Exercise Name', ''),
-                        'desc': row.get('Description', 'Описание отсутствует'),
-                        'image': row.get('Image_URL', '')  # Ссылка на картинку
-                    })
-            
-            # Сортируем по имени
+            exercises = [
+                {
+                    'name': r.get('Exercise Name', ''),
+                    'desc': r.get('Description', 'Описание отсутствует'),
+                    'image': r.get('Image_URL', '')
+                }
+                for r in all_data
+                if r.get('Muscle Group', '').strip() == muscle_group.strip()
+            ]
             return sorted(exercises, key=lambda x: x['name'])
         except Exception as e:
-            logger.error(f"Ошибка чтения упражнений: {e}")
+            logger.error(f"Get exercises error: {e}")
             return []
-    
-    def get_exercise_photo_id(self, exercise_name: str) -> Optional[str]:
-        """
-        Получить file_id фото тренажера для упражнения.
-        
-        Args:
-            exercise_name: Название упражнения
-            
-        Returns:
-            Telegram file_id фото или None
-        """
-        try:
-            all_exercises = self.exercises_sheet.get_all_records()
-            for ex in all_exercises:
-                if ex["Exercise Name"].strip() == exercise_name.strip():
-                    return ex.get("Photo_File_ID", "")
-            return None
-        except Exception as e:
-            logger.error(f"Ошибка получения фото для упражнения {exercise_name}: {e}")
-            return None
-    
-    def get_last_results(self, exercise_name: str) -> Tuple[float, int]:
-        """
-        Получить последние результаты по упражнению из кэша.
-        
-        Args:
-            exercise_name: Название упражнения
-            
-        Returns:
-            Кортеж (last_weight, last_reps). Если данных нет, возвращает (0, 0)
-        """
-        try:
-            # Проверяем, что лист не пустой
-            all_values = self.last_results_sheet.get_all_values()
-            if len(all_values) <= 1:  # Только заголовки или пусто
-                logger.debug(f"Лист LAST_RESULTS пуст или содержит только заголовки")
-                return (0, 0)
-            
-            all_results = self.last_results_sheet.get_all_records()
-            if not all_results:
-                logger.debug(f"Нет записей в LAST_RESULTS")
-                return (0, 0)
-            
-            for result in all_results:
-                if result.get("Exercise Name", "").strip() == exercise_name.strip():
-                    last_weight = float(result.get("Last Weight", 0) or 0)
-                    last_reps = int(result.get("Last Reps", 0) or 0)
-                    logger.debug(f"Найдены последние результаты для {exercise_name}: вес={last_weight}, повторы={last_reps}")
-                    return (last_weight, last_reps)
-            
-            logger.debug(f"Упражнение {exercise_name} не найдено в LAST_RESULTS")
-            return (0, 0)
-        except IndexError as e:
-            logger.warning(f"Лист LAST_RESULTS пуст или не имеет заголовков для {exercise_name}: {e}")
-            return (0, 0)
-        except Exception as e:
-            logger.error(f"Ошибка получения последних результатов для {exercise_name}: {e}", exc_info=True)
-            return (0, 0)
-    
+
     def save_workout_log(self, workout_data: List[Dict], set_group_id: str) -> bool:
-        """
-        Сохранить данные тренировки в лист LOG.
-        
-        Args:
-            workout_data: Список словарей с данными подходов:
-                [{"exercise": "...", "weight": 100, "reps": 5, "rest": 120}, ...]
-            set_group_id: UUID для группировки суперсетов
-            
-        Returns:
-            True если успешно, False в случае ошибки
-        """
         try:
-            logger.info(f"Начало сохранения данных в LOG. Количество записей: {len(workout_data)}")
-            logger.info(f"Данные для сохранения: {workout_data}")
+            timestamp = datetime.now().strftime('%Y.%m.%d, %H:%M')
+            rows = []
             
-            # Формат: "2025.11.23, 19:17" (год.месяц.день, время)
-            now = datetime.now()
-            timestamp = f"{now.strftime('%Y.%m.%d')}, {now.strftime('%H:%M')}"
-            rows_to_add = []
-            
-            # Добавляем Order (порядковый номер подхода внутри одной тренировки)
-            for index, workout in enumerate(workout_data, start=1):
-                # Конвертируем отдых из секунд в минуты (если приходит в секундах)
-                rest_value = workout.get("rest", 0)
-                if isinstance(rest_value, (int, float)) and rest_value > 100:
-                    # Если значение больше 100, вероятно это секунды - конвертируем в минуты
-                    rest_minutes = rest_value / 60.0
-                else:
-                    # Иначе считаем, что это уже минуты
-                    rest_minutes = float(rest_value) if rest_value else 0
+            for idx, item in enumerate(workout_data, 1):
+                # Гарантируем, что отдых сохранен в минутах
+                rest_mins = DataParser.parse_rest_to_minutes(item.get("rest", 0))
                 
-                row = [
+                rows.append([
                     timestamp,
-                    index,  # Order - порядковый номер подхода
-                    workout["exercise"],
-                    workout["weight"],
-                    workout["reps"],
-                    rest_minutes,  # Отдых в минутах
+                    idx, # Order
+                    item["exercise"],
+                    item["weight"],
+                    item["reps"],
+                    rest_mins,
                     set_group_id
-                ]
-                rows_to_add.append(row)
+                ])
             
-            logger.info(f"Подготовлено {len(rows_to_add)} строк для добавления: {rows_to_add}")
-            
-            # Проверяем, что лист существует
-            if not self.log_sheet:
-                logger.error("Лист LOG не найден!")
-                return False
-            
-            # Добавляем все строки одним запросом
-            logger.info("Вызов append_rows...")
-            self.log_sheet.append_rows(rows_to_add)
-            logger.info(f"✅ Успешно сохранено {len(rows_to_add)} записей в LOG")
-            
-            # Проверяем, что данные действительно сохранились
-            try:
-                all_values = self.log_sheet.get_all_values()
-                logger.info(f"Всего строк в LOG после сохранения: {len(all_values)}")
-            except Exception as check_error:
-                logger.warning(f"Не удалось проверить сохранение: {check_error}")
-            
+            self.log_sheet.append_rows(rows)
+            logger.info(f"Saved {len(rows)} workout records")
             return True
         except Exception as e:
-            logger.error(f"❌ Ошибка сохранения в LOG: {e}", exc_info=True)
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            return False
-    
-    def get_last_workout(self, exercise_name: str) -> List[Dict]:
-        """
-        Получить последнюю тренировку по упражнению (для автозаполнения).
-        Исправлена проблема с запятыми и пустыми ячейками (None) для русской локализации Google Sheets.
-        
-        Args:
-            exercise_name: Название упражнения
-            
-        Returns:
-            Список словарей с данными подходов последней тренировки:
-            [{"weight": 100, "reps": 5, "rest": 120}, ...]
-        """
-        try:
-            # Получаем все значения напрямую для лучшего контроля (как в get_exercise_history)
-            all_values = self.log_sheet.get_all_values()
-            if not all_values or len(all_values) <= 1:
-                logger.warning(f"Лист LOG пуст или содержит только заголовки")
-                return []
-            
-            # Получаем заголовки
-            headers = [h.strip() for h in all_values[0]]
-            try:
-                date_idx = headers.index("Date")
-                order_idx = headers.index("Order") if "Order" in headers else None
-                exercise_idx = headers.index("Exercise")
-                weight_idx = headers.index("Weight")
-                reps_idx = headers.index("Reps")
-                rest_idx = headers.index("Rest")
-                set_group_idx = headers.index("Set_Group_ID")
-            except ValueError as e:
-                logger.error(f"Не найдены необходимые колонки в LOG: {e}")
-                return []
-            
-            # Фильтруем только это упражнение
-            ex_logs = []
-            for row in all_values[1:]:  # Пропускаем заголовок
-                if len(row) <= exercise_idx:
-                    continue
-                    
-                record_exercise = row[exercise_idx].strip() if row[exercise_idx] else ""
-                if record_exercise == exercise_name.strip():
-                    # Получаем значения напрямую из строки
-                    date_val = row[date_idx].strip() if len(row) > date_idx and row[date_idx] else ""
-                    order_val = row[order_idx].strip() if order_idx is not None and len(row) > order_idx and row[order_idx] else "0"
-                    weight_val = row[weight_idx].strip() if len(row) > weight_idx and row[weight_idx] else ""
-                    reps_val = row[reps_idx].strip() if len(row) > reps_idx and row[reps_idx] else ""
-                    rest_val = row[rest_idx].strip() if len(row) > rest_idx and row[rest_idx] else ""
-                    set_group_val = row[set_group_idx].strip() if len(row) > set_group_idx and row[set_group_idx] else ""
-                    
-                    ex_logs.append({
-                        'Date': date_val,
-                        'Order': order_val,
-                        'Weight': weight_val,
-                        'Reps': reps_val,
-                        'Rest': rest_val,
-                        'Set_Group_ID': set_group_val
-                    })
-            
-            if not ex_logs:
-                logger.warning(f"Не найдено записей для упражнения: {exercise_name}")
-                return []
-            
-            # Сортировка по дате (последние сначала)
-            try:
-                # Пробуем разные форматы даты
-                def parse_date(date_str):
-                    date_str = str(date_str).strip()
-                    # Формат: "2025.11.23, 19:17" или "2025-11-21"
-                    try:
-                        if ',' in date_str:
-                            date_part = date_str.split(',')[0].strip()
-                        elif ' ' in date_str:
-                            date_part = date_str.split(' ')[0].strip()
-                        else:
-                            date_part = date_str
-                        
-                        # Преобразуем в формат для сортировки
-                        if '.' in date_part:
-                            parts = date_part.split('.')
-                            if len(parts) == 3:
-                                if len(parts[0]) == 4:  # YYYY.MM.DD
-                                    return datetime.strptime(date_part, "%Y.%m.%d")
-                                else:  # DD.MM.YYYY
-                                    return datetime.strptime(f"{parts[2]}.{parts[1]}.{parts[0]}", "%Y.%m.%d")
-                        elif '-' in date_part:
-                            return datetime.strptime(date_part, "%Y-%m-%d")
-                    except:
-                        pass
-                    return datetime.min
-                
-                ex_logs.sort(key=lambda x: parse_date(x.get('Date', '')), reverse=True)
-            except Exception as e:
-                logger.warning(f"Ошибка сортировки по дате: {e}, используем обратный порядок")
-                ex_logs.reverse()
-            
-            # Берем дату последнего подхода (если список не пуст)
-            if not ex_logs:
-                return []
-            
-            # Получаем дату и set_group_id последней записи
-            last_record = ex_logs[0]
-            last_date_str = str(last_record.get('Date', '')).strip()
-            # Извлекаем дату (до запятой или пробела)
-            if ',' in last_date_str:
-                last_date = last_date_str.split(',')[0].strip()
-            elif ' ' in last_date_str:
-                last_date = last_date_str.split(' ')[0].strip()
-            else:
-                last_date = last_date_str
-            
-            last_set_group_id = str(last_record.get('Set_Group_ID', '')).strip() or ""
-            
-            logger.info(f"DEBUG: Последняя тренировка для '{exercise_name}': дата={last_date}, set_group_id={last_set_group_id}, всего записей={len(ex_logs)}")
-            
-            history = []
-            for item in ex_logs:
-                # Проверяем дату и set_group_id
-                current_date_str = str(item.get('Date', '')).strip()
-                if ',' in current_date_str:
-                    current_date = current_date_str.split(',')[0].strip()
-                elif ' ' in current_date_str:
-                    current_date = current_date_str.split(' ')[0].strip()
-                else:
-                    current_date = current_date_str
-                
-                current_set_group_id = str(item.get('Set_Group_ID', '')).strip() or ""
-                
-                if current_date == last_date and current_set_group_id == last_set_group_id:
-                    # Получаем Order для сортировки
-                    order_val = item.get('Order', '0')
-                    try:
-                        order = int(order_val) if order_val else 0
-                    except (ValueError, TypeError):
-                        order = 0
-                    
-                    # === БЛОК ИСПРАВЛЕНИЯ ВЕСА ===
-                    raw_weight = item.get('Weight')
-                    weight = 0
-                    
-                    if raw_weight is not None:
-                        # Превращаем в строку, меняем запятую на точку
-                        weight_str = str(raw_weight).replace(',', '.').strip()
-                        if weight_str:  # Если строка не пустая
-                            try:
-                                weight = float(weight_str)
-                                # Если число целое (50.0), делаем красивым (50)
-                                if weight.is_integer():
-                                    weight = int(weight)
-                            except ValueError:
-                                weight = 0
-                    # ==============================
-                    
-                    # === БЛОК ИСПРАВЛЕНИЯ ПОВТОРОВ ===
-                    raw_reps = item.get('Reps')
-                    reps = 0
-                    
-                    if raw_reps is not None:
-                        reps_str = str(raw_reps).replace(',', '.').strip()
-                        if reps_str:
-                            try:
-                                reps = int(float(reps_str))
-                            except ValueError:
-                                reps = 0
-                    # =================================
-                    
-                    # === БЛОК ИСПРАВЛЕНИЯ ОТДЫХА (в минутах) ===
-                    raw_rest = item.get('Rest', 0)
-                    rest_minutes = 0  # По умолчанию
-                    
-                    if raw_rest is not None:
-                        rest_str = str(raw_rest).replace(',', '.').strip()
-                        if rest_str:
-                            try:
-                                # Если это текст типа "1,5 мин" или "90 сек"
-                                if "мин" in rest_str.lower():
-                                    rest_num = float(rest_str.replace("мин", "").replace("сек", "").strip())
-                                    rest_minutes = rest_num
-                                elif "сек" in rest_str.lower():
-                                    # Конвертируем секунды в минуты
-                                    rest_num = float(rest_str.replace("сек", "").strip())
-                                    rest_minutes = rest_num / 60.0
-                                else:
-                                    # Просто число - считаем, что это минуты
-                                    rest_minutes = float(rest_str)
-                                    # Если значение больше 100, вероятно это секунды - конвертируем
-                                    if rest_minutes > 100:
-                                        rest_minutes = rest_minutes / 60.0
-                            except ValueError:
-                                rest_minutes = 0
-                    # ================================
-                    
-                    history.append({
-                        'weight': weight,
-                        'reps': reps,
-                        'rest': rest_minutes,
-                        'order': order
-                    })
-                else:
-                    break
-            
-            # Сортируем по Order (от первого подхода к последнему)
-            history.sort(key=lambda x: x.get('order', 0))
-            
-            # Убираем order из результата (он нужен только для сортировки)
-            result = [{'weight': h['weight'], 'reps': h['reps'], 'rest': h['rest']} for h in history]
-            
-            logger.info(f"Найдено {len(result)} подходов для последней тренировки '{exercise_name}' (дата: {last_date})")
-            if result:
-                logger.info(f"Пример данных последней тренировки: {result[0]}")
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Ошибка получения последней тренировки для {exercise_name}: {e}", exc_info=True)
-            return []
-    
-    def get_exercise_history(self, exercise_name: str, limit: int = 10) -> List[Dict]:
-        """
-        Получить историю подходов по упражнению из листа LOG.
-        
-        Args:
-            exercise_name: Название упражнения
-            limit: Максимальное количество последних записей (по умолчанию 10)
-            
-        Returns:
-            Список словарей с данными подходов:
-            [{"date": "...", "weight": 100, "reps": 5, "rest": 120, "set_group_id": "..."}, ...]
-        """
-        try:
-            # Получаем все значения напрямую для лучшего контроля
-            all_values = self.log_sheet.get_all_values()
-            if not all_values or len(all_values) <= 1:
-                logger.warning(f"Лист LOG пуст или содержит только заголовки")
-                return []
-            
-            # Получаем заголовки
-            headers = [h.strip() for h in all_values[0]]
-            try:
-                date_idx = headers.index("Date")
-                order_idx = headers.index("Order") if "Order" in headers else None
-                exercise_idx = headers.index("Exercise")
-                weight_idx = headers.index("Weight")
-                reps_idx = headers.index("Reps")
-                rest_idx = headers.index("Rest")
-                set_group_idx = headers.index("Set_Group_ID")
-            except ValueError as e:
-                logger.error(f"Не найдены необходимые колонки в LOG: {e}")
-                return []
-            
-            # Фильтруем по названию упражнения
-            exercise_records = []
-            for row in all_values[1:]:  # Пропускаем заголовок
-                if len(row) <= exercise_idx:
-                    continue
-                    
-                record_exercise = row[exercise_idx].strip() if row[exercise_idx] else ""
-                if record_exercise == exercise_name.strip():
-                    # Получаем значения напрямую из строки
-                    date_val = row[date_idx].strip() if len(row) > date_idx and row[date_idx] else ""
-                    order_val = row[order_idx].strip() if order_idx is not None and len(row) > order_idx and row[order_idx] else "0"
-                    weight_val = row[weight_idx].strip() if len(row) > weight_idx and row[weight_idx] else ""
-                    reps_val = row[reps_idx].strip() if len(row) > reps_idx and row[reps_idx] else ""
-                    rest_val = row[rest_idx].strip() if len(row) > rest_idx and row[rest_idx] else ""
-                    set_group_val = row[set_group_idx].strip() if len(row) > set_group_idx and row[set_group_idx] else ""
-                    
-                    # Преобразуем Order в число
-                    try:
-                        order = int(order_val) if order_val else 0
-                    except (ValueError, TypeError):
-                        order = 0
-                    
-                    # Логируем первые несколько записей для отладки
-                    if len(exercise_records) < 3:
-                        logger.info(f"DEBUG get_exercise_history: Raw row для '{exercise_name}': Weight={repr(weight_val)}, Reps={repr(reps_val)}, Date={repr(date_val)}")
-                    
-                    # Преобразование веса
-                    weight = 0
-                    if weight_val:
-                        try:
-                            weight_str = weight_val.replace(",", ".").strip()
-                            if weight_str:
-                                weight = float(weight_str)
-                        except (ValueError, TypeError) as e:
-                            if len(exercise_records) < 3:
-                                logger.warning(f"Ошибка преобразования веса '{weight_val}': {e}")
-                    
-                    # Преобразование повторов
-                    reps = 0
-                    if reps_val:
-                        try:
-                            reps_str = reps_val.replace(",", ".").strip()
-                            if reps_str:
-                                reps = int(float(reps_str))
-                        except (ValueError, TypeError):
-                            reps = 0
-                    
-                    # Преобразование отдыха (в минутах)
-                    rest_minutes = 0
-                    if rest_val:
-                        try:
-                            rest_str = str(rest_val).replace(",", ".").strip()
-                            if rest_str:
-                                # Если это текст типа "1,5 мин" или "90 сек"
-                                if "мин" in rest_str.lower():
-                                    rest_num = float(rest_str.replace("мин", "").replace("сек", "").strip())
-                                    rest_minutes = rest_num
-                                elif "сек" in rest_str.lower():
-                                    # Конвертируем секунды в минуты
-                                    rest_num = float(rest_str.replace("сек", "").strip())
-                                    rest_minutes = rest_num / 60.0
-                                else:
-                                    # Просто число - считаем, что это минуты
-                                    rest_minutes = float(rest_str)
-                                    # Если значение больше 100, вероятно это секунды - конвертируем
-                                    if rest_minutes > 100:
-                                        rest_minutes = rest_minutes / 60.0
-                        except (ValueError, TypeError):
-                            rest_minutes = 0
-                    
-                    if len(exercise_records) < 3:
-                        logger.info(f"DEBUG: После преобразования weight={weight}, reps={reps}, rest={rest_minutes} мин")
-                    
-                    exercise_records.append({
-                        "date": date_val,
-                        "weight": weight,
-                        "reps": reps,
-                        "rest": rest_minutes,
-                        "set_group_id": set_group_val,
-                        "order": order
-                    })
-            
-            # Сортируем по дате (последние сначала), затем по Order внутри одной тренировки
-            # Группируем по дате и set_group_id, сортируем внутри группы по Order
-            def sort_key(x):
-                date_str = x["date"]
-                # Нормализуем дату для сортировки
-                if ',' in date_str:
-                    date_part = date_str.split(',')[0].strip()
-                elif ' ' in date_str:
-                    date_part = date_str.split(' ')[0].strip()
-                else:
-                    date_part = date_str
-                # Преобразуем в формат для сортировки (YYYY-MM-DD)
-                try:
-                    if '.' in date_part:
-                        parts = date_part.split('.')
-                        if len(parts) == 3:
-                            # Формат YYYY.MM.DD или DD.MM.YYYY
-                            if len(parts[0]) == 4:  # YYYY.MM.DD
-                                normalized_date = date_part.replace('.', '-')
-                            else:  # DD.MM.YYYY
-                                normalized_date = f"{parts[2]}-{parts[1]}-{parts[0]}"
-                        else:
-                            normalized_date = date_part
-                    else:
-                        normalized_date = date_part
-                except:
-                    normalized_date = date_part
-                # Возвращаем кортеж: (дата для обратной сортировки, set_group_id, -order для обратной сортировки внутри группы)
-                # Но на самом деле нам нужна обратная сортировка по дате, но прямая по Order
-                # Поэтому используем отрицание для даты (чтобы новые были первыми) и прямое значение для order
-                return (normalized_date, x.get("set_group_id", ""), -x.get("order", 0))
-            
-            # Сортируем: сначала по дате (обратно), затем по set_group_id, затем по order (обратно, чтобы после reverse получить прямой порядок)
-            exercise_records.sort(key=sort_key, reverse=True)
-            
-            # Теперь внутри каждой группы (дата + set_group_id) подходы отсортированы по Order (1, 2, 3...)
-            logger.info(f"Найдено {len(exercise_records)} записей для упражнения '{exercise_name}' (возвращаем {min(limit, len(exercise_records))})")
-            if exercise_records:
-                # Логируем первые 3 записи для отладки
-                for i, rec in enumerate(exercise_records[:3]):
-                    logger.info(f"Запись {i+1}: date={rec.get('date')}, weight={rec.get('weight')}, reps={rec.get('reps')}, rest={rec.get('rest')}")
-            
-            # Убираем order из результата (он нужен только для сортировки)
-            result = []
-            for rec in exercise_records[:limit]:
-                result.append({
-                    "date": rec["date"],
-                    "weight": rec["weight"],
-                    "reps": rec["reps"],
-                    "rest": rec["rest"],
-                    "set_group_id": rec["set_group_id"]
-                })
-            return result
-            
-        except Exception as e:
-            logger.error(f"Ошибка получения истории для упражнения {exercise_name}: {e}", exc_info=True)
-            return []
-    
-    def add_exercise(self, exercise_name: str, muscle_group: str, photo_file_id: str = "") -> bool:
-        """
-        Добавить новое упражнение в справочник EXERCISES.
-        
-        Args:
-            exercise_name: Название упражнения
-            muscle_group: Группа мышц
-            photo_file_id: Telegram file_id фото (опционально)
-            
-        Returns:
-            True если успешно, False в случае ошибки
-        """
-        try:
-            row = [exercise_name, muscle_group, photo_file_id]
-            self.exercises_sheet.append_row(row)
-            logger.info(f"Добавлено упражнение: {exercise_name}")
-            return True
-        except Exception as e:
-            logger.error(f"Ошибка добавления упражнения: {e}")
+            logger.error(f"Save log error: {e}")
             return False
 
+    def get_last_workout(self, exercise_name: str) -> List[Dict]:
+        """Возвращает сеты последней тренировки."""
+        try:
+            records = self._get_log_records(exercise_name)
+            if not records: 
+                return []
+
+            # Сортируем по дате убывания
+            records.sort(key=lambda x: x['date_obj'], reverse=True)
+            
+            last_date = records[0]['date_obj']
+            last_group = records[0]['set_group_id']
+            
+            # Фильтруем только последнюю сессию
+            last_session = [
+                r for r in records 
+                if r['date_obj'] == last_date and r['set_group_id'] == last_group
+            ]
+            
+            # Сортируем по Order
+            last_session.sort(key=lambda x: x['order'])
+            
+            return [{
+                'weight': r['weight'],
+                'reps': r['reps'],
+                'rest': r['rest']
+            } for r in last_session]
+            
+        except Exception as e:
+            logger.error(f"Get last workout error: {e}")
+            return []
+
+    def get_exercise_history(self, exercise_name: str, limit: int = 20) -> List[Dict]:
+        try:
+            records = self._get_log_records(exercise_name)
+            # Сортировка: сначала дата (свежие сверху), потом Order
+            records.sort(key=lambda x: (x['date_obj'], x['set_group_id'], x['order']), reverse=True)
+            
+            # Возвращаем упрощенную структуру
+            return [{
+                "date": r["date"],
+                "weight": r["weight"],
+                "reps": r["reps"],
+                "rest": r["rest"],
+                "set_group_id": r["set_group_id"]
+            } for r in records[:limit]]
+            
+        except Exception as e:
+            logger.error(f"Get history error: {e}")
+            return []
+
+    def add_exercise(self, name: str, group: str, photo_id: str = "") -> bool:
+        try:
+            self.exercises_sheet.append_row([name, group, photo_id])
+            return True
+        except Exception as e:
+            logger.error(f"Add exercise error: {e}")
+            return False
