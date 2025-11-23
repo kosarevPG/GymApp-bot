@@ -670,10 +670,19 @@
                     console.log('Данные для отправки:', dataString);
                     console.log('Количество подходов:', workoutBuffer.length);
                     
-                    // Проверяем, что мы действительно в Telegram
-                    if (!tg.initData || !tg.initDataUnsafe) {
-                        console.warn('⚠️ WebApp может быть открыт не через Telegram!');
-                        alert('⚠️ Внимание: WebApp должен быть открыт через Telegram. Если вы открыли его в браузере, данные не отправятся.');
+                    // КРИТИЧЕСКАЯ ПРОВЕРКА: Убеждаемся, что мы в Telegram
+                    console.log('=== КРИТИЧЕСКАЯ ПРОВЕРКА TELEGRAM ===');
+                    console.log('tg объект:', tg);
+                    console.log('tg.initData:', tg.initData);
+                    console.log('tg.initDataUnsafe:', tg.initDataUnsafe);
+                    console.log('tg.platform:', tg.platform);
+                    console.log('tg.version:', tg.version);
+                    
+                    if (!tg.initData && !tg.initDataUnsafe) {
+                        const errorMsg = '❌ КРИТИЧЕСКАЯ ОШИБКА: WebApp открыт НЕ через Telegram!\n\nДанные НЕ будут отправлены.\n\nЗакройте это окно и откройте WebApp через кнопку в боте @GymAppKPGBot';
+                        console.error(errorMsg);
+                        alert(errorMsg);
+                        return; // НЕ продолжаем, если не в Telegram
                     }
                     
                     // Отправляем данные в бот
@@ -696,18 +705,24 @@
                         
                         // Отправляем данные
                         console.log('Вызов tg.sendData() с данными:', dataString.substring(0, 100) + '...');
+                        console.log('Полные данные:', dataString);
+                        
+                        // Вызываем sendData
                         tg.sendData(dataString);
                         console.log('✅ tg.sendData() вызван успешно');
                         
+                        // Ждем немного перед показом alert
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                        
                         // Показываем пользователю, что данные отправлены
                         const setsCount = workoutBuffer.length;
-                        const alertMessage = `✅ Отправлено ${setsCount} подходов!\n\nДанные: ${dataString.substring(0, 50)}...\n\nПроверьте сообщение от бота.`;
+                        const alertMessage = `✅ Отправлено ${setsCount} подходов!\n\nДанные отправлены в бот.\n\nПроверьте сообщение от бота через несколько секунд.`;
                         alert(alertMessage);
                         console.log('Alert показан пользователю');
                         
                         // Ждем дольше, чтобы данные успели отправиться
-                        console.log('Ожидание отправки данных (3 секунды)...');
-                        await new Promise(resolve => setTimeout(resolve, 3000));
+                        console.log('Ожидание отправки данных (5 секунд)...');
+                        await new Promise(resolve => setTimeout(resolve, 5000));
                         console.log('Задержка завершена, закрываем WebApp...');
                         
                         // Закрываем WebApp
