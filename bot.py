@@ -544,9 +544,8 @@ async def api_exercises(request):
             )
         
         exercises_data = sheets_manager.get_exercises_by_group(muscle_group)
-        # Возвращаем только названия упражнений
-        exercises = [ex["name"] for ex in exercises_data]
-        return web.json_response({"exercises": exercises}, headers=headers)
+        # Возвращаем полные объекты с описанием и картинками
+        return web.json_response({"exercises": exercises_data}, headers=headers)
     except Exception as e:
         logger.error(f"Ошибка получения упражнений: {e}", exc_info=True)
         return web.json_response(

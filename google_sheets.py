@@ -91,27 +91,30 @@ class GoogleSheetsManager:
     
     def get_exercises_by_group(self, muscle_group: str) -> List[Dict[str, str]]:
         """
-        Получить список упражнений по группе мышц.
+        Получает упражнения выбранной группы с описанием и фото.
         
         Args:
             muscle_group: Название группы мышц
             
         Returns:
-            Список словарей с данными упражнений: [{"name": "...", "photo_id": "..."}, ...]
+            Список словарей с данными упражнений: [{"name": "...", "desc": "...", "image": "..."}, ...]
         """
         try:
-            all_exercises = self.exercises_sheet.get_all_records()
-            exercises = [
-                {
-                    "name": ex["Exercise Name"],
-                    "photo_id": ex.get("Photo_File_ID", "")
-                }
-                for ex in all_exercises
-                if ex.get("Muscle Group", "").strip() == muscle_group.strip()
-            ]
-            return exercises
+            all_data = self.exercises_sheet.get_all_records()
+            # Фильтруем и собираем объект
+            exercises = []
+            for row in all_data:
+                if row.get('Muscle Group', '').strip() == muscle_group.strip():
+                    exercises.append({
+                        'name': row.get('Exercise Name', ''),
+                        'desc': row.get('Description', 'Описание отсутствует'),
+                        'image': row.get('Image_URL', '')  # Ссылка на картинку
+                    })
+            
+            # Сортируем по имени
+            return sorted(exercises, key=lambda x: x['name'])
         except Exception as e:
-            logger.error(f"Ошибка получения упражнений для группы {muscle_group}: {e}")
+            logger.error(f"Ошибка чтения упражнений: {e}")
             return []
     
     def get_exercise_photo_id(self, exercise_name: str) -> Optional[str]:
