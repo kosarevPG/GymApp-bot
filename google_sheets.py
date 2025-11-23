@@ -251,9 +251,14 @@ class GoogleSheetsManager:
                 record_exercise = record.get("Exercise", "").strip()
                 if record_exercise == exercise_name.strip():
                     # Безопасное преобразование Weight
-                    weight_value = record.get("Weight", "") or ""
+                    weight_value = record.get("Weight", None)
                     weight = 0
-                    if weight_value:
+                    
+                    # Логируем первые несколько записей для отладки
+                    if len(exercise_records) < 2:
+                        logger.info(f"DEBUG get_last_workout: Raw record для '{exercise_name}': Weight={repr(weight_value)} (type: {type(weight_value)}), Reps={repr(record.get('Reps'))}, Date={record.get('Date')}")
+                    
+                    if weight_value is not None and weight_value != "":
                         try:
                             if isinstance(weight_value, (int, float)):
                                 weight = float(weight_value)
@@ -261,13 +266,19 @@ class GoogleSheetsManager:
                                 weight_str = weight_value.replace(",", ".").strip()
                                 if weight_str:
                                     weight = float(weight_str)
-                        except (ValueError, TypeError):
+                            else:
+                                # Пытаемся преобразовать в строку и затем в число
+                                weight_str = str(weight_value).replace(",", ".").strip()
+                                if weight_str:
+                                    weight = float(weight_str)
+                        except (ValueError, TypeError) as e:
+                            logger.warning(f"Ошибка преобразования веса '{weight_value}': {e}")
                             weight = 0
                     
                     # Безопасное преобразование Reps
-                    reps_value = record.get("Reps", "") or ""
+                    reps_value = record.get("Reps", None)
                     reps = 0
-                    if reps_value:
+                    if reps_value is not None and reps_value != "":
                         try:
                             if isinstance(reps_value, (int, float)):
                                 reps = int(reps_value)
@@ -275,13 +286,17 @@ class GoogleSheetsManager:
                                 reps_str = reps_value.strip()
                                 if reps_str:
                                     reps = int(float(reps_str))
+                            else:
+                                reps_str = str(reps_value).strip()
+                                if reps_str:
+                                    reps = int(float(reps_str))
                         except (ValueError, TypeError):
                             reps = 0
                     
                     # Безопасное преобразование Rest (может быть текст или число)
-                    rest_value = record.get("Rest", "") or ""
+                    rest_value = record.get("Rest", None)
                     rest_seconds = 0
-                    if rest_value:
+                    if rest_value is not None and rest_value != "":
                         try:
                             # Пытаемся преобразовать в число
                             if isinstance(rest_value, (int, float)):
@@ -356,9 +371,14 @@ class GoogleSheetsManager:
                 record_exercise = record.get("Exercise", "").strip()
                 if record_exercise == exercise_name.strip():
                     # Безопасное преобразование Weight
-                    weight_value = record.get("Weight", "") or ""
+                    weight_value = record.get("Weight", None)
                     weight = 0
-                    if weight_value:
+                    
+                    # Логируем первые несколько записей для отладки
+                    if len(exercise_records) < 2:
+                        logger.info(f"DEBUG get_exercise_history: Raw record для '{exercise_name}': Weight={repr(weight_value)} (type: {type(weight_value)}), Reps={repr(record.get('Reps'))}, Date={record.get('Date')}")
+                    
+                    if weight_value is not None and weight_value != "":
                         try:
                             if isinstance(weight_value, (int, float)):
                                 weight = float(weight_value)
@@ -366,13 +386,20 @@ class GoogleSheetsManager:
                                 weight_str = weight_value.replace(",", ".").strip()
                                 if weight_str:
                                     weight = float(weight_str)
-                        except (ValueError, TypeError):
+                            else:
+                                # Пытаемся преобразовать в строку и затем в число
+                                weight_str = str(weight_value).replace(",", ".").strip()
+                                if weight_str:
+                                    weight = float(weight_str)
+                        except (ValueError, TypeError) as e:
+                            if len(exercise_records) < 3:
+                                logger.warning(f"Ошибка преобразования веса '{weight_value}': {e}")
                             weight = 0
                     
                     # Безопасное преобразование Reps
-                    reps_value = record.get("Reps", "") or ""
+                    reps_value = record.get("Reps", None)
                     reps = 0
-                    if reps_value:
+                    if reps_value is not None and reps_value != "":
                         try:
                             if isinstance(reps_value, (int, float)):
                                 reps = int(reps_value)
@@ -380,13 +407,17 @@ class GoogleSheetsManager:
                                 reps_str = reps_value.strip()
                                 if reps_str:
                                     reps = int(float(reps_str))
+                            else:
+                                reps_str = str(reps_value).strip()
+                                if reps_str:
+                                    reps = int(float(reps_str))
                         except (ValueError, TypeError):
                             reps = 0
                     
                     # Безопасное преобразование Rest (может быть текст или число)
-                    rest_value = record.get("Rest", "") or ""
+                    rest_value = record.get("Rest", None)
                     rest_seconds = 0
-                    if rest_value:
+                    if rest_value is not None and rest_value != "":
                         try:
                             # Пытаемся преобразовать в число
                             if isinstance(rest_value, (int, float)):
@@ -412,7 +443,9 @@ class GoogleSheetsManager:
             exercise_records.sort(key=lambda x: x["date"], reverse=True)
             logger.info(f"Найдено {len(exercise_records)} записей для упражнения '{exercise_name}' (возвращаем {min(limit, len(exercise_records))})")
             if exercise_records:
-                logger.info(f"Пример данных истории: weight={exercise_records[0].get('weight')}, reps={exercise_records[0].get('reps')}")
+                # Логируем первые 3 записи для отладки
+                for i, rec in enumerate(exercise_records[:3]):
+                    logger.info(f"Запись {i+1}: date={rec.get('date')}, weight={rec.get('weight')}, reps={rec.get('reps')}, rest={rec.get('rest')}")
             return exercise_records[:limit]
             
         except Exception as e:
