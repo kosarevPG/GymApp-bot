@@ -255,7 +255,33 @@ class GoogleSheetsManager:
             
             # Сортировка по дате (последние сначала)
             try:
-                ex_logs.sort(key=lambda x: datetime.strptime(str(x.get('Date', '')), "%d.%m.%Y %H:%M"), reverse=True)
+                # Пробуем разные форматы даты
+                def parse_date(date_str):
+                    date_str = str(date_str).strip()
+                    # Формат: "23.11.2025.11.23, 15:54" или "23.11.2025 15:54" или "2025-11-21"
+                    try:
+                        # Пробуем новый формат: "23.11.2025.11.23, 15:54"
+                        if ',' in date_str:
+                            date_part = date_str.split(',')[0].strip()
+                            # Берем первую часть до точки (если есть формат с точками)
+                            if '.' in date_part:
+                                parts = date_part.split('.')
+                                if len(parts) >= 3:
+                                    # Берем первые 3 части (день, месяц, год)
+                                    return datetime.strptime(f"{parts[0]}.{parts[1]}.{parts[2]}", "%d.%m.%Y")
+                        # Пробуем стандартный формат: "23.11.2025 15:54"
+                        if ' ' in date_str:
+                            date_part = date_str.split(' ')[0]
+                            return datetime.strptime(date_part, "%d.%m.%Y")
+                        # Пробуем формат ISO: "2025-11-21"
+                        if '-' in date_str:
+                            return datetime.strptime(date_str.split(' ')[0], "%Y-%m-%d")
+                    except:
+                        pass
+                    # Если ничего не подошло, возвращаем минимальную дату
+                    return datetime.min
+                
+                ex_logs.sort(key=lambda x: parse_date(x.get('Date', '')), reverse=True)
             except Exception as e:
                 # Если дата кривая, берем просто последние записи
                 logger.warning(f"Ошибка сортировки по дате: {e}, используем обратный порядок")
@@ -265,14 +291,37 @@ class GoogleSheetsManager:
             if not ex_logs:
                 return []
             
-            last_date = str(ex_logs[0].get('Date', '')).split(' ')[0]
-            last_set_group_id = str(ex_logs[0].get('Set_Group_ID', '')).strip() or ""
+            # Получаем дату и set_group_id последней записи
+            last_record = ex_logs[0]
+            last_date_str = str(last_record.get('Date', '')).strip()
+            # Извлекаем дату (до запятой или пробела)
+            if ',' in last_date_str:
+                last_date = last_date_str.split(',')[0].strip()
+            elif ' ' in last_date_str:
+                last_date = last_date_str.split(' ')[0].strip()
+            else:
+                last_date = last_date_str
+            
+            last_set_group_id = str(last_record.get('Set_Group_ID', '')).strip() or ""
+            
+            logger.info(f"DEBUG: Последняя тренировка для '{exercise_name}': дата={last_date}, set_group_id={last_set_group_id}, всего записей={len(ex_logs)}")
             
             history = []
             for item in ex_logs:
                 # Проверяем дату и set_group_id
-                current_date = str(item.get('Date', '')).split(' ')[0]
+                current_date_str = str(item.get('Date', '')).strip()
+                if ',' in current_date_str:
+                    current_date = current_date_str.split(',')[0].strip()
+                elif ' ' in current_date_str:
+                    current_date = current_date_str.split(' ')[0].strip()
+                else:
+                    current_date = current_date_str
+                
                 current_set_group_id = str(item.get('Set_Group_ID', '')).strip() or ""
+                
+                # Логируем первые несколько записей для отладки
+                if len(history) < 3:
+                    logger.debug(f"Проверка записи: current_date={current_date}, last_date={last_date}, current_set_group_id={current_set_group_id}, last_set_group_id={last_set_group_id}")
                 
                 if current_date == last_date and current_set_group_id == last_set_group_id:
                     # === БЛОК ИСПРАВЛЕНИЯ ВЕСА ===
