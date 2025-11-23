@@ -448,6 +448,121 @@ async def health_check(request):
     return web.Response(text="OK")
 
 
+async def handle_webapp_post(request):
+    """Обработка HTTP POST запросов от WebApp (альтернатива tg.sendData)."""
+    # 1. Формируем заголовки CORS вручную (чтобы наверняка)
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, X-Telegram-Init-Data",
+    }
+    
+    # 2. Обработка Preflight запроса (когда браузер "спрашивает разрешение")
+    if request.method == "OPTIONS":
+        return web.Response(text="OK", headers=headers)
+    
+    try:
+        import json
+        
+        # Получаем данные из запроса
+        data = await request.json()
+        logger.info("=" * 50)
+        logger.info("📨 ПОЛУЧЕН HTTP POST ОТ WEBAPP!")
+        logger.info(f"Данные: {json.dumps(data, ensure_ascii=False)}")
+        logger.info("=" * 50)
+        
+        # Проверяем формат данных
+        if data.get("type") != "workout_data":
+            logger.warning(f"Неверный тип данных: {data.get('type')}")
+            return web.json_response(
+                {"status": "error", "message": "Неверный формат данных"},
+                status=400,
+                headers=headers
+            )
+        
+        payload = data.get("payload", [])
+        if not payload:
+            logger.warning("Пустой payload")
+            return web.json_response(
+                {"status": "error", "message": "Нет данных для сохранения"},
+                status=400,
+                headers=headers
+            )
+        
+        # Получаем user_id из заголовков или данных
+        # Telegram WebApp передает initData, но для простоты берем из данных
+        user_id = data.get("user_id")
+        if not user_id:
+            # Пытаемся получить из initData или заголовков
+            init_data = request.headers.get("X-Telegram-Init-Data", "")
+            logger.info(f"Init data from headers: {init_data[:50] if init_data else 'None'}...")
+            # Пока используем None, если нет user_id
+            logger.warning("user_id не найден в данных")
+        
+        logger.info(f"Payload: {payload}")
+        logger.info(f"User ID: {user_id}")
+        
+        # Генерируем UUID для группировки суперсетов
+        set_group_id = str(uuid.uuid4())
+        
+        # Сохраняем в Google Sheets
+        logger.info("Сохранение данных в Google Sheets...")
+        logger.info(f"Payload для сохранения: {payload}")
+        logger.info(f"Set group ID: {set_group_id}")
+        success = sheets_manager.save_workout_log(payload, set_group_id)
+        logger.info(f"Результат сохранения: success={success}")
+        
+        if success:
+            exercise_count = len(payload)
+            
+            # Если есть user_id, отправляем сообщение в Telegram
+            if user_id:
+                try:
+                    response_text = (
+                        f"✅ Записано {exercise_count} упражнение(й)!\n"
+                        f"📊 Подходов: {len(payload)}"
+                    )
+                    await bot.send_message(
+                        chat_id=user_id,
+                        text=response_text
+                    )
+                    logger.info(f"Сообщение отправлено пользователю {user_id}")
+                except Exception as e:
+                    logger.error(f"Ошибка отправки сообщения пользователю {user_id}: {e}")
+            
+            # ВАЖНО: Добавляем headers в успешный ответ
+            return web.json_response({
+                "status": "success",
+                "message": f"Записано {exercise_count} упражнение(й)!",
+                "sets_count": len(payload)
+            }, headers=headers)
+        else:
+            logger.error("Ошибка при сохранении в Google Sheets")
+            # ВАЖНО: Добавляем headers даже в ответ с ошибкой
+            return web.json_response(
+                {"status": "error", "message": "Ошибка при сохранении данных"},
+                status=500,
+                headers=headers
+            )
+            
+    except json.JSONDecodeError as e:
+        logger.error(f"Ошибка парсинга JSON: {e}")
+        # ВАЖНО: Добавляем headers даже в ответ с ошибкой
+        return web.json_response(
+            {"status": "error", "message": "Ошибка парсинга данных"},
+            status=400,
+            headers=headers
+        )
+    except Exception as e:
+        logger.error(f"Ошибка обработки HTTP POST от WebApp: {e}", exc_info=True)
+        # ВАЖНО: Добавляем headers даже в ответ с ошибкой
+        return web.json_response(
+            {"status": "error", "message": "Произошла ошибка при сохранении"},
+            status=500,
+            headers=headers
+        )
+
+
 async def on_startup(bot: Bot):
     """Выполняется при запуске бота."""
     if USE_WEBHOOK and WEBHOOK_URL:
@@ -479,6 +594,11 @@ async def main():
         app.router.add_get("/", health_check)
         app.router.add_get("/health", health_check)
         
+        # Просто добавляем маршруты (без cors.add)
+        # Регистрируем POST и OPTIONS для одного пути
+        app.router.add_post("/api/webapp-data", handle_webapp_post)
+        app.router.add_options("/api/webapp-data", handle_webapp_post)  # Нужно для CORS
+        
         # Настраиваем webhook handler
         webhook_requests_handler = SimpleRequestHandler(
             dispatcher=dp,
@@ -505,13 +625,22 @@ async def main():
         # Это нужно, чтобы Render не убивал процесс на бесплатном тарифе
         async def keep_alive_server():
             app = web.Application()
+            
+            # Просто добавляем маршруты (без cors.add)
+            # Добавляем health check endpoints
             app.router.add_get("/", health_check)
             app.router.add_get("/health", health_check)
+            
+            # Регистрируем POST и OPTIONS для одного пути
+            app.router.add_post("/api/webapp-data", handle_webapp_post)
+            app.router.add_options("/api/webapp-data", handle_webapp_post)  # Нужно для CORS
+            
             runner = web.AppRunner(app)
             await runner.setup()
             site = web.TCPSite(runner, "0.0.0.0", PORT)
             await site.start()
             logger.info(f"Keep-alive сервер запущен на порту {PORT}")
+            logger.info(f"Endpoint для WebApp: http://0.0.0.0:{PORT}/api/webapp-data")
         
         # Запускаем keep-alive сервер в фоне
         keep_alive_task = asyncio.create_task(keep_alive_server())
