@@ -232,18 +232,39 @@ class GoogleSheetsManager:
 
     def get_exercise_history(self, exercise_name: str, limit: int = 20) -> List[Dict]:
         try:
-            records = self._get_log_records(exercise_name)
-            # Сортировка: сначала дата (свежие сверху), потом Order
-            records.sort(key=lambda x: (x['date_obj'], x['set_group_id'], x['order']), reverse=True)
+            records = self._get_log_records()  # Загружаем всё без фильтра
+            if not records: 
+                return []
+
+            # 1. Находим ID групп, в которых участвовало целевое упражнение
+            # Сортируем записи от новых к старым, чтобы взять последние N тренировок
+            records.sort(key=lambda x: x['date_obj'], reverse=True)
             
-            # Возвращаем упрощенную структуру
+            target_group_ids = []
+            seen_groups = set()
+            
+            for r in records:
+                if r['exercise'] == exercise_name and r['set_group_id'] not in seen_groups:
+                    target_group_ids.append(r['set_group_id'])
+                    seen_groups.add(r['set_group_id'])
+                    if len(target_group_ids) >= limit:
+                        break
+            
+            # 2. Теперь собираем ВСЕ упражнения, которые входят в эти группы
+            # (то есть само упражнение + его соседей по суперсету)
+            history = [r for r in records if r['set_group_id'] in seen_groups]
+            
+            # Сортировка: Сначала дата, потом ID группы, потом порядок выполнения
+            history.sort(key=lambda x: (x['date_obj'], x['set_group_id'], x['order']), reverse=True)
+            
             return [{
                 "date": r["date"],
+                "exercise": r["exercise"],  # Важно: теперь передаем имя упражнения
                 "weight": r["weight"],
                 "reps": r["reps"],
                 "rest": r["rest"],
                 "set_group_id": r["set_group_id"]
-            } for r in records[:limit]]
+            } for r in history]
             
         except Exception as e:
             logger.error(f"Get history error: {e}")
