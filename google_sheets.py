@@ -246,27 +246,45 @@ class GoogleSheetsManager:
             all_records = self.log_sheet.get_all_records()
             
             # Фильтруем по названию упражнения
-            exercise_records = [
-                {
-                    "date": record.get("Date", ""),
-                    "weight": float(record.get("Weight", 0) or 0),
-                    "reps": int(record.get("Reps", 0) or 0),
-                    "rest": int(record.get("Rest", 0) or 0),
-                    "set_group_id": record.get("Set_Group_ID", "")
-                }
-                for record in all_records
-                if record.get("Exercise", "").strip() == exercise_name.strip()
-            ]
+            exercise_records = []
+            for record in all_records:
+                record_exercise = record.get("Exercise", "").strip()
+                if record_exercise == exercise_name.strip():
+                    # Безопасное преобразование Rest (может быть текст или число)
+                    rest_value = record.get("Rest", "") or ""
+                    rest_seconds = 0
+                    if rest_value:
+                        try:
+                            # Пытаемся преобразовать в число
+                            if isinstance(rest_value, (int, float)):
+                                rest_seconds = int(rest_value)
+                            elif isinstance(rest_value, str):
+                                # Если это текст типа "1,5 мин", пропускаем
+                                # Или пытаемся извлечь число
+                                rest_str = rest_value.replace(",", ".").replace("мин", "").replace("сек", "").strip()
+                                if rest_str:
+                                    rest_seconds = int(float(rest_str) * 60) if "мин" in rest_value.lower() else int(float(rest_str))
+                        except (ValueError, TypeError):
+                            rest_seconds = 0
+                    
+                    exercise_records.append({
+                        "date": record.get("Date", ""),
+                        "weight": float(record.get("Weight", 0) or 0),
+                        "reps": int(record.get("Reps", 0) or 0),
+                        "rest": rest_seconds,
+                        "set_group_id": record.get("Set_Group_ID", "") or ""
+                    })
             
             if not exercise_records:
+                logger.warning(f"Не найдено записей для упражнения: {exercise_name}")
                 return []
             
             # Сортируем по дате (последние сначала)
             exercise_records.sort(key=lambda x: x["date"], reverse=True)
             
-            # Берем последнюю тренировку (все подходы с одинаковым set_group_id)
+            # Берем последнюю тренировку (все подходы с одинаковым set_group_id и датой)
             last_date = exercise_records[0]["date"]
-            last_set_group_id = exercise_records[0]["set_group_id"]
+            last_set_group_id = exercise_records[0]["set_group_id"] or ""
             
             # Находим все подходы последней тренировки
             last_workout = [
@@ -276,9 +294,10 @@ class GoogleSheetsManager:
                     "rest": record["rest"]
                 }
                 for record in exercise_records
-                if record["date"] == last_date and record["set_group_id"] == last_set_group_id
+                if record["date"] == last_date and (record["set_group_id"] or "") == last_set_group_id
             ]
             
+            logger.info(f"Найдено {len(last_workout)} подходов для последней тренировки '{exercise_name}' (дата: {last_date})")
             return last_workout
             
         except Exception as e:
@@ -302,20 +321,38 @@ class GoogleSheetsManager:
             all_records = self.log_sheet.get_all_records()
             
             # Фильтруем по названию упражнения
-            exercise_records = [
-                {
-                    "date": record.get("Date", ""),
-                    "weight": float(record.get("Weight", 0) or 0),
-                    "reps": int(record.get("Reps", 0) or 0),
-                    "rest": int(record.get("Rest", 0) or 0),
-                    "set_group_id": record.get("Set_Group_ID", "")
-                }
-                for record in all_records
-                if record.get("Exercise", "").strip() == exercise_name.strip()
-            ]
+            exercise_records = []
+            for record in all_records:
+                record_exercise = record.get("Exercise", "").strip()
+                if record_exercise == exercise_name.strip():
+                    # Безопасное преобразование Rest (может быть текст или число)
+                    rest_value = record.get("Rest", "") or ""
+                    rest_seconds = 0
+                    if rest_value:
+                        try:
+                            # Пытаемся преобразовать в число
+                            if isinstance(rest_value, (int, float)):
+                                rest_seconds = int(rest_value)
+                            elif isinstance(rest_value, str):
+                                # Если это текст типа "1,5 мин", пропускаем
+                                # Или пытаемся извлечь число
+                                rest_str = rest_value.replace(",", ".").replace("мин", "").replace("сек", "").strip()
+                                if rest_str:
+                                    rest_seconds = int(float(rest_str) * 60) if "мин" in rest_value.lower() else int(float(rest_str))
+                        except (ValueError, TypeError):
+                            rest_seconds = 0
+                    
+                    exercise_records.append({
+                        "date": record.get("Date", ""),
+                        "weight": float(record.get("Weight", 0) or 0),
+                        "reps": int(record.get("Reps", 0) or 0),
+                        "rest": rest_seconds,
+                        "set_group_id": record.get("Set_Group_ID", "") or ""
+                    })
             
             # Сортируем по дате (последние сначала) и ограничиваем
             exercise_records.sort(key=lambda x: x["date"], reverse=True)
+            logger.info(f"Найдено {len(exercise_records)} записей для упражнения '{exercise_name}' (возвращаем {min(limit, len(exercise_records))})")
             return exercise_records[:limit]
             
         except Exception as e:

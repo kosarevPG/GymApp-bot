@@ -574,14 +574,18 @@ async def api_history(request):
         
         mode = request.query.get("mode", "full")  # "last" или "full"
         
+        logger.info(f"Запрос истории для упражнения: '{exercise_name}', mode: {mode}")
+        
         if mode == "last":
             # Возвращаем только последнюю тренировку (для автозаполнения)
             last_workout = sheets_manager.get_last_workout(exercise_name)
+            logger.info(f"Результат get_last_workout для '{exercise_name}': {len(last_workout)} подходов")
             return web.json_response({"sets": last_workout}, headers=headers)
         else:
             # Возвращаем полную историю
             limit = int(request.query.get("limit", "20"))
             history = sheets_manager.get_exercise_history(exercise_name, limit)
+            logger.info(f"Результат get_exercise_history для '{exercise_name}': {len(history)} записей")
             return web.json_response({"history": history}, headers=headers)
     except Exception as e:
         logger.error(f"Ошибка получения истории упражнения: {e}", exc_info=True)
