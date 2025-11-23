@@ -242,8 +242,9 @@ async def api_history(request):
         mode = request.query.get("mode", "full")
         
         if mode == "last":
-            data = sheets_manager.get_last_workout(ex_name)
-            return json_response({"sets": data})
+            result = sheets_manager.get_last_workout(ex_name)
+            # result теперь: {'sets': [...], 'note': '...'}
+            return json_response(result)
         else:
             limit = int(request.query.get("limit", "20"))
             data = sheets_manager.get_exercise_history(ex_name, limit)
@@ -268,7 +269,8 @@ async def api_save_set(request):
                 "weight": float(data.get("weight", 0)),
                 "reps": int(data.get("reps", 0)),
                 "rest": data.get("rest", 0),
-                "order": int(data.get("order", 1))  # Читаем порядок выполнения
+                "order": int(data.get("order", 1)),  # Читаем порядок выполнения
+                "note": data.get("note", "")  # Читаем заметку
             }]
             user_id = data.get("user_id")
 

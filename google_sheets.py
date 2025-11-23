@@ -143,7 +143,8 @@ class GoogleSheetsManager:
                 "reps": DataParser.to_int(get_val("Reps")),
                 "rest": DataParser.parse_rest_to_minutes(get_val("Rest")),
                 "order": DataParser.to_int(get_val("Order")),
-                "set_group_id": get_val("Set_Group_ID")
+                "set_group_id": get_val("Set_Group_ID"),
+                "note": get_val("Note")  # Заметка
             })
         return results
 
@@ -187,6 +188,9 @@ class GoogleSheetsManager:
                 if not order_val:
                     order_val = idx
                 
+                # Получаем заметку
+                note = item.get("note", "")
+                
                 rows.append([
                     timestamp,
                     order_val,  # Используем полученный или рассчитанный Order
@@ -194,28 +198,32 @@ class GoogleSheetsManager:
                     item["weight"],
                     item["reps"],
                     rest_mins,
-                    set_group_id
+                    set_group_id,
+                    note  # Записываем заметку в 8-ю колонку
                 ])
             
             self.log_sheet.append_rows(rows)
-            logger.info(f"Saved {len(rows)} workout records")
+            logger.info(f"Saved {len(rows)} records with notes")
             return True
         except Exception as e:
             logger.error(f"Save log error: {e}")
             return False
 
-    def get_last_workout(self, exercise_name: str) -> List[Dict]:
-        """Возвращает сеты последней тренировки."""
+    def get_last_workout(self, exercise_name: str) -> Dict:
+        """Возвращает сеты и заметку с последней тренировки."""
         try:
             records = self._get_log_records(exercise_name)
             if not records: 
-                return []
+                return {'sets': [], 'note': ''}  # Пустая заметка
 
-            # Сортируем по дате убывания
+            # Сортируем: свежие сверху
             records.sort(key=lambda x: x['date_obj'], reverse=True)
             
             last_date = records[0]['date_obj']
             last_group = records[0]['set_group_id']
+            
+            # Берем заметку из первой попавшейся записи этой сессии
+            last_note = records[0].get('note', '')
             
             # Фильтруем только последнюю сессию
             last_session = [
@@ -226,15 +234,17 @@ class GoogleSheetsManager:
             # Сортируем по Order
             last_session.sort(key=lambda x: x['order'])
             
-            return [{
+            sets = [{
                 'weight': r['weight'],
                 'reps': r['reps'],
                 'rest': r['rest']
             } for r in last_session]
             
+            return {'sets': sets, 'note': last_note}
+            
         except Exception as e:
             logger.error(f"Get last workout error: {e}")
-            return []
+            return {'sets': [], 'note': ''}
 
     def get_exercise_history(self, exercise_name: str, limit: int = 20) -> List[Dict]:
         try:
