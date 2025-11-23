@@ -233,6 +233,7 @@ class GoogleSheetsManager:
     def get_last_workout(self, exercise_name: str) -> List[Dict]:
         """
         Получить последнюю тренировку по упражнению (для автозаполнения).
+        Исправлена проблема с запятыми и пустыми ячейками (None) для русской локализации Google Sheets.
         
         Args:
             exercise_name: Название упражнения
@@ -243,107 +244,105 @@ class GoogleSheetsManager:
         """
         try:
             # Получаем все записи из LOG
-            all_records = self.log_sheet.get_all_records()
+            all_logs = self.log_sheet.get_all_records()
             
-            # Фильтруем по названию упражнения
-            exercise_records = []
-            for record in all_records:
-                record_exercise = record.get("Exercise", "").strip()
-                if record_exercise == exercise_name.strip():
-                    # Безопасное преобразование Weight
-                    weight_value = record.get("Weight", None)
-                    weight = 0
-                    
-                    # Логируем первые несколько записей для отладки
-                    if len(exercise_records) < 2:
-                        logger.info(f"DEBUG get_last_workout: Raw record для '{exercise_name}': Weight={repr(weight_value)} (type: {type(weight_value)}), Reps={repr(record.get('Reps'))}, Date={record.get('Date')}")
-                    
-                    if weight_value is not None and weight_value != "":
-                        try:
-                            if isinstance(weight_value, (int, float)):
-                                weight = float(weight_value)
-                            elif isinstance(weight_value, str):
-                                weight_str = weight_value.replace(",", ".").strip()
-                                if weight_str:
-                                    weight = float(weight_str)
-                            else:
-                                # Пытаемся преобразовать в строку и затем в число
-                                weight_str = str(weight_value).replace(",", ".").strip()
-                                if weight_str:
-                                    weight = float(weight_str)
-                        except (ValueError, TypeError) as e:
-                            logger.warning(f"Ошибка преобразования веса '{weight_value}': {e}")
-                            weight = 0
-                    
-                    # Безопасное преобразование Reps
-                    reps_value = record.get("Reps", None)
-                    reps = 0
-                    if reps_value is not None and reps_value != "":
-                        try:
-                            if isinstance(reps_value, (int, float)):
-                                reps = int(reps_value)
-                            elif isinstance(reps_value, str):
-                                reps_str = reps_value.strip()
-                                if reps_str:
-                                    reps = int(float(reps_str))
-                            else:
-                                reps_str = str(reps_value).strip()
-                                if reps_str:
-                                    reps = int(float(reps_str))
-                        except (ValueError, TypeError):
-                            reps = 0
-                    
-                    # Безопасное преобразование Rest (может быть текст или число)
-                    rest_value = record.get("Rest", None)
-                    rest_seconds = 0
-                    if rest_value is not None and rest_value != "":
-                        try:
-                            # Пытаемся преобразовать в число
-                            if isinstance(rest_value, (int, float)):
-                                rest_seconds = int(rest_value)
-                            elif isinstance(rest_value, str):
-                                # Если это текст типа "1,5 мин", пропускаем
-                                # Или пытаемся извлечь число
-                                rest_str = rest_value.replace(",", ".").replace("мин", "").replace("сек", "").strip()
-                                if rest_str:
-                                    rest_seconds = int(float(rest_str) * 60) if "мин" in rest_value.lower() else int(float(rest_str))
-                        except (ValueError, TypeError):
-                            rest_seconds = 0
-                    
-                    exercise_records.append({
-                        "date": record.get("Date", ""),
-                        "weight": weight,
-                        "reps": reps,
-                        "rest": rest_seconds,
-                        "set_group_id": record.get("Set_Group_ID", "") or ""
-                    })
+            # Фильтруем только это упражнение
+            ex_logs = [row for row in all_logs if str(row.get('Exercise', '')).strip() == exercise_name.strip()]
             
-            if not exercise_records:
+            if not ex_logs:
                 logger.warning(f"Не найдено записей для упражнения: {exercise_name}")
                 return []
             
-            # Сортируем по дате (последние сначала)
-            exercise_records.sort(key=lambda x: x["date"], reverse=True)
+            # Сортировка по дате (последние сначала)
+            try:
+                ex_logs.sort(key=lambda x: datetime.strptime(str(x.get('Date', '')), "%d.%m.%Y %H:%M"), reverse=True)
+            except Exception as e:
+                # Если дата кривая, берем просто последние записи
+                logger.warning(f"Ошибка сортировки по дате: {e}, используем обратный порядок")
+                ex_logs.reverse()
             
-            # Берем последнюю тренировку (все подходы с одинаковым set_group_id и датой)
-            last_date = exercise_records[0]["date"]
-            last_set_group_id = exercise_records[0]["set_group_id"] or ""
+            # Берем дату последнего подхода (если список не пуст)
+            if not ex_logs:
+                return []
             
-            # Находим все подходы последней тренировки
-            last_workout = [
-                {
-                    "weight": record["weight"],
-                    "reps": record["reps"],
-                    "rest": record["rest"]
-                }
-                for record in exercise_records
-                if record["date"] == last_date and (record["set_group_id"] or "") == last_set_group_id
-            ]
+            last_date = str(ex_logs[0].get('Date', '')).split(' ')[0]
+            last_set_group_id = str(ex_logs[0].get('Set_Group_ID', '')).strip() or ""
             
-            logger.info(f"Найдено {len(last_workout)} подходов для последней тренировки '{exercise_name}' (дата: {last_date})")
-            if last_workout:
-                logger.info(f"Пример данных последней тренировки: {last_workout[0]}")
-            return last_workout
+            history = []
+            for item in ex_logs:
+                # Проверяем дату и set_group_id
+                current_date = str(item.get('Date', '')).split(' ')[0]
+                current_set_group_id = str(item.get('Set_Group_ID', '')).strip() or ""
+                
+                if current_date == last_date and current_set_group_id == last_set_group_id:
+                    # === БЛОК ИСПРАВЛЕНИЯ ВЕСА ===
+                    raw_weight = item.get('Weight')
+                    weight = 0
+                    
+                    if raw_weight is not None:
+                        # Превращаем в строку, меняем запятую на точку
+                        weight_str = str(raw_weight).replace(',', '.').strip()
+                        if weight_str:  # Если строка не пустая
+                            try:
+                                weight = float(weight_str)
+                                # Если число целое (50.0), делаем красивым (50)
+                                if weight.is_integer():
+                                    weight = int(weight)
+                            except ValueError:
+                                weight = 0
+                    # ==============================
+                    
+                    # === БЛОК ИСПРАВЛЕНИЯ ПОВТОРОВ ===
+                    raw_reps = item.get('Reps')
+                    reps = 0
+                    
+                    if raw_reps is not None:
+                        reps_str = str(raw_reps).replace(',', '.').strip()
+                        if reps_str:
+                            try:
+                                reps = int(float(reps_str))
+                            except ValueError:
+                                reps = 0
+                    # =================================
+                    
+                    # === БЛОК ИСПРАВЛЕНИЯ ОТДЫХА ===
+                    raw_rest = item.get('Rest', 60)
+                    rest_seconds = 60  # По умолчанию
+                    
+                    if raw_rest is not None:
+                        rest_str = str(raw_rest).replace(',', '.').strip()
+                        if rest_str:
+                            try:
+                                # Если это текст типа "1,5 мин" или "90 сек"
+                                if "мин" in rest_str.lower():
+                                    rest_num = float(rest_str.replace("мин", "").replace("сек", "").strip())
+                                    rest_seconds = int(rest_num * 60)
+                                elif "сек" in rest_str.lower():
+                                    rest_num = float(rest_str.replace("сек", "").strip())
+                                    rest_seconds = int(rest_num)
+                                else:
+                                    # Просто число
+                                    rest_seconds = int(float(rest_str))
+                            except ValueError:
+                                rest_seconds = 60
+                    # ================================
+                    
+                    history.append({
+                        'weight': weight,
+                        'reps': reps,
+                        'rest': rest_seconds
+                    })
+                else:
+                    break
+            
+            # Возвращаем в правильном порядке (от первого подхода к последнему)
+            result = history[::-1]
+            
+            logger.info(f"Найдено {len(result)} подходов для последней тренировки '{exercise_name}' (дата: {last_date})")
+            if result:
+                logger.info(f"Пример данных последней тренировки: {result[0]}")
+            
+            return result
             
         except Exception as e:
             logger.error(f"Ошибка получения последней тренировки для {exercise_name}: {e}", exc_info=True)
@@ -362,81 +361,89 @@ class GoogleSheetsManager:
             [{"date": "...", "weight": 100, "reps": 5, "rest": 120, "set_group_id": "..."}, ...]
         """
         try:
-            # Получаем все записи из LOG
-            all_records = self.log_sheet.get_all_records()
+            # Получаем все значения напрямую для лучшего контроля
+            all_values = self.log_sheet.get_all_values()
+            if not all_values or len(all_values) <= 1:
+                logger.warning(f"Лист LOG пуст или содержит только заголовки")
+                return []
+            
+            # Получаем заголовки
+            headers = [h.strip() for h in all_values[0]]
+            try:
+                date_idx = headers.index("Date")
+                exercise_idx = headers.index("Exercise")
+                weight_idx = headers.index("Weight")
+                reps_idx = headers.index("Reps")
+                rest_idx = headers.index("Rest")
+                set_group_idx = headers.index("Set_Group_ID")
+            except ValueError as e:
+                logger.error(f"Не найдены необходимые колонки в LOG: {e}")
+                return []
             
             # Фильтруем по названию упражнения
             exercise_records = []
-            for record in all_records:
-                record_exercise = record.get("Exercise", "").strip()
+            for row in all_values[1:]:  # Пропускаем заголовок
+                if len(row) <= exercise_idx:
+                    continue
+                    
+                record_exercise = row[exercise_idx].strip() if row[exercise_idx] else ""
                 if record_exercise == exercise_name.strip():
-                    # Безопасное преобразование Weight
-                    weight_value = record.get("Weight", None)
-                    weight = 0
+                    # Получаем значения напрямую из строки
+                    date_val = row[date_idx].strip() if len(row) > date_idx and row[date_idx] else ""
+                    weight_val = row[weight_idx].strip() if len(row) > weight_idx and row[weight_idx] else ""
+                    reps_val = row[reps_idx].strip() if len(row) > reps_idx and row[reps_idx] else ""
+                    rest_val = row[rest_idx].strip() if len(row) > rest_idx and row[rest_idx] else ""
+                    set_group_val = row[set_group_idx].strip() if len(row) > set_group_idx and row[set_group_idx] else ""
                     
                     # Логируем первые несколько записей для отладки
-                    if len(exercise_records) < 2:
-                        logger.info(f"DEBUG get_exercise_history: Raw record для '{exercise_name}': Weight={repr(weight_value)} (type: {type(weight_value)}), Reps={repr(record.get('Reps'))}, Date={record.get('Date')}")
+                    if len(exercise_records) < 3:
+                        logger.info(f"DEBUG get_exercise_history: Raw row для '{exercise_name}': Weight={repr(weight_val)}, Reps={repr(reps_val)}, Date={repr(date_val)}")
                     
-                    if weight_value is not None and weight_value != "":
+                    # Преобразование веса
+                    weight = 0
+                    if weight_val:
                         try:
-                            if isinstance(weight_value, (int, float)):
-                                weight = float(weight_value)
-                            elif isinstance(weight_value, str):
-                                weight_str = weight_value.replace(",", ".").strip()
-                                if weight_str:
-                                    weight = float(weight_str)
-                            else:
-                                # Пытаемся преобразовать в строку и затем в число
-                                weight_str = str(weight_value).replace(",", ".").strip()
-                                if weight_str:
-                                    weight = float(weight_str)
+                            weight_str = weight_val.replace(",", ".").strip()
+                            if weight_str:
+                                weight = float(weight_str)
                         except (ValueError, TypeError) as e:
                             if len(exercise_records) < 3:
-                                logger.warning(f"Ошибка преобразования веса '{weight_value}': {e}")
-                            weight = 0
+                                logger.warning(f"Ошибка преобразования веса '{weight_val}': {e}")
                     
-                    # Безопасное преобразование Reps
-                    reps_value = record.get("Reps", None)
+                    # Преобразование повторов
                     reps = 0
-                    if reps_value is not None and reps_value != "":
+                    if reps_val:
                         try:
-                            if isinstance(reps_value, (int, float)):
-                                reps = int(reps_value)
-                            elif isinstance(reps_value, str):
-                                reps_str = reps_value.strip()
-                                if reps_str:
-                                    reps = int(float(reps_str))
-                            else:
-                                reps_str = str(reps_value).strip()
-                                if reps_str:
-                                    reps = int(float(reps_str))
+                            reps_str = reps_val.replace(",", ".").strip()
+                            if reps_str:
+                                reps = int(float(reps_str))
                         except (ValueError, TypeError):
                             reps = 0
                     
-                    # Безопасное преобразование Rest (может быть текст или число)
-                    rest_value = record.get("Rest", None)
+                    # Преобразование отдыха
                     rest_seconds = 0
-                    if rest_value is not None and rest_value != "":
+                    if rest_val:
                         try:
-                            # Пытаемся преобразовать в число
-                            if isinstance(rest_value, (int, float)):
-                                rest_seconds = int(rest_value)
-                            elif isinstance(rest_value, str):
-                                # Если это текст типа "1,5 мин", пропускаем
-                                # Или пытаемся извлечь число
-                                rest_str = rest_value.replace(",", ".").replace("мин", "").replace("сек", "").strip()
+                            if "мин" in rest_val.lower():
+                                rest_str = rest_val.replace(",", ".").replace("мин", "").replace("сек", "").strip()
                                 if rest_str:
-                                    rest_seconds = int(float(rest_str) * 60) if "мин" in rest_value.lower() else int(float(rest_str))
+                                    rest_seconds = int(float(rest_str) * 60)
+                            else:
+                                rest_str = rest_val.replace(",", ".").replace("сек", "").strip()
+                                if rest_str:
+                                    rest_seconds = int(float(rest_str))
                         except (ValueError, TypeError):
                             rest_seconds = 0
                     
+                    if len(exercise_records) < 3:
+                        logger.info(f"DEBUG: После преобразования weight={weight}, reps={reps}, rest={rest_seconds}")
+                    
                     exercise_records.append({
-                        "date": record.get("Date", ""),
+                        "date": date_val,
                         "weight": weight,
                         "reps": reps,
                         "rest": rest_seconds,
-                        "set_group_id": record.get("Set_Group_ID", "") or ""
+                        "set_group_id": set_group_val
                     })
             
             # Сортируем по дате (последние сначала) и ограничиваем
