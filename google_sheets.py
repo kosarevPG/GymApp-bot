@@ -196,9 +196,11 @@ class GoogleSheetsManager:
             timestamp = f"{now.strftime('%Y.%m.%d')}, {now.strftime('%H:%M')}"
             rows_to_add = []
             
-            for workout in workout_data:
+            # Добавляем Order (порядковый номер подхода внутри одной тренировки)
+            for index, workout in enumerate(workout_data, start=1):
                 row = [
                     timestamp,
+                    index,  # Order - порядковый номер подхода
                     workout["exercise"],
                     workout["weight"],
                     workout["reps"],
@@ -327,6 +329,13 @@ class GoogleSheetsManager:
                     logger.debug(f"Проверка записи: current_date={current_date}, last_date={last_date}, current_set_group_id={current_set_group_id}, last_set_group_id={last_set_group_id}")
                 
                 if current_date == last_date and current_set_group_id == last_set_group_id:
+                    # Получаем Order для сортировки
+                    order = item.get('Order', 0)
+                    try:
+                        order = int(order) if order else 0
+                    except (ValueError, TypeError):
+                        order = 0
+                    
                     # === БЛОК ИСПРАВЛЕНИЯ ВЕСА ===
                     raw_weight = item.get('Weight')
                     weight = 0
@@ -382,13 +391,17 @@ class GoogleSheetsManager:
                     history.append({
                         'weight': weight,
                         'reps': reps,
-                        'rest': rest_seconds
+                        'rest': rest_seconds,
+                        'order': order
                     })
                 else:
                     break
             
-            # Возвращаем в правильном порядке (от первого подхода к последнему)
-            result = history[::-1]
+            # Сортируем по Order (от первого подхода к последнему)
+            history.sort(key=lambda x: x.get('order', 0))
+            
+            # Убираем order из результата (он нужен только для сортировки)
+            result = [{'weight': h['weight'], 'reps': h['reps'], 'rest': h['rest']} for h in history]
             
             logger.info(f"Найдено {len(result)} подходов для последней тренировки '{exercise_name}' (дата: {last_date})")
             if result:
@@ -423,6 +436,7 @@ class GoogleSheetsManager:
             headers = [h.strip() for h in all_values[0]]
             try:
                 date_idx = headers.index("Date")
+                order_idx = headers.index("Order") if "Order" in headers else None
                 exercise_idx = headers.index("Exercise")
                 weight_idx = headers.index("Weight")
                 reps_idx = headers.index("Reps")
@@ -442,10 +456,17 @@ class GoogleSheetsManager:
                 if record_exercise == exercise_name.strip():
                     # Получаем значения напрямую из строки
                     date_val = row[date_idx].strip() if len(row) > date_idx and row[date_idx] else ""
+                    order_val = row[order_idx].strip() if order_idx is not None and len(row) > order_idx and row[order_idx] else "0"
                     weight_val = row[weight_idx].strip() if len(row) > weight_idx and row[weight_idx] else ""
                     reps_val = row[reps_idx].strip() if len(row) > reps_idx and row[reps_idx] else ""
                     rest_val = row[rest_idx].strip() if len(row) > rest_idx and row[rest_idx] else ""
                     set_group_val = row[set_group_idx].strip() if len(row) > set_group_idx and row[set_group_idx] else ""
+                    
+                    # Преобразуем Order в число
+                    try:
+                        order = int(order_val) if order_val else 0
+                    except (ValueError, TypeError):
+                        order = 0
                     
                     # Логируем первые несколько записей для отладки
                     if len(exercise_records) < 3:
@@ -495,17 +516,63 @@ class GoogleSheetsManager:
                         "weight": weight,
                         "reps": reps,
                         "rest": rest_seconds,
-                        "set_group_id": set_group_val
+                        "set_group_id": set_group_val,
+                        "order": order
                     })
             
-            # Сортируем по дате (последние сначала) и ограничиваем
-            exercise_records.sort(key=lambda x: x["date"], reverse=True)
+            # Сортируем по дате (последние сначала), затем по Order внутри одной тренировки
+            # Группируем по дате и set_group_id, сортируем внутри группы по Order
+            def sort_key(x):
+                date_str = x["date"]
+                # Нормализуем дату для сортировки
+                if ',' in date_str:
+                    date_part = date_str.split(',')[0].strip()
+                elif ' ' in date_str:
+                    date_part = date_str.split(' ')[0].strip()
+                else:
+                    date_part = date_str
+                # Преобразуем в формат для сортировки (YYYY-MM-DD)
+                try:
+                    if '.' in date_part:
+                        parts = date_part.split('.')
+                        if len(parts) == 3:
+                            # Формат YYYY.MM.DD или DD.MM.YYYY
+                            if len(parts[0]) == 4:  # YYYY.MM.DD
+                                normalized_date = date_part.replace('.', '-')
+                            else:  # DD.MM.YYYY
+                                normalized_date = f"{parts[2]}-{parts[1]}-{parts[0]}"
+                        else:
+                            normalized_date = date_part
+                    else:
+                        normalized_date = date_part
+                except:
+                    normalized_date = date_part
+                # Возвращаем кортеж: (дата для обратной сортировки, set_group_id, -order для обратной сортировки внутри группы)
+                # Но на самом деле нам нужна обратная сортировка по дате, но прямая по Order
+                # Поэтому используем отрицание для даты (чтобы новые были первыми) и прямое значение для order
+                return (normalized_date, x.get("set_group_id", ""), -x.get("order", 0))
+            
+            # Сортируем: сначала по дате (обратно), затем по set_group_id, затем по order (обратно, чтобы после reverse получить прямой порядок)
+            exercise_records.sort(key=sort_key, reverse=True)
+            
+            # Теперь внутри каждой группы (дата + set_group_id) подходы отсортированы по Order (1, 2, 3...)
             logger.info(f"Найдено {len(exercise_records)} записей для упражнения '{exercise_name}' (возвращаем {min(limit, len(exercise_records))})")
             if exercise_records:
                 # Логируем первые 3 записи для отладки
                 for i, rec in enumerate(exercise_records[:3]):
                     logger.info(f"Запись {i+1}: date={rec.get('date')}, weight={rec.get('weight')}, reps={rec.get('reps')}, rest={rec.get('rest')}")
-            return exercise_records[:limit]
+            
+            # Убираем order из результата (он нужен только для сортировки)
+            result = []
+            for rec in exercise_records[:limit]:
+                result.append({
+                    "date": rec["date"],
+                    "weight": rec["weight"],
+                    "reps": rec["reps"],
+                    "rest": rec["rest"],
+                    "set_group_id": rec["set_group_id"]
+                })
+            return result
             
         except Exception as e:
             logger.error(f"Ошибка получения истории для упражнения {exercise_name}: {e}", exc_info=True)
