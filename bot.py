@@ -79,29 +79,20 @@ class AddExerciseStates(StatesGroup):
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
-    """Обработчик команды /start - показывает меню с группами мышц."""
+    """Обработчик команды /start - открывает WebApp."""
     try:
-        muscle_groups = sheets_manager.get_muscle_groups()
-        
-        if not muscle_groups:
-            await message.answer(
-                "📋 Справочник упражнений пуст.\n"
-                "Используйте /add_exercise для добавления упражнений."
+        # Создаем кнопку для открытия WebApp
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(
+                text="🏋️ Открыть приложение",
+                web_app=WebAppInfo(url=WEBAPP_URL)
             )
-            return
-        
-        # Создаем inline клавиатуру с группами мышц
-        builder = InlineKeyboardBuilder()
-        for group in muscle_groups:
-            builder.button(
-                text=group,
-                callback_data=f"group_{group}"
-            )
-        builder.adjust(2)  # По 2 кнопки в ряд
+        ]])
         
         await message.answer(
-            "🏋️ Выберите группу мышц:",
-            reply_markup=builder.as_markup()
+            "🏋️ <b>Gym Logger</b>\n\n"
+            "Нажмите кнопку ниже, чтобы открыть приложение для записи тренировок:",
+            reply_markup=keyboard
         )
     except Exception as e:
         logger.error(f"Ошибка в /start: {e}")
@@ -242,247 +233,7 @@ async def skip_photo(message: Message, state: FSMContext):
 
 
 # ==================== ОБРАБОТЧИКИ CALLBACK ====================
-
-@dp.callback_query(F.data.startswith("group_"))
-async def show_exercises(callback: CallbackQuery):
-    """Показать список упражнений выбранной группы мышц."""
-    muscle_group = callback.data.replace("group_", "")
-    
-    try:
-        exercises = sheets_manager.get_exercises_by_group(muscle_group)
-        
-        if not exercises:
-            await callback.answer("В этой группе пока нет упражнений", show_alert=True)
-            return
-        
-        builder = InlineKeyboardBuilder()
-        # Словарь для хранения соответствия между callback_data и названиями упражнений
-        # Используем атрибут функции для хранения (временное решение)
-        if not hasattr(show_exercises, '_exercise_map'):
-            show_exercises._exercise_map = {}
-        
-        for idx, ex in enumerate(exercises):
-            exercise_name = ex["name"]
-            # Кодируем название упражнения в base64
-            encoded_name = base64.b64encode(exercise_name.encode('utf-8')).decode('ascii')
-            
-            # Telegram ограничивает callback_data до 64 байт
-            # Префикс "ex_" = 3 символа, оставляем 60 для данных
-            if len(encoded_name) > 60:
-                # Если слишком длинное, используем индекс + muscle_group для уникальности
-                # Но проще использовать хеш
-                import hashlib
-                hash_name = hashlib.md5(exercise_name.encode('utf-8')).hexdigest()[:16]
-                callback_data = f"ex_{hash_name}"
-                show_exercises._exercise_map[callback_data] = exercise_name
-                logger.debug(f"Название упражнения слишком длинное, используем хеш: {exercise_name[:50]}...")
-            else:
-                callback_data = f"ex_{encoded_name}"
-                show_exercises._exercise_map[callback_data] = exercise_name
-            
-            builder.button(
-                text=ex["name"],
-                callback_data=callback_data
-            )
-        builder.adjust(1)  # По одной кнопке в ряд
-        
-        await callback.message.edit_text(
-            f"💪 {muscle_group}\n\nВыберите упражнение:",
-            reply_markup=builder.as_markup()
-        )
-        await callback.answer()
-    except Exception as e:
-        logger.error(f"Ошибка при показе упражнений: {e}", exc_info=True)
-        await callback.answer("Произошла ошибка", show_alert=True)
-
-
-@dp.callback_query(F.data.startswith("ex_") | F.data.startswith("exercise_"))
-async def handle_exercise_selection(callback: CallbackQuery):
-    """Обработка выбора упражнения - отправка фото и кнопки WebApp."""
-    callback_data = callback.data
-    
-    # Декодируем название упражнения из callback_data
-    try:
-        # Обработка старого формата "exercise_" для обратной совместимости
-        if callback_data.startswith("exercise_"):
-            exercise_name = callback_data.replace("exercise_", "")
-            logger.debug(f"Используется старый формат callback_data: {exercise_name}")
-        elif callback_data.startswith("ex_"):
-            # Сначала пытаемся найти в словаре (для хешей)
-            if hasattr(show_exercises, '_exercise_map') and callback_data in show_exercises._exercise_map:
-                exercise_name = show_exercises._exercise_map[callback_data]
-            else:
-                # Пытаемся декодировать из base64
-                encoded_name = callback_data.replace("ex_", "")
-                try:
-                    exercise_name = base64.b64decode(encoded_name.encode('ascii')).decode('utf-8')
-                except Exception as decode_error:
-                    # Если не получилось декодировать, используем как есть
-                    exercise_name = encoded_name
-                    logger.warning(f"Не удалось декодировать название упражнения из {callback_data}: {decode_error}")
-        else:
-            exercise_name = callback_data
-            logger.warning(f"Неизвестный формат callback_data: {callback_data}")
-    except Exception as e:
-        logger.error(f"Ошибка декодирования названия упражнения: {e}", exc_info=True)
-        await callback.answer("Ошибка обработки данных", show_alert=True)
-        return
-    
-    try:
-        # Получаем фото тренажера
-        photo_file_id = sheets_manager.get_exercise_photo_id(exercise_name)
-        
-        # Получаем последние результаты
-        last_weight, last_reps = sheets_manager.get_last_results(exercise_name)
-        
-        # Отправляем фото, если есть
-        if photo_file_id:
-            await callback.message.answer_photo(
-                photo_file_id,
-                caption=f"🏋️ {exercise_name}"
-            )
-        
-        # Формируем URL для WebApp с параметрами
-        webapp_url = f"{WEBAPP_URL}?ex={exercise_name}&w={last_weight}&r={last_reps}"
-        
-        # Логируем URL для отладки
-        logger.info(f"WebApp URL: {webapp_url}")
-        logger.info(f"WEBAPP_URL из env: {WEBAPP_URL}")
-        
-        # Создаем кнопку для открытия WebApp
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(
-                text="📝 Записать подход",
-                web_app=WebAppInfo(url=webapp_url)
-            )
-        ]])
-        
-        text = f"🏋️ {exercise_name}"
-        if last_weight > 0 or last_reps > 0:
-            text += f"\n\n📊 Прошлый раз: {last_weight}кг × {last_reps}"
-        
-        await callback.message.answer(text, reply_markup=keyboard)
-        await callback.answer()
-    except Exception as e:
-        logger.error(f"Ошибка при выборе упражнения: {e}")
-        await callback.answer("Произошла ошибка", show_alert=True)
-
-
-# ==================== ОБРАБОТКА ДАННЫХ ОТ WEBAPP ====================
-
-@dp.message(F.web_app_data)
-async def handle_webapp_data(message: Message):
-    """Обработка данных, полученных от WebApp."""
-    try:
-        import json
-        logger.info("=" * 50)
-        logger.info("ПОЛУЧЕНЫ ДАННЫЕ ОТ WEBAPP!")
-        logger.info(f"Пользователь: {message.from_user.id} (@{message.from_user.username})")
-        logger.info(f"Данные: {message.web_app_data.data}")
-        logger.info("=" * 50)
-        
-        data = json.loads(message.web_app_data.data)
-        
-        if data.get("type") != "workout_data":
-            logger.warning(f"Неверный тип данных: {data.get('type')}")
-            await message.answer("❌ Неверный формат данных")
-            return
-        
-        payload = data.get("payload", [])
-        if not payload:
-            logger.warning("Пустой payload")
-            await message.answer("❌ Нет данных для сохранения")
-            return
-        
-        logger.info(f"Payload: {payload}")
-        
-        # Генерируем UUID для группировки суперсетов
-        set_group_id = str(uuid.uuid4())
-        
-        # Сохраняем в Google Sheets
-        logger.info("Сохранение данных в Google Sheets...")
-        logger.info(f"Payload для сохранения: {payload}")
-        logger.info(f"Set group ID: {set_group_id}")
-        success = sheets_manager.save_workout_log(payload, set_group_id)
-        logger.info(f"Результат сохранения: success={success}")
-        
-        if success:
-            exercise_count = len(payload)
-            response_text = (
-                f"✅ Записано {exercise_count} упражнение(й)!\n"
-                f"📊 Подходов: {len(payload)}"
-            )
-            logger.info(f"Отправка сообщения пользователю {message.from_user.id}: {response_text}")
-            
-            # Отправляем сообщение
-            sent_message = await message.answer(response_text)
-            logger.info(f"Сообщение отправлено, message_id: {sent_message.message_id}")
-        else:
-            logger.error("Ошибка при сохранении в Google Sheets")
-            await message.answer("❌ Ошибка при сохранении данных")
-    except json.JSONDecodeError as e:
-        logger.error(f"Ошибка парсинга JSON: {e}")
-        await message.answer("❌ Ошибка парсинга данных")
-    except Exception as e:
-        logger.error(f"Ошибка обработки данных WebApp: {e}", exc_info=True)
-        await message.answer("❌ Произошла ошибка при сохранении")
-
-
-# ==================== ОТЛАДОЧНЫЙ ОБРАБОТЧИК ====================
-
-@dp.update.outer_middleware()
-async def log_all_updates(handler, event, data):
-    """Логирование всех обновлений для отладки."""
-    logger.info("=" * 60)
-    logger.info(f"ПОЛУЧЕНО ОБНОВЛЕНИЕ: {type(event)}")
-    logger.info(f"Update ID: {event.update_id if hasattr(event, 'update_id') else 'N/A'}")
-    
-    # Проверяем все возможные типы обновлений
-    msg = None
-    if hasattr(event, 'message') and event.message:
-        msg = event.message
-    elif hasattr(event, 'callback_query') and event.callback_query:
-        if hasattr(event.callback_query, 'message') and event.callback_query.message:
-            msg = event.callback_query.message
-    
-    if msg:
-        logger.info(f"Message type: {type(msg)}")
-        logger.info(f"From user: {msg.from_user.id if msg.from_user else 'N/A'}")
-        
-        # Детальная проверка web_app_data
-        has_web_app_data_attr = hasattr(msg, 'web_app_data')
-        web_app_data_value = getattr(msg, 'web_app_data', None)
-        logger.info(f"Has web_app_data attribute: {has_web_app_data_attr}")
-        logger.info(f"web_app_data value: {web_app_data_value}")
-        logger.info(f"web_app_data is not None: {web_app_data_value is not None}")
-        
-        if has_web_app_data_attr and web_app_data_value is not None:
-            logger.info(f"🎯🎯🎯 WEB_APP_DATA НАЙДЕН! 🎯🎯🎯")
-            logger.info(f"web_app_data type: {type(web_app_data_value)}")
-            logger.info(f"web_app_data.data: {web_app_data_value.data if hasattr(web_app_data_value, 'data') else 'N/A'}")
-        else:
-            logger.info("⚠️ web_app_data НЕ найден в сообщении")
-            
-        if hasattr(msg, 'text') and msg.text:
-            logger.info(f"Text: {msg.text}")
-    else:
-        logger.info("Message: None (это не сообщение, возможно callback_query или другой тип обновления)")
-        # Проверяем callback_query
-        if hasattr(event, 'callback_query') and event.callback_query:
-            logger.info(f"Callback query: {event.callback_query.data if hasattr(event.callback_query, 'data') else 'N/A'}")
-    
-    logger.info("=" * 60)
-    return await handler(event, data)
-
-@dp.message()
-async def debug_all_messages(message: Message):
-    """Отладочный обработчик всех сообщений."""
-    # Пропускаем web_app_data - они обрабатываются отдельно
-    if message.web_app_data:
-        logger.info(f"DEBUG: Получено сообщение с web_app_data от {message.from_user.id}")
-        return
-    
-    logger.info(f"DEBUG: Получено обычное сообщение: '{message.text}' от {message.from_user.id}")
+# Убраны обработчики для выбора групп мышц и упражнений - теперь все в WebApp
 
 
 # ==================== ЗАПУСК БОТА ====================
