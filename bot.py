@@ -294,6 +294,10 @@ async def handle_exercise_selection(callback: CallbackQuery):
         # Формируем URL для WebApp с параметрами
         webapp_url = f"{WEBAPP_URL}?ex={exercise_name}&w={last_weight}&r={last_reps}"
         
+        # Логируем URL для отладки
+        logger.info(f"WebApp URL: {webapp_url}")
+        logger.info(f"WEBAPP_URL из env: {WEBAPP_URL}")
+        
         # Создаем кнопку для открытия WebApp
         keyboard = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(
