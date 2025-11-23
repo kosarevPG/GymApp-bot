@@ -7,6 +7,7 @@ import asyncio
 import logging
 import os
 import uuid
+import base64
 from typing import Dict
 
 from aiohttp import web
@@ -255,10 +256,33 @@ async def show_exercises(callback: CallbackQuery):
             return
         
         builder = InlineKeyboardBuilder()
-        for ex in exercises:
+        # Словарь для хранения соответствия между callback_data и названиями упражнений
+        # Используем атрибут функции для хранения (временное решение)
+        if not hasattr(show_exercises, '_exercise_map'):
+            show_exercises._exercise_map = {}
+        
+        for idx, ex in enumerate(exercises):
+            exercise_name = ex["name"]
+            # Кодируем название упражнения в base64
+            encoded_name = base64.b64encode(exercise_name.encode('utf-8')).decode('ascii')
+            
+            # Telegram ограничивает callback_data до 64 байт
+            # Префикс "ex_" = 3 символа, оставляем 60 для данных
+            if len(encoded_name) > 60:
+                # Если слишком длинное, используем индекс + muscle_group для уникальности
+                # Но проще использовать хеш
+                import hashlib
+                hash_name = hashlib.md5(exercise_name.encode('utf-8')).hexdigest()[:16]
+                callback_data = f"ex_{hash_name}"
+                show_exercises._exercise_map[callback_data] = exercise_name
+                logger.debug(f"Название упражнения слишком длинное, используем хеш: {exercise_name[:50]}...")
+            else:
+                callback_data = f"ex_{encoded_name}"
+                show_exercises._exercise_map[callback_data] = exercise_name
+            
             builder.button(
                 text=ex["name"],
-                callback_data=f"exercise_{ex['name']}"
+                callback_data=callback_data
             )
         builder.adjust(1)  # По одной кнопке в ряд
         
@@ -268,14 +292,41 @@ async def show_exercises(callback: CallbackQuery):
         )
         await callback.answer()
     except Exception as e:
-        logger.error(f"Ошибка при показе упражнений: {e}")
+        logger.error(f"Ошибка при показе упражнений: {e}", exc_info=True)
         await callback.answer("Произошла ошибка", show_alert=True)
 
 
-@dp.callback_query(F.data.startswith("exercise_"))
+@dp.callback_query(F.data.startswith("ex_") | F.data.startswith("exercise_"))
 async def handle_exercise_selection(callback: CallbackQuery):
     """Обработка выбора упражнения - отправка фото и кнопки WebApp."""
-    exercise_name = callback.data.replace("exercise_", "")
+    callback_data = callback.data
+    
+    # Декодируем название упражнения из callback_data
+    try:
+        # Обработка старого формата "exercise_" для обратной совместимости
+        if callback_data.startswith("exercise_"):
+            exercise_name = callback_data.replace("exercise_", "")
+            logger.debug(f"Используется старый формат callback_data: {exercise_name}")
+        elif callback_data.startswith("ex_"):
+            # Сначала пытаемся найти в словаре (для хешей)
+            if hasattr(show_exercises, '_exercise_map') and callback_data in show_exercises._exercise_map:
+                exercise_name = show_exercises._exercise_map[callback_data]
+            else:
+                # Пытаемся декодировать из base64
+                encoded_name = callback_data.replace("ex_", "")
+                try:
+                    exercise_name = base64.b64decode(encoded_name.encode('ascii')).decode('utf-8')
+                except Exception as decode_error:
+                    # Если не получилось декодировать, используем как есть
+                    exercise_name = encoded_name
+                    logger.warning(f"Не удалось декодировать название упражнения из {callback_data}: {decode_error}")
+        else:
+            exercise_name = callback_data
+            logger.warning(f"Неизвестный формат callback_data: {callback_data}")
+    except Exception as e:
+        logger.error(f"Ошибка декодирования названия упражнения: {e}", exc_info=True)
+        await callback.answer("Ошибка обработки данных", show_alert=True)
+        return
     
     try:
         # Получаем фото тренажера
