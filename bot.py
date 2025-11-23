@@ -267,7 +267,8 @@ async def api_save_set(request):
                 "exercise": data.get("exercise"),
                 "weight": float(data.get("weight", 0)),
                 "reps": int(data.get("reps", 0)),
-                "rest": data.get("rest", 0)
+                "rest": data.get("rest", 0),
+                "order": int(data.get("order", 1))  # Читаем порядок выполнения
             }]
             user_id = data.get("user_id")
 

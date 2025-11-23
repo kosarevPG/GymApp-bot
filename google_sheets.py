@@ -181,9 +181,15 @@ class GoogleSheetsManager:
                 # Гарантируем, что отдых сохранен в минутах
                 rest_mins = DataParser.parse_rest_to_minutes(item.get("rest", 0))
                 
+                # Если фронтенд прислал order, используем его. 
+                # Если нет (старый режим), используем счетчик цикла.
+                order_val = item.get("order")
+                if not order_val:
+                    order_val = idx
+                
                 rows.append([
                     timestamp,
-                    idx, # Order
+                    order_val,  # Используем полученный или рассчитанный Order
                     item["exercise"],
                     item["weight"],
                     item["reps"],
@@ -254,8 +260,10 @@ class GoogleSheetsManager:
             # (то есть само упражнение + его соседей по суперсету)
             history = [r for r in records if r['set_group_id'] in seen_groups]
             
-            # Сортировка: Сначала дата, потом ID группы, потом порядок выполнения
-            history.sort(key=lambda x: (x['date_obj'], x['set_group_id'], x['order']), reverse=True)
+            # Сортировка: Сначала по порядку (1, 2, 3...), потом по дате от новых к старым
+            # (сортировка в Python стабильная, порядок внутри даты сохранится)
+            history.sort(key=lambda x: x['order'])
+            history.sort(key=lambda x: x['date_obj'], reverse=True)
             
             return [{
                 "date": r["date"],
