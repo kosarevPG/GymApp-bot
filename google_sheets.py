@@ -188,7 +188,9 @@ class GoogleSheetsManager:
             logger.info(f"Начало сохранения данных в LOG. Количество записей: {len(workout_data)}")
             logger.info(f"Данные для сохранения: {workout_data}")
             
-            timestamp = datetime.now().strftime("%d.%m.%Y %H:%M")
+            # Формат: "23.11.2025.11.23, 15:54" (дата дублируется: день.месяц.год.месяц.день, время)
+            now = datetime.now()
+            timestamp = f"{now.strftime('%d.%m.%Y')}.{now.strftime('%m.%d')}, {now.strftime('%H:%M')}"
             rows_to_add = []
             
             for workout in workout_data:
@@ -227,6 +229,43 @@ class GoogleSheetsManager:
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             return False
+    
+    def get_exercise_history(self, exercise_name: str, limit: int = 10) -> List[Dict]:
+        """
+        Получить историю подходов по упражнению из листа LOG.
+        
+        Args:
+            exercise_name: Название упражнения
+            limit: Максимальное количество последних записей (по умолчанию 10)
+            
+        Returns:
+            Список словарей с данными подходов:
+            [{"date": "...", "weight": 100, "reps": 5, "rest": 120, "set_group_id": "..."}, ...]
+        """
+        try:
+            # Получаем все записи из LOG
+            all_records = self.log_sheet.get_all_records()
+            
+            # Фильтруем по названию упражнения
+            exercise_records = [
+                {
+                    "date": record.get("Date", ""),
+                    "weight": float(record.get("Weight", 0) or 0),
+                    "reps": int(record.get("Reps", 0) or 0),
+                    "rest": int(record.get("Rest", 0) or 0),
+                    "set_group_id": record.get("Set_Group_ID", "")
+                }
+                for record in all_records
+                if record.get("Exercise", "").strip() == exercise_name.strip()
+            ]
+            
+            # Сортируем по дате (последние сначала) и ограничиваем
+            exercise_records.sort(key=lambda x: x["date"], reverse=True)
+            return exercise_records[:limit]
+            
+        except Exception as e:
+            logger.error(f"Ошибка получения истории для упражнения {exercise_name}: {e}", exc_info=True)
+            return []
     
     def add_exercise(self, exercise_name: str, muscle_group: str, photo_file_id: str = "") -> bool:
         """

@@ -448,6 +448,89 @@ async def health_check(request):
     return web.Response(text="OK")
 
 
+def get_cors_headers():
+    """Получить CORS заголовки для всех ответов."""
+    return {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, X-Telegram-Init-Data",
+    }
+
+
+async def api_muscle_groups(request):
+    """API endpoint: получить список групп мышц."""
+    headers = get_cors_headers()
+    
+    if request.method == "OPTIONS":
+        return web.Response(text="OK", headers=headers)
+    
+    try:
+        muscle_groups = sheets_manager.get_muscle_groups()
+        return web.json_response({"status": "success", "data": muscle_groups}, headers=headers)
+    except Exception as e:
+        logger.error(f"Ошибка получения групп мышц: {e}", exc_info=True)
+        return web.json_response(
+            {"status": "error", "message": str(e)},
+            status=500,
+            headers=headers
+        )
+
+
+async def api_exercises(request):
+    """API endpoint: получить список упражнений по группе мышц."""
+    headers = get_cors_headers()
+    
+    if request.method == "OPTIONS":
+        return web.Response(text="OK", headers=headers)
+    
+    try:
+        muscle_group = request.query.get("group", "")
+        if not muscle_group:
+            return web.json_response(
+                {"status": "error", "message": "Параметр 'group' обязателен"},
+                status=400,
+                headers=headers
+            )
+        
+        exercises = sheets_manager.get_exercises_by_group(muscle_group)
+        return web.json_response({"status": "success", "data": exercises}, headers=headers)
+    except Exception as e:
+        logger.error(f"Ошибка получения упражнений: {e}", exc_info=True)
+        return web.json_response(
+            {"status": "error", "message": str(e)},
+            status=500,
+            headers=headers
+        )
+
+
+async def api_exercise_history(request):
+    """API endpoint: получить историю подходов по упражнению."""
+    headers = get_cors_headers()
+    
+    if request.method == "OPTIONS":
+        return web.Response(text="OK", headers=headers)
+    
+    try:
+        exercise_name = request.query.get("exercise", "")
+        if not exercise_name:
+            return web.json_response(
+                {"status": "error", "message": "Параметр 'exercise' обязателен"},
+                status=400,
+                headers=headers
+            )
+        
+        limit = int(request.query.get("limit", "10"))
+        history = sheets_manager.get_exercise_history(exercise_name, limit)
+        return web.json_response({"status": "success", "data": history}, headers=headers)
+    except Exception as e:
+        logger.error(f"Ошибка получения истории упражнения: {e}", exc_info=True)
+        return web.json_response(
+            {"status": "error", "message": str(e)},
+            status=500,
+            headers=headers
+        )
+
+
 async def handle_webapp_post(request):
     """Обработка HTTP POST запросов от WebApp (альтернатива tg.sendData)."""
     # 1. Формируем заголовки CORS вручную (чтобы наверняка)
@@ -594,6 +677,14 @@ async def main():
         app.router.add_get("/", health_check)
         app.router.add_get("/health", health_check)
         
+        # API endpoints для WebApp
+        app.router.add_get("/api/muscle-groups", api_muscle_groups)
+        app.router.add_options("/api/muscle-groups", api_muscle_groups)
+        app.router.add_get("/api/exercises", api_exercises)
+        app.router.add_options("/api/exercises", api_exercises)
+        app.router.add_get("/api/exercise-history", api_exercise_history)
+        app.router.add_options("/api/exercise-history", api_exercise_history)
+        
         # Просто добавляем маршруты (без cors.add)
         # Регистрируем POST и OPTIONS для одного пути
         app.router.add_post("/api/webapp-data", handle_webapp_post)
@@ -630,6 +721,14 @@ async def main():
             # Добавляем health check endpoints
             app.router.add_get("/", health_check)
             app.router.add_get("/health", health_check)
+            
+            # API endpoints для WebApp
+            app.router.add_get("/api/muscle-groups", api_muscle_groups)
+            app.router.add_options("/api/muscle-groups", api_muscle_groups)
+            app.router.add_get("/api/exercises", api_exercises)
+            app.router.add_options("/api/exercises", api_exercises)
+            app.router.add_get("/api/exercise-history", api_exercise_history)
+            app.router.add_options("/api/exercise-history", api_exercise_history)
             
             # Регистрируем POST и OPTIONS для одного пути
             app.router.add_post("/api/webapp-data", handle_webapp_post)
