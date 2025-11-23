@@ -188,9 +188,9 @@ class GoogleSheetsManager:
             logger.info(f"Начало сохранения данных в LOG. Количество записей: {len(workout_data)}")
             logger.info(f"Данные для сохранения: {workout_data}")
             
-            # Формат: "23.11.2025.11.23, 15:54" (дата дублируется: день.месяц.год.месяц.день, время)
+            # Формат: "2025.11.23, 19:17" (год.месяц.день, время)
             now = datetime.now()
-            timestamp = f"{now.strftime('%d.%m.%Y')}.{now.strftime('%m.%d')}, {now.strftime('%H:%M')}"
+            timestamp = f"{now.strftime('%Y.%m.%d')}, {now.strftime('%H:%M')}"
             rows_to_add = []
             
             for workout in workout_data:
