@@ -508,7 +508,7 @@ def get_cors_headers():
     }
 
 
-async def api_muscle_groups(request):
+async def api_groups(request):
     """API endpoint: получить список групп мышц."""
     headers = get_cors_headers()
     
@@ -517,7 +517,7 @@ async def api_muscle_groups(request):
     
     try:
         muscle_groups = sheets_manager.get_muscle_groups()
-        return web.json_response({"status": "success", "data": muscle_groups}, headers=headers)
+        return web.json_response({"groups": muscle_groups}, headers=headers)
     except Exception as e:
         logger.error(f"Ошибка получения групп мышц: {e}", exc_info=True)
         return web.json_response(
@@ -543,8 +543,10 @@ async def api_exercises(request):
                 headers=headers
             )
         
-        exercises = sheets_manager.get_exercises_by_group(muscle_group)
-        return web.json_response({"status": "success", "data": exercises}, headers=headers)
+        exercises_data = sheets_manager.get_exercises_by_group(muscle_group)
+        # Возвращаем только названия упражнений
+        exercises = [ex["name"] for ex in exercises_data]
+        return web.json_response({"exercises": exercises}, headers=headers)
     except Exception as e:
         logger.error(f"Ошибка получения упражнений: {e}", exc_info=True)
         return web.json_response(
@@ -554,7 +556,7 @@ async def api_exercises(request):
         )
 
 
-async def api_exercise_history(request):
+async def api_history(request):
     """API endpoint: получить историю подходов по упражнению."""
     headers = get_cors_headers()
     
@@ -570,11 +572,82 @@ async def api_exercise_history(request):
                 headers=headers
             )
         
-        limit = int(request.query.get("limit", "10"))
-        history = sheets_manager.get_exercise_history(exercise_name, limit)
-        return web.json_response({"status": "success", "data": history}, headers=headers)
+        mode = request.query.get("mode", "full")  # "last" или "full"
+        
+        if mode == "last":
+            # Возвращаем только последнюю тренировку (для автозаполнения)
+            last_workout = sheets_manager.get_last_workout(exercise_name)
+            return web.json_response({"sets": last_workout}, headers=headers)
+        else:
+            # Возвращаем полную историю
+            limit = int(request.query.get("limit", "20"))
+            history = sheets_manager.get_exercise_history(exercise_name, limit)
+            return web.json_response({"history": history}, headers=headers)
     except Exception as e:
         logger.error(f"Ошибка получения истории упражнения: {e}", exc_info=True)
+        return web.json_response(
+            {"status": "error", "message": str(e)},
+            status=500,
+            headers=headers
+        )
+
+
+async def api_save_set(request):
+    """API endpoint: сохранить один подход."""
+    headers = get_cors_headers()
+    
+    if request.method == "OPTIONS":
+        return web.Response(text="OK", headers=headers)
+    
+    try:
+        import json
+        data = await request.json()
+        
+        user_id = data.get("user_id")
+        exercise = data.get("exercise")
+        weight = data.get("weight")
+        reps = data.get("reps")
+        rest = data.get("rest", 0)
+        
+        if not all([user_id, exercise, weight is not None, reps is not None]):
+            return web.json_response(
+                {"status": "error", "message": "Не все обязательные поля заполнены"},
+                status=400,
+                headers=headers
+            )
+        
+        # Сохраняем один подход
+        set_group_id = str(uuid.uuid4())
+        workout_data = [{
+            "exercise": exercise,
+            "weight": float(weight),
+            "reps": int(reps),
+            "rest": int(rest)
+        }]
+        
+        success = sheets_manager.save_workout_log(workout_data, set_group_id)
+        
+        if success:
+            # Отправляем сообщение в Telegram
+            if user_id:
+                try:
+                    await bot.send_message(
+                        chat_id=user_id,
+                        text=f"✅ Записан подход: {weight}кг × {reps}"
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка отправки сообщения: {e}")
+            
+            return web.json_response({"status": "success"}, headers=headers)
+        else:
+            return web.json_response(
+                {"status": "error", "message": "Ошибка сохранения"},
+                status=500,
+                headers=headers
+            )
+            
+    except Exception as e:
+        logger.error(f"Ошибка сохранения подхода: {e}", exc_info=True)
         return web.json_response(
             {"status": "error", "message": str(e)},
             status=500,
@@ -729,12 +802,14 @@ async def main():
         app.router.add_get("/health", health_check)
         
         # API endpoints для WebApp
-        app.router.add_get("/api/muscle-groups", api_muscle_groups)
-        app.router.add_options("/api/muscle-groups", api_muscle_groups)
+        app.router.add_get("/api/groups", api_groups)
+        app.router.add_options("/api/groups", api_groups)
         app.router.add_get("/api/exercises", api_exercises)
         app.router.add_options("/api/exercises", api_exercises)
-        app.router.add_get("/api/exercise-history", api_exercise_history)
-        app.router.add_options("/api/exercise-history", api_exercise_history)
+        app.router.add_get("/api/history", api_history)
+        app.router.add_options("/api/history", api_history)
+        app.router.add_post("/api/save_set", api_save_set)
+        app.router.add_options("/api/save_set", api_save_set)
         
         # Просто добавляем маршруты (без cors.add)
         # Регистрируем POST и OPTIONS для одного пути
@@ -774,12 +849,14 @@ async def main():
             app.router.add_get("/health", health_check)
             
             # API endpoints для WebApp
-            app.router.add_get("/api/muscle-groups", api_muscle_groups)
-            app.router.add_options("/api/muscle-groups", api_muscle_groups)
+            app.router.add_get("/api/groups", api_groups)
+            app.router.add_options("/api/groups", api_groups)
             app.router.add_get("/api/exercises", api_exercises)
             app.router.add_options("/api/exercises", api_exercises)
-            app.router.add_get("/api/exercise-history", api_exercise_history)
-            app.router.add_options("/api/exercise-history", api_exercise_history)
+            app.router.add_get("/api/history", api_history)
+            app.router.add_options("/api/history", api_history)
+            app.router.add_post("/api/save_set", api_save_set)
+            app.router.add_options("/api/save_set", api_save_set)
             
             # Регистрируем POST и OPTIONS для одного пути
             app.router.add_post("/api/webapp-data", handle_webapp_post)

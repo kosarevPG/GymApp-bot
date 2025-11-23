@@ -230,6 +230,61 @@ class GoogleSheetsManager:
             logger.error(f"Traceback: {traceback.format_exc()}")
             return False
     
+    def get_last_workout(self, exercise_name: str) -> List[Dict]:
+        """
+        Получить последнюю тренировку по упражнению (для автозаполнения).
+        
+        Args:
+            exercise_name: Название упражнения
+            
+        Returns:
+            Список словарей с данными подходов последней тренировки:
+            [{"weight": 100, "reps": 5, "rest": 120}, ...]
+        """
+        try:
+            # Получаем все записи из LOG
+            all_records = self.log_sheet.get_all_records()
+            
+            # Фильтруем по названию упражнения
+            exercise_records = [
+                {
+                    "date": record.get("Date", ""),
+                    "weight": float(record.get("Weight", 0) or 0),
+                    "reps": int(record.get("Reps", 0) or 0),
+                    "rest": int(record.get("Rest", 0) or 0),
+                    "set_group_id": record.get("Set_Group_ID", "")
+                }
+                for record in all_records
+                if record.get("Exercise", "").strip() == exercise_name.strip()
+            ]
+            
+            if not exercise_records:
+                return []
+            
+            # Сортируем по дате (последние сначала)
+            exercise_records.sort(key=lambda x: x["date"], reverse=True)
+            
+            # Берем последнюю тренировку (все подходы с одинаковым set_group_id)
+            last_date = exercise_records[0]["date"]
+            last_set_group_id = exercise_records[0]["set_group_id"]
+            
+            # Находим все подходы последней тренировки
+            last_workout = [
+                {
+                    "weight": record["weight"],
+                    "reps": record["reps"],
+                    "rest": record["rest"]
+                }
+                for record in exercise_records
+                if record["date"] == last_date and record["set_group_id"] == last_set_group_id
+            ]
+            
+            return last_workout
+            
+        except Exception as e:
+            logger.error(f"Ошибка получения последней тренировки для {exercise_name}: {e}", exc_info=True)
+            return []
+    
     def get_exercise_history(self, exercise_name: str, limit: int = 10) -> List[Dict]:
         """
         Получить историю подходов по упражнению из листа LOG.
