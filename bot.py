@@ -274,7 +274,8 @@ async def api_save_set(request):
         if not payload:
             return json_response({"error": "No data"}, 400)
 
-        set_group_id = str(uuid.uuid4())
+        # Принимаем set_group_id от клиента, если не передан - генерируем новый
+        set_group_id = data.get("set_group_id") or str(uuid.uuid4())
         success = sheets_manager.save_workout_log(payload, set_group_id)
 
         if success and user_id:
