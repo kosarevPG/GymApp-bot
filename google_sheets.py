@@ -250,6 +250,34 @@ class GoogleSheetsManager:
             for record in all_records:
                 record_exercise = record.get("Exercise", "").strip()
                 if record_exercise == exercise_name.strip():
+                    # Безопасное преобразование Weight
+                    weight_value = record.get("Weight", "") or ""
+                    weight = 0
+                    if weight_value:
+                        try:
+                            if isinstance(weight_value, (int, float)):
+                                weight = float(weight_value)
+                            elif isinstance(weight_value, str):
+                                weight_str = weight_value.replace(",", ".").strip()
+                                if weight_str:
+                                    weight = float(weight_str)
+                        except (ValueError, TypeError):
+                            weight = 0
+                    
+                    # Безопасное преобразование Reps
+                    reps_value = record.get("Reps", "") or ""
+                    reps = 0
+                    if reps_value:
+                        try:
+                            if isinstance(reps_value, (int, float)):
+                                reps = int(reps_value)
+                            elif isinstance(reps_value, str):
+                                reps_str = reps_value.strip()
+                                if reps_str:
+                                    reps = int(float(reps_str))
+                        except (ValueError, TypeError):
+                            reps = 0
+                    
                     # Безопасное преобразование Rest (может быть текст или число)
                     rest_value = record.get("Rest", "") or ""
                     rest_seconds = 0
@@ -269,8 +297,8 @@ class GoogleSheetsManager:
                     
                     exercise_records.append({
                         "date": record.get("Date", ""),
-                        "weight": float(record.get("Weight", 0) or 0),
-                        "reps": int(record.get("Reps", 0) or 0),
+                        "weight": weight,
+                        "reps": reps,
                         "rest": rest_seconds,
                         "set_group_id": record.get("Set_Group_ID", "") or ""
                     })
@@ -298,6 +326,8 @@ class GoogleSheetsManager:
             ]
             
             logger.info(f"Найдено {len(last_workout)} подходов для последней тренировки '{exercise_name}' (дата: {last_date})")
+            if last_workout:
+                logger.info(f"Пример данных последней тренировки: {last_workout[0]}")
             return last_workout
             
         except Exception as e:
@@ -325,6 +355,34 @@ class GoogleSheetsManager:
             for record in all_records:
                 record_exercise = record.get("Exercise", "").strip()
                 if record_exercise == exercise_name.strip():
+                    # Безопасное преобразование Weight
+                    weight_value = record.get("Weight", "") or ""
+                    weight = 0
+                    if weight_value:
+                        try:
+                            if isinstance(weight_value, (int, float)):
+                                weight = float(weight_value)
+                            elif isinstance(weight_value, str):
+                                weight_str = weight_value.replace(",", ".").strip()
+                                if weight_str:
+                                    weight = float(weight_str)
+                        except (ValueError, TypeError):
+                            weight = 0
+                    
+                    # Безопасное преобразование Reps
+                    reps_value = record.get("Reps", "") or ""
+                    reps = 0
+                    if reps_value:
+                        try:
+                            if isinstance(reps_value, (int, float)):
+                                reps = int(reps_value)
+                            elif isinstance(reps_value, str):
+                                reps_str = reps_value.strip()
+                                if reps_str:
+                                    reps = int(float(reps_str))
+                        except (ValueError, TypeError):
+                            reps = 0
+                    
                     # Безопасное преобразование Rest (может быть текст или число)
                     rest_value = record.get("Rest", "") or ""
                     rest_seconds = 0
@@ -344,8 +402,8 @@ class GoogleSheetsManager:
                     
                     exercise_records.append({
                         "date": record.get("Date", ""),
-                        "weight": float(record.get("Weight", 0) or 0),
-                        "reps": int(record.get("Reps", 0) or 0),
+                        "weight": weight,
+                        "reps": reps,
                         "rest": rest_seconds,
                         "set_group_id": record.get("Set_Group_ID", "") or ""
                     })
@@ -353,6 +411,8 @@ class GoogleSheetsManager:
             # Сортируем по дате (последние сначала) и ограничиваем
             exercise_records.sort(key=lambda x: x["date"], reverse=True)
             logger.info(f"Найдено {len(exercise_records)} записей для упражнения '{exercise_name}' (возвращаем {min(limit, len(exercise_records))})")
+            if exercise_records:
+                logger.info(f"Пример данных истории: weight={exercise_records[0].get('weight')}, reps={exercise_records[0].get('reps')}")
             return exercise_records[:limit]
             
         except Exception as e:
