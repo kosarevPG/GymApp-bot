@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: gym-logger-bot
+    name: gym-app-bot
     env: python
     pythonVersion: "3.11"
     plan: free
@@ -22,6 +22,6 @@ services:
       - key: PORT
         fromService:
           type: web
-          name: gym-logger-bot
+          name: gym-app-bot
           property: port
 

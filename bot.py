@@ -63,7 +63,7 @@ async def cmd_start(message: Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="🏋️ Открыть приложение", web_app=WebAppInfo(url=WEBAPP_URL))
     ]])
-    await message.answer("🏋️ <b>Gym Logger</b>\nЖми кнопку:", reply_markup=kb)
+    await message.answer("🏋️ <b>GymApp</b>\nЖми кнопку:", reply_markup=kb)
 
 
 @dp.message(Command("add_exercise"))

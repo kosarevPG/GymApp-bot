@@ -1,4 +1,4 @@
-# Gym Logger - Telegram Mini App
+# GymApp - Telegram Mini App
 
 Telegram-бот с веб-интерфейсом для записи подходов в тренажерном зале.
 
