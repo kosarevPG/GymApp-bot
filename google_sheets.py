@@ -198,13 +198,22 @@ class GoogleSheetsManager:
             
             # Добавляем Order (порядковый номер подхода внутри одной тренировки)
             for index, workout in enumerate(workout_data, start=1):
+                # Конвертируем отдых из секунд в минуты (если приходит в секундах)
+                rest_value = workout.get("rest", 0)
+                if isinstance(rest_value, (int, float)) and rest_value > 100:
+                    # Если значение больше 100, вероятно это секунды - конвертируем в минуты
+                    rest_minutes = rest_value / 60.0
+                else:
+                    # Иначе считаем, что это уже минуты
+                    rest_minutes = float(rest_value) if rest_value else 0
+                
                 row = [
                     timestamp,
                     index,  # Order - порядковый номер подхода
                     workout["exercise"],
                     workout["weight"],
                     workout["reps"],
-                    workout["rest"],
+                    rest_minutes,  # Отдых в минутах
                     set_group_id
                 ]
                 rows_to_add.append(row)
@@ -248,11 +257,50 @@ class GoogleSheetsManager:
             [{"weight": 100, "reps": 5, "rest": 120}, ...]
         """
         try:
-            # Получаем все записи из LOG
-            all_logs = self.log_sheet.get_all_records()
+            # Получаем все значения напрямую для лучшего контроля (как в get_exercise_history)
+            all_values = self.log_sheet.get_all_values()
+            if not all_values or len(all_values) <= 1:
+                logger.warning(f"Лист LOG пуст или содержит только заголовки")
+                return []
+            
+            # Получаем заголовки
+            headers = [h.strip() for h in all_values[0]]
+            try:
+                date_idx = headers.index("Date")
+                order_idx = headers.index("Order") if "Order" in headers else None
+                exercise_idx = headers.index("Exercise")
+                weight_idx = headers.index("Weight")
+                reps_idx = headers.index("Reps")
+                rest_idx = headers.index("Rest")
+                set_group_idx = headers.index("Set_Group_ID")
+            except ValueError as e:
+                logger.error(f"Не найдены необходимые колонки в LOG: {e}")
+                return []
             
             # Фильтруем только это упражнение
-            ex_logs = [row for row in all_logs if str(row.get('Exercise', '')).strip() == exercise_name.strip()]
+            ex_logs = []
+            for row in all_values[1:]:  # Пропускаем заголовок
+                if len(row) <= exercise_idx:
+                    continue
+                    
+                record_exercise = row[exercise_idx].strip() if row[exercise_idx] else ""
+                if record_exercise == exercise_name.strip():
+                    # Получаем значения напрямую из строки
+                    date_val = row[date_idx].strip() if len(row) > date_idx and row[date_idx] else ""
+                    order_val = row[order_idx].strip() if order_idx is not None and len(row) > order_idx and row[order_idx] else "0"
+                    weight_val = row[weight_idx].strip() if len(row) > weight_idx and row[weight_idx] else ""
+                    reps_val = row[reps_idx].strip() if len(row) > reps_idx and row[reps_idx] else ""
+                    rest_val = row[rest_idx].strip() if len(row) > rest_idx and row[rest_idx] else ""
+                    set_group_val = row[set_group_idx].strip() if len(row) > set_group_idx and row[set_group_idx] else ""
+                    
+                    ex_logs.append({
+                        'Date': date_val,
+                        'Order': order_val,
+                        'Weight': weight_val,
+                        'Reps': reps_val,
+                        'Rest': rest_val,
+                        'Set_Group_ID': set_group_val
+                    })
             
             if not ex_logs:
                 logger.warning(f"Не найдено записей для упражнения: {exercise_name}")
@@ -263,32 +311,31 @@ class GoogleSheetsManager:
                 # Пробуем разные форматы даты
                 def parse_date(date_str):
                     date_str = str(date_str).strip()
-                    # Формат: "23.11.2025.11.23, 15:54" или "23.11.2025 15:54" или "2025-11-21"
+                    # Формат: "2025.11.23, 19:17" или "2025-11-21"
                     try:
-                        # Пробуем новый формат: "23.11.2025.11.23, 15:54"
                         if ',' in date_str:
                             date_part = date_str.split(',')[0].strip()
-                            # Берем первую часть до точки (если есть формат с точками)
-                            if '.' in date_part:
-                                parts = date_part.split('.')
-                                if len(parts) >= 3:
-                                    # Берем первые 3 части (день, месяц, год)
-                                    return datetime.strptime(f"{parts[0]}.{parts[1]}.{parts[2]}", "%d.%m.%Y")
-                        # Пробуем стандартный формат: "23.11.2025 15:54"
-                        if ' ' in date_str:
-                            date_part = date_str.split(' ')[0]
-                            return datetime.strptime(date_part, "%d.%m.%Y")
-                        # Пробуем формат ISO: "2025-11-21"
-                        if '-' in date_str:
-                            return datetime.strptime(date_str.split(' ')[0], "%Y-%m-%d")
+                        elif ' ' in date_str:
+                            date_part = date_str.split(' ')[0].strip()
+                        else:
+                            date_part = date_str
+                        
+                        # Преобразуем в формат для сортировки
+                        if '.' in date_part:
+                            parts = date_part.split('.')
+                            if len(parts) == 3:
+                                if len(parts[0]) == 4:  # YYYY.MM.DD
+                                    return datetime.strptime(date_part, "%Y.%m.%d")
+                                else:  # DD.MM.YYYY
+                                    return datetime.strptime(f"{parts[2]}.{parts[1]}.{parts[0]}", "%Y.%m.%d")
+                        elif '-' in date_part:
+                            return datetime.strptime(date_part, "%Y-%m-%d")
                     except:
                         pass
-                    # Если ничего не подошло, возвращаем минимальную дату
                     return datetime.min
                 
                 ex_logs.sort(key=lambda x: parse_date(x.get('Date', '')), reverse=True)
             except Exception as e:
-                # Если дата кривая, берем просто последние записи
                 logger.warning(f"Ошибка сортировки по дате: {e}, используем обратный порядок")
                 ex_logs.reverse()
             
@@ -324,15 +371,11 @@ class GoogleSheetsManager:
                 
                 current_set_group_id = str(item.get('Set_Group_ID', '')).strip() or ""
                 
-                # Логируем первые несколько записей для отладки
-                if len(history) < 3:
-                    logger.debug(f"Проверка записи: current_date={current_date}, last_date={last_date}, current_set_group_id={current_set_group_id}, last_set_group_id={last_set_group_id}")
-                
                 if current_date == last_date and current_set_group_id == last_set_group_id:
                     # Получаем Order для сортировки
-                    order = item.get('Order', 0)
+                    order_val = item.get('Order', '0')
                     try:
-                        order = int(order) if order else 0
+                        order = int(order_val) if order_val else 0
                     except (ValueError, TypeError):
                         order = 0
                     
@@ -366,9 +409,9 @@ class GoogleSheetsManager:
                                 reps = 0
                     # =================================
                     
-                    # === БЛОК ИСПРАВЛЕНИЯ ОТДЫХА ===
-                    raw_rest = item.get('Rest', 60)
-                    rest_seconds = 60  # По умолчанию
+                    # === БЛОК ИСПРАВЛЕНИЯ ОТДЫХА (в минутах) ===
+                    raw_rest = item.get('Rest', 0)
+                    rest_minutes = 0  # По умолчанию
                     
                     if raw_rest is not None:
                         rest_str = str(raw_rest).replace(',', '.').strip()
@@ -377,21 +420,25 @@ class GoogleSheetsManager:
                                 # Если это текст типа "1,5 мин" или "90 сек"
                                 if "мин" in rest_str.lower():
                                     rest_num = float(rest_str.replace("мин", "").replace("сек", "").strip())
-                                    rest_seconds = int(rest_num * 60)
+                                    rest_minutes = rest_num
                                 elif "сек" in rest_str.lower():
+                                    # Конвертируем секунды в минуты
                                     rest_num = float(rest_str.replace("сек", "").strip())
-                                    rest_seconds = int(rest_num)
+                                    rest_minutes = rest_num / 60.0
                                 else:
-                                    # Просто число
-                                    rest_seconds = int(float(rest_str))
+                                    # Просто число - считаем, что это минуты
+                                    rest_minutes = float(rest_str)
+                                    # Если значение больше 100, вероятно это секунды - конвертируем
+                                    if rest_minutes > 100:
+                                        rest_minutes = rest_minutes / 60.0
                             except ValueError:
-                                rest_seconds = 60
+                                rest_minutes = 0
                     # ================================
                     
                     history.append({
                         'weight': weight,
                         'reps': reps,
-                        'rest': rest_seconds,
+                        'rest': rest_minutes,
                         'order': order
                     })
                 else:
@@ -493,29 +540,37 @@ class GoogleSheetsManager:
                         except (ValueError, TypeError):
                             reps = 0
                     
-                    # Преобразование отдыха
-                    rest_seconds = 0
+                    # Преобразование отдыха (в минутах)
+                    rest_minutes = 0
                     if rest_val:
                         try:
-                            if "мин" in rest_val.lower():
-                                rest_str = rest_val.replace(",", ".").replace("мин", "").replace("сек", "").strip()
-                                if rest_str:
-                                    rest_seconds = int(float(rest_str) * 60)
-                            else:
-                                rest_str = rest_val.replace(",", ".").replace("сек", "").strip()
-                                if rest_str:
-                                    rest_seconds = int(float(rest_str))
+                            rest_str = str(rest_val).replace(",", ".").strip()
+                            if rest_str:
+                                # Если это текст типа "1,5 мин" или "90 сек"
+                                if "мин" in rest_str.lower():
+                                    rest_num = float(rest_str.replace("мин", "").replace("сек", "").strip())
+                                    rest_minutes = rest_num
+                                elif "сек" in rest_str.lower():
+                                    # Конвертируем секунды в минуты
+                                    rest_num = float(rest_str.replace("сек", "").strip())
+                                    rest_minutes = rest_num / 60.0
+                                else:
+                                    # Просто число - считаем, что это минуты
+                                    rest_minutes = float(rest_str)
+                                    # Если значение больше 100, вероятно это секунды - конвертируем
+                                    if rest_minutes > 100:
+                                        rest_minutes = rest_minutes / 60.0
                         except (ValueError, TypeError):
-                            rest_seconds = 0
+                            rest_minutes = 0
                     
                     if len(exercise_records) < 3:
-                        logger.info(f"DEBUG: После преобразования weight={weight}, reps={reps}, rest={rest_seconds}")
+                        logger.info(f"DEBUG: После преобразования weight={weight}, reps={reps}, rest={rest_minutes} мин")
                     
                     exercise_records.append({
                         "date": date_val,
                         "weight": weight,
                         "reps": reps,
-                        "rest": rest_seconds,
+                        "rest": rest_minutes,
                         "set_group_id": set_group_val,
                         "order": order
                     })
