@@ -236,6 +236,16 @@ async def api_exercises(request):
         return json_response({"error": str(e)}, 500)
 
 
+async def api_all_exercises(request):
+    """Эндпоинт для загрузки всех упражнений одним запросом."""
+    try:
+        exercises = sheets_manager.get_all_exercises()
+        return json_response({"exercises": exercises})
+    except Exception as e:
+        logger.error(f"Get all exercises error: {e}")
+        return json_response({"error": str(e)}, 500)
+
+
 async def api_history(request):
     try:
         ex_name = request.query.get("exercise", "")
@@ -305,6 +315,7 @@ def create_app():
     for path, handler in [
         ("/api/groups", api_groups),
         ("/api/exercises", api_exercises),
+        ("/api/all_exercises", api_all_exercises),
         ("/api/history", api_history),
         ("/api/save_set", api_save_set),
         ("/api/webapp-data", api_save_set) # Alias

@@ -172,6 +172,26 @@ class GoogleSheetsManager:
         except Exception as e:
             logger.error(f"Get exercises error: {e}")
             return []
+    
+    def get_all_exercises(self) -> List[Dict]:
+        """Получить все упражнения одним запросом. Возвращает список с полем 'group'."""
+        try:
+            all_data = self.exercises_sheet.get_all_records()
+            exercises = []
+            for r in all_data:
+                exercise_name = r.get('Exercise Name', '').strip()
+                muscle_group = r.get('Muscle Group', '').strip()
+                if exercise_name and muscle_group:
+                    exercises.append({
+                        'name': exercise_name,
+                        'desc': r.get('Description', 'Описание отсутствует'),
+                        'image': r.get('Image_URL', ''),
+                        'group': muscle_group  # Добавляем группу для удобства на фронтенде
+                    })
+            return sorted(exercises, key=lambda x: x['name'])
+        except Exception as e:
+            logger.error(f"Get all exercises error: {e}")
+            return []
 
     def save_workout_log(self, workout_data: List[Dict], set_group_id: str) -> bool:
         try:
