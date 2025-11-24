@@ -309,9 +309,56 @@ class GoogleSheetsManager:
             return []
 
     def add_exercise(self, name: str, group: str, photo_id: str = "") -> bool:
+        """Добавить новое упражнение в таблицу EXERCISES.
+        
+        Структура таблицы:
+        - A: Exercise Name
+        - B: Muscle Group
+        - C: Description
+        - D: Image_URL (или Photo_File_ID)
+        """
         try:
-            self.exercises_sheet.append_row([name, group, photo_id])
+            # Определяем структуру колонок из заголовков
+            headers = self.exercises_sheet.row_values(1)
+            
+            # Создаем словарь для маппинга колонок
+            col_map = {}
+            for idx, header in enumerate(headers, start=1):
+                header_lower = header.strip().lower()
+                if 'exercise name' in header_lower or 'название' in header_lower:
+                    col_map['name'] = idx
+                elif 'muscle group' in header_lower or 'группа' in header_lower:
+                    col_map['group'] = idx
+                elif 'description' in header_lower or 'описание' in header_lower:
+                    col_map['desc'] = idx
+                elif 'image' in header_lower or 'photo' in header_lower or 'url' in header_lower:
+                    col_map['image'] = idx
+            
+            # Создаем строку с правильным порядком колонок
+            row = [''] * len(headers)
+            
+            if 'name' in col_map:
+                row[col_map['name'] - 1] = name
+            else:
+                row[0] = name  # По умолчанию в первую колонку
+            
+            if 'group' in col_map:
+                row[col_map['group'] - 1] = group
+            else:
+                row[1] = group  # По умолчанию во вторую колонку
+            
+            if 'image' in col_map and photo_id:
+                row[col_map['image'] - 1] = photo_id
+            elif photo_id and len(row) > 2:
+                row[3] = photo_id  # По умолчанию в четвертую колонку (если есть)
+            
+            # Если есть колонка Description, оставляем её пустой
+            if 'desc' in col_map:
+                row[col_map['desc'] - 1] = ''  # Пустое описание по умолчанию
+            
+            self.exercises_sheet.append_row(row)
+            logger.info(f"Added exercise: {name} ({group})")
             return True
         except Exception as e:
-            logger.error(f"Add exercise error: {e}")
+            logger.error(f"Add exercise error: {e}", exc_info=True)
             return False
