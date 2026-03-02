@@ -392,11 +392,8 @@ const HistoryListModal = ({ isOpen, onClose, history, exerciseName }: any) => {
             </div>
             <div className="bg-zinc-800/30 border border-zinc-800 rounded-xl overflow-hidden">
               {items.map((item, idx) => (
-                <div key={idx} className="p-3 border-b border-zinc-800 last:border-0 flex items-center justify-between">
-                  <div>
-                    <div className="text-lg font-medium text-zinc-200">{item.weight} <span className="text-sm text-zinc-500">кг</span> × {item.reps}</div>
-                  </div>
-                  <div className="text-zinc-500 font-mono text-sm bg-zinc-900/50 px-2 py-1 rounded">{item.rest}м</div>
+                <div key={idx} className="p-3 border-b border-zinc-800 last:border-0 text-left text-sm text-zinc-400">
+                  {item.weight} кг х {item.reps} повт, {item.rest}м
                 </div>
               ))}
             </div>
@@ -737,8 +734,7 @@ const HistoryScreen = ({ onBack }: any) => {
           <Card key={w.id} className="overflow-hidden">
             <div onClick={() => setExpandedId(expandedId === w.id ? null : w.id)} className="p-4 flex items-center justify-between cursor-pointer active:bg-zinc-800/50">
               <div>
-                <div className="flex items-center gap-2 mb-1 text-zinc-400 text-sm"><Calendar className="w-3 h-3" />{w.date}<span className="text-zinc-600">•</span>{w.duration}</div>
-                <div className="font-semibold text-zinc-200">{w.muscleGroups.join(' • ')}</div>
+                <div className="flex items-center gap-2 text-zinc-400 text-sm"><Calendar className="w-3 h-3" />{w.date} {w.muscleGroups.join(' • ')}</div>
               </div>
               <ChevronDown className={`w-5 h-5 text-zinc-500 transition-transform ${expandedId === w.id ? 'rotate-180' : ''}`} />
             </div>
@@ -765,12 +761,16 @@ const HistoryScreen = ({ onBack }: any) => {
                           <div className="font-medium text-zinc-300 mb-2">{ex.name}</div>
                           {ex.sets && Array.isArray(ex.sets) && ex.sets.length > 0 ? (
                             <div className="space-y-1">
-                              {ex.sets.map((s: any, j: number) => (
-                                <div key={j} className="flex justify-between text-sm text-zinc-400 px-2 py-1 bg-zinc-800/30 rounded">
-                                  <span>#{j+1} {(typeof s.weight === 'number' ? s.weight : parseFloat(String(s.weight || 0)))}кг</span>
-                                  <span>{(typeof s.reps === 'number' ? s.reps : parseInt(String(s.reps || 0)))}повт</span>
-                                </div>
-                              ))}
+                              {ex.sets.map((s: any, j: number) => {
+                                const weight = typeof s.weight === 'number' ? s.weight : parseFloat(String(s.weight || 0));
+                                const reps = typeof s.reps === 'number' ? s.reps : parseInt(String(s.reps || 0));
+                                const rest = typeof s.rest === 'number' ? s.rest : parseFloat(String(s.rest || 0));
+                                return (
+                                  <div key={j} className="text-sm text-zinc-400 text-left px-2 py-1 bg-zinc-800/30 rounded">
+                                    {weight} кг х {reps} повт, {rest}м
+                                  </div>
+                                );
+                              })}
                             </div>
                           ) : <div className="text-xs text-zinc-500">Нет подходов</div>}
                         </div>
@@ -919,7 +919,12 @@ const App = () => {
       <Modal isOpen={isCreateModalOpen} onClose={() => setIsCreateModalOpen(false)} title="Новое упражнение">
         <div className="space-y-4">
           <div><label className="text-sm text-zinc-400 mb-1 block">Название</label><Input value={newName} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewName(e.target.value)} placeholder="Например: Отжимания" /></div>
-          <div><label className="text-sm text-zinc-400 mb-1 block">Группа</label><div className="flex flex-wrap gap-2">{groups.map(g => <button key={g} onClick={() => setNewGroup(g)} className={`px-3 py-2 rounded-xl text-sm border ${newGroup === g ? 'bg-blue-600 border-blue-600 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-400'}`}>{g}</button>)}</div>
+          <div>
+            <label className="text-sm text-zinc-400 mb-1 block">Группа</label>
+            <div className="flex flex-wrap gap-2">
+              {groups.map(g => <button key={g} onClick={() => setNewGroup(g)} className={newGroup === g ? 'px-3 py-2 rounded-xl text-sm border bg-blue-600 border-blue-600 text-white' : 'px-3 py-2 rounded-xl text-sm border bg-zinc-800 border-zinc-700 text-zinc-400'}>{g}</button>)}
+            </div>
+          </div>
           <Button onClick={handleCreate} className="w-full h-12 mt-4">Создать</Button>
         </div>
       </Modal>
