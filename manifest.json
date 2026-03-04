@@ -1,6 +1,6 @@
 {
-  "name": "GymApp",
-  "short_name": "GymApp",
+  "name": "gymtracker",
+  "short_name": "gymtracker",
   "start_url": "/GymApp/",
   "display": "standalone",
   "background_color": "#09090b",
