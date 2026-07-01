@@ -11,6 +11,14 @@ import { API_BASE_URL, AUTH_TOKEN_KEY, WORKOUT_STORAGE_KEY, sortGroups, SESSION_
 import { SetDisplayRow } from './components/SetDisplayRow';
 import { calcEffectiveWeight, USER_BODY_WEIGHT_DEFAULT } from './exerciseConfig';
 import type { Exercise, WorkoutSet, HistoryItem, ExerciseSessionData, SetType } from './types';
+import {
+  QUEUE_CHANGED_EVENT,
+  addToQueue,
+  getPendingCount,
+  getQueue,
+  markAttempt,
+  removeFromQueue,
+} from './offlineSync';
 
 // --- TYPES ---
 
@@ -40,26 +48,43 @@ const getCachedExercises = () => {
   try { return JSON.parse(localStorage.getItem('gym_exercises_cache') || 'null'); } catch { return null; }
 };
 
-const addToQueue = (type: string, data: any) => {
-  const id = crypto.randomUUID();
-  const queue = JSON.parse(localStorage.getItem('gym_offline_queue') || '[]');
-  queue.push({ id, type, data });
-  localStorage.setItem('gym_offline_queue', JSON.stringify(queue));
-  return id;
+const historyCacheKey = (exerciseId: string) => `gym_history_cache_${exerciseId}`;
+
+const cacheHistory = (exerciseId: string, data: any) => {
+  try { localStorage.setItem(historyCacheKey(exerciseId), JSON.stringify(data)); } catch (_) {}
 };
 
+const getCachedHistory = (exerciseId: string) => {
+  try { return JSON.parse(localStorage.getItem(historyCacheKey(exerciseId)) || 'null'); } catch { return null; }
+};
+
+const GLOBAL_HISTORY_CACHE_KEY = 'gym_global_history_cache';
+
+let syncInFlight = false;
+
 const initNetworkListeners = () => {
-  // Слушатели для синхронизации очереди при восстановлении сети
+  const sync = () => { void api.syncOfflineQueue(); };
+  window.addEventListener('online', sync);
+  const interval = window.setInterval(sync, 30_000);
+  sync();
+  return () => {
+    window.removeEventListener('online', sync);
+    window.clearInterval(interval);
+  };
 };
 
 // --- API SERVICE ---
 
 const api = {
   request: async (endpoint: string, options: RequestInit = {}) => {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 12_000);
     try {
+      if (!API_BASE_URL) throw new Error('VITE_API_BASE_URL is not configured');
       const url = endpoint.startsWith('http') ? endpoint : `${API_BASE_URL}?url=/api/${endpoint}`;
       const res = await fetch(url, {
         ...options,
+        signal: options.signal || controller.signal,
         headers: { 
           'Content-Type': 'application/json', 
           'Authorization': getToken(), 
@@ -71,25 +96,26 @@ const api = {
     } catch (e) {
       console.error(e);
       return null;
+    } finally {
+      window.clearTimeout(timeout);
     }
   },
 
   getInit: async () => {
-    try {
-      const data = await api.request('init');
-      if (data && data.exercises) {
-        cacheExercises(data);
-        return data;
-      }
-    } catch (e) { console.error('getInit failed:', e); }
-    const cached = getCachedExercises();
-    if (cached) return cached;
-    return { groups: [], exercises: [] };
+    const data = await api.request('init');
+    if (data && data.exercises) {
+      cacheExercises(data);
+      return data;
+    }
+    return null;
   },
+
+  getCachedInit: () => getCachedExercises(),
 
   getHistory: async (exerciseId: string) => {
     const data = await api.request(`history?exercise_id=${exerciseId}`);
-    const raw = data || { history: [], note: '' };
+    const raw = data || getCachedHistory(exerciseId) || { history: [], note: '' };
+    if (data) cacheHistory(exerciseId, data);
     let history: HistoryItem[] = raw.history || [];
     const first = history[0] as { sets?: unknown[] } | undefined;
     if (history.length > 0 && first && 'sets' in first && Array.isArray(first.sets)) {
@@ -100,7 +126,11 @@ const api = {
 
   getGlobalHistory: async () => {
     const data = await api.request('global_history');
-    return data || [];
+    if (data) {
+      try { localStorage.setItem(GLOBAL_HISTORY_CACHE_KEY, JSON.stringify(data)); } catch (_) {}
+      return data;
+    }
+    try { return JSON.parse(localStorage.getItem(GLOBAL_HISTORY_CACHE_KEY) || '[]'); } catch { return []; }
   },
 
   getAnalytics: async (period: number = 14) => {
@@ -117,30 +147,56 @@ const api = {
     });
   },
 
-  saveSet: async (data: any): Promise<{ status?: string; row_number?: number; pending_id?: string; offline?: boolean } | null> => {
-    try {
-      const res = await fetch(`${API_BASE_URL}?url=/api/save_set`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': getToken() },
-        body: JSON.stringify(data)
-      });
-      if (res.ok) return await res.json();
-    } catch (e) { console.log('saveSet failed, queuing:', e); }
-    const pendingId = addToQueue('saveSet', data);
-    return { status: 'queued', pending_id: pendingId, offline: true };
+  saveSet: async (data: any): Promise<{ status?: string; row_number?: number; pending_id?: string; offline?: boolean }> => {
+    const clientRequestId = String(data.client_request_id || crypto.randomUUID());
+    const pendingId = addToQueue('saveSet', { ...data, client_request_id: clientRequestId });
+    queueMicrotask(() => { void api.syncOfflineQueue(); });
+    return { status: 'queued', pending_id: pendingId, offline: !navigator.onLine };
   },
 
-  updateSet: async (data: any): Promise<{ status?: string; pending_id?: string; offline?: boolean } | null> => {
+  updateSet: async (data: any): Promise<{ status?: string; pending_id?: string; offline?: boolean }> => {
+    const clientRequestId = String(data.client_request_id || crypto.randomUUID());
+    const pendingId = addToQueue('updateSet', { ...data, client_request_id: clientRequestId });
+    queueMicrotask(() => { void api.syncOfflineQueue(); });
+    return { status: 'queued', pending_id: pendingId, offline: !navigator.onLine };
+  },
+
+  syncOfflineQueue: async () => {
+    if (syncInFlight || !navigator.onLine || !getToken() || !API_BASE_URL) return;
+    syncInFlight = true;
     try {
-      const res = await fetch(`${API_BASE_URL}?url=/api/update_set`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': getToken() },
-        body: JSON.stringify(data)
-      });
-      if (res.ok) return await res.json();
-    } catch (e) { console.log('updateSet failed, queuing:', e); }
-    const pendingId = addToQueue('updateSet', data);
-    return { status: 'queued', pending_id: pendingId, offline: true };
+      for (const item of getQueue()) {
+        const endpoint = item.type === 'saveSet' ? 'save_set' : 'update_set';
+        const controller = new AbortController();
+        const timeout = window.setTimeout(() => controller.abort(), 12_000);
+        try {
+          const res = await fetch(`${API_BASE_URL}?url=/api/${endpoint}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': getToken() },
+            body: JSON.stringify(item.data),
+            signal: controller.signal,
+          });
+          if (res.status === 401 || res.status === 403) {
+            markAttempt(item.id, 'authorization');
+            break;
+          }
+          const result = res.ok ? await res.json() : null;
+          if (res.ok && result?.status === 'success') {
+            removeFromQueue(item.id);
+          } else {
+            markAttempt(item.id, `HTTP ${res.status}`);
+            if (res.status >= 500) break;
+          }
+        } catch (error) {
+          markAttempt(item.id, error instanceof Error ? error.message : 'network');
+          break;
+        } finally {
+          window.clearTimeout(timeout);
+        }
+      }
+    } finally {
+      syncInFlight = false;
+    }
   },
 
   createExercise: async (name: string, group: string) => {
@@ -235,6 +291,7 @@ const useTimer = () => {
 const useSession = () => {
   const [sessionId, setSessionId] = useState('');
   const [orderCounter, setOrderCounter] = useState(0);
+  const orderCounterRef = useRef(0);
 
   useEffect(() => {
     const lastActive = localStorage.getItem(LAST_ACTIVE_KEY);
@@ -246,16 +303,21 @@ const useSession = () => {
       const newId = crypto.randomUUID();
       setSessionId(newId);
       setOrderCounter(0);
+      orderCounterRef.current = 0;
       localStorage.setItem(SESSION_ID_KEY, newId);
+      localStorage.setItem(ORDER_COUNTER_KEY, '0');
     } else {
       setSessionId(savedSession || '');
-      setOrderCounter(parseInt(savedOrder || '0'));
+      const restoredOrder = parseInt(savedOrder || '0');
+      setOrderCounter(restoredOrder);
+      orderCounterRef.current = restoredOrder;
     }
     localStorage.setItem(LAST_ACTIVE_KEY, now.toString());
   }, []);
 
   const incrementOrder = () => {
-    const next = orderCounter + 1;
+    const next = orderCounterRef.current + 1;
+    orderCounterRef.current = next;
     setOrderCounter(next);
     localStorage.setItem(ORDER_COUNTER_KEY, next.toString());
     localStorage.setItem(LAST_ACTIVE_KEY, Date.now().toString());
@@ -636,6 +698,7 @@ const ExercisesListScreen = ({ exercises, title, onBack, onSelectExercise, onAdd
 
 const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incrementOrder, bodyWeight = USER_BODY_WEIGHT_DEFAULT, haptic, notify }: any) => {
   const timer = useTimer();
+  const [setGroupId] = useState(() => crypto.randomUUID());
   const [activeExercises, setActiveExercises] = useState<string[]>([initialExercise.id]);
   const [sessionData, setSessionData] = useState<Record<string, ExerciseSessionData>>({});
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -647,12 +710,13 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
       if (prev[exId]) return prev;
       let initialSets: WorkoutSet[] = [];
       if (history.length > 0) {
-        const sortedHistory = [...history].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-        const lastDate = sortedHistory[sortedHistory.length - 1]?.date || sortedHistory[0]?.date;
-        const lastDateItems = sortedHistory.filter(h => h.date === lastDate).sort((a, b) => (a.order || 0) - (b.order || 0));
+        const lastDate = history[0]?.date;
+        const lastDateItems = history
+          .filter(h => h.date === lastDate)
+          .sort((a, b) => (a.order || 0) - (b.order || 0));
         initialSets = lastDateItems.map(h => ({
           id: crypto.randomUUID(), 
-          weight: h.weight.toString(), 
+          weight: (h.input_weight ?? h.weight).toString(),
           reps: h.reps.toString(), 
           rest: h.rest.toString(), 
           completed: false, 
@@ -695,14 +759,17 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
 
     try {
       const order = incrementOrder();
+      const exercise = allExercises.find((e: Exercise) => e.id === exId);
+      const inputWeight = parseFloat(set.weight);
       await api.saveSet({
         exercise_id: exId,
-        exercise_name: allExercises.find((e: Exercise) => e.id === exId)?.name,
-        weight: parseFloat(set.weight),
+        exercise_name: exercise?.name,
+        input_weight: inputWeight,
+        weight: calcEffectiveWeight(exercise, inputWeight, bodyWeight),
         reps: parseInt(set.reps),
         rest: parseFloat(set.rest) || 0,
         note: sessionData[exId].note,
-        set_group_id: sessionId,
+        set_group_id: setGroupId,
         session_id: sessionId,
         order,
         set_type: set.setType || 'working',
@@ -1023,6 +1090,7 @@ const App = () => {
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [newName, setNewName] = useState('');
   const [newGroup, setNewGroup] = useState('');
+  const [pendingCount, setPendingCount] = useState(getPendingCount());
 
   // Состояние для авторизации
   const [isAuthenticated, setIsAuthenticated] = useState(!!localStorage.getItem(AUTH_TOKEN_KEY));
@@ -1044,21 +1112,30 @@ const App = () => {
     }
   }, [allExercises]);
 
-  useEffect(() => { initNetworkListeners(); }, []);
   useEffect(() => {
-    const pingInterval = setInterval(() => { api.ping().catch(() => {}); }, 14 * 60 * 1000);
-    api.ping().catch(() => {});
-    return () => clearInterval(pingInterval);
+    const cleanupNetwork = initNetworkListeners();
+    const updatePendingCount = () => setPendingCount(getPendingCount());
+    window.addEventListener(QUEUE_CHANGED_EVENT, updatePendingCount);
+    updatePendingCount();
+    return () => {
+      cleanupNetwork();
+      window.removeEventListener(QUEUE_CHANGED_EVENT, updatePendingCount);
+    };
   }, []);
 
   useEffect(() => { 
     if (isAuthenticated) {
-      api.getInit().then(d => { 
-        if (d && d.groups) {
-          setGroups(sortGroups(d.groups)); 
-          setAllExercises(d.exercises || []); 
+      const applyInit = (data: any) => {
+        if (data && data.groups) {
+          setGroups(sortGroups(data.groups));
+          setAllExercises(data.exercises || []);
         }
+      };
+      applyInit(api.getCachedInit());
+      api.getInit().then(d => {
+        if (d) applyInit(d);
       }); 
+      void api.syncOfflineQueue();
     }
   }, [isAuthenticated]);
 
@@ -1106,6 +1183,14 @@ const App = () => {
       {screen === 'history' && <HistoryScreen onBack={() => setScreen('home')} />}
       {screen === 'exercises' && <ExercisesListScreen exercises={filteredExercises} title={selectedGroup || (searchQuery ? `Поиск: ${searchQuery}` : 'Все упражнения')} searchQuery={searchQuery} onSearch={(q: string) => setSearchQuery(q)} onBack={() => { setSearchQuery(''); setSelectedGroup(null); setScreen('home'); }} onSelectExercise={(ex: Exercise) => { haptic('light'); setCurrentExercise(ex); setScreen('workout'); }} onAddExercise={() => setIsCreateModalOpen(true)} onEditExercise={(ex: Exercise) => setExerciseToEdit(ex)} />}
       {screen === 'workout' && currentExercise && <WorkoutScreen initialExercise={currentExercise} allExercises={allExercises} sessionId={sessionId} incrementOrder={incrementOrder} bodyWeight={bodyWeight} haptic={haptic} notify={notify} onBack={() => setScreen('exercises')} />}
+      {pendingCount > 0 && (
+        <button
+          onClick={() => { void api.syncOfflineQueue(); }}
+          className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-full border border-amber-700/60 bg-amber-950/95 px-4 py-2 text-xs font-medium text-amber-200 shadow-xl"
+        >
+          В очереди: {pendingCount} · нажмите для синхронизации
+        </button>
+      )}
       
       <Modal isOpen={isCreateModalOpen} onClose={() => setIsCreateModalOpen(false)} title="Новое упражнение">
         <div className="space-y-4">

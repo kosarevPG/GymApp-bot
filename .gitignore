@@ -30,3 +30,4 @@ Thumbs.db
 # Frontend
 front/node_modules/
 front/dist/
+backend-deploy.zip

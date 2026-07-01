@@ -28,6 +28,7 @@ export interface WorkoutSet {
 export interface HistoryItem {
   date: string;
   weight: number;
+  input_weight?: number;
   reps: number;
   rest: number;
   order?: number;

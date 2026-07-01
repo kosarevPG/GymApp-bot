@@ -1,91 +1,75 @@
-# Деплой gymtracker в PROD
+# GymApp v2 deployment
 
-## Архитектура
+The v2 deployment must use new Yandex Function and frontend URLs. Do not
+overwrite the legacy Render service or the old YDB function during validation.
 
-- **Frontend**: React + Vite → GitHub Pages
-- **Backend**: Yandex Cloud Function (Python 3.12) + YDB
-
-## Чеклист перед деплоем
-
-- [ ] `npm run build` в `front/` — сборка без ошибок
-- [ ] Переменные YDB и AUTH_TOKEN заданы (для бэкенда)
-- [ ] Миграция YDB выполнена (если таблицы уже существуют)
-
----
-
-## 1. Миграция YDB (при первом деплое или изменении схемы)
+## 1. Create a new Yandex Cloud Function
 
 ```bash
-cd /path/to/Gymtracker/Archive/back
-export YDB_ENDPOINT="grpcs://ydb.serverless.yandexcloud.net:2135"
-export YDB_DATABASE="/ru-central1/b1g.../etn..."
-export YDB_METADATA_CREDENTIALS=1   # или YDB_SERVICE_ACCOUNT_KEY_FILE_CREDENTIALS=path/to/key.json
-
-pip install ydb
-python run_migration_analytics.py
+yc serverless function create --name gymapp-v2
+yc serverless function get gymapp-v2
 ```
 
----
-
-## 2. Деплой Backend (Yandex Cloud Function)
-
-Требуется: [Yandex Cloud CLI](https://cloud.yandex.ru/docs/cli/quickstart), `yc init`
+Export the returned function ID and backend secrets:
 
 ```bash
-cd GymApp
-export YDB_ENDPOINT="grpcs://ydb.serverless.yandexcloud.net:2135"
-export YDB_DATABASE="/ru-central1/b1g.../etn..."
-export AUTH_TOKEN="ваш_секретный_токен"
+export FUNCTION_ID="<new function id>"
+export SPREADSHEET_ID="<spreadsheet id>"
+export GOOGLE_CREDENTIALS_JSON='<complete service account JSON>'
+export AUTH_TOKEN="<long random token>"
+export FRONTEND_URL="https://<user>.github.io/GymApp/"
+```
 
+Optional Telegram webhook variables:
+
+```bash
+export BOT_TOKEN="<telegram bot token>"
+export TELEGRAM_WEBHOOK_SECRET="<random secret>"
+```
+
+Deploy:
+
+```bash
 ./scripts/deploy_function.sh
 ```
 
-Путь к бэкенду по умолчанию: `../Gymtracker/Archive/back` (соседняя папка с GymApp). Или: `./scripts/deploy_function.sh /путь/к/back`.
+Entrypoint: `index.handler`. Runtime: Python 3.12.
 
----
-
-## 3. Деплой Frontend (GitHub Pages)
+## 2. Verify the backend
 
 ```bash
-cd GymApp/front
+curl -H "Authorization: $AUTH_TOKEN" \
+  "https://functions.yandexcloud.net/$FUNCTION_ID?url=/api/ping"
+
+curl -H "Authorization: $AUTH_TOKEN" \
+  "https://functions.yandexcloud.net/$FUNCTION_ID?url=/api/init"
+```
+
+Do not test `save_set` against production until the read-only endpoints and a
+spreadsheet backup have been verified.
+
+## 3. Deploy the frontend
+
+Create `front/.env.local`:
+
+```dotenv
+VITE_API_BASE_URL=https://functions.yandexcloud.net/<new function id>
+```
+
+Then:
+
+```bash
+cd front
+npm run build
 npm run deploy
 ```
 
-Публикует `dist/` в ветку `gh-pages`. URL: `https://<user>.github.io/GymApp/`
+## 4. Telegram
 
-**Важно:** В `vite.config.ts` задан `base: '/GymApp/'` — для корневого репозитория измените на `base: '/'`.
+After the new frontend passes acceptance testing, either:
 
----
+1. set the bot menu button to the new GitHub Pages URL in BotFather; or
+2. configure Telegram webhook `/api/telegram` on the new function.
 
-## 4. Переменные окружения
-
-### Frontend (build-time)
-
-| Переменная | Описание |
-|------------|----------|
-| `VITE_API_BASE_URL` | URL Cloud Function (по умолчанию: `https://functions.yandexcloud.net/d4errkd42gb1i7s41qsd`) |
-
-### Backend (Yandex Cloud Function)
-
-| Переменная | Описание |
-|------------|----------|
-| `YDB_ENDPOINT` | Endpoint YDB |
-| `YDB_DATABASE` | Путь к базе |
-| `AUTH_TOKEN` | Секретный токен для API |
-| `YDB_METADATA_CREDENTIALS` | `1` — использовать metadata сервисного аккаунта |
-| `YDB_LOG_TABLE` | `workout_logs` (по умолчанию) |
-
----
-
-## Быстрый деплой (всё сразу)
-
-```bash
-# 1. Сборка
-cd GymApp/front && npm run build
-
-# 2. Деплой фронта
-npm run deploy
-
-# 3. Деплой бэка (если нужен)
-cd .. && ./scripts/deploy_function.sh
-```
+Keep the old Telegram button and Render service unchanged until v2 has been
+tested during a real workout.
