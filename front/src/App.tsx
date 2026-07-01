@@ -6,43 +6,15 @@ import {
   History as HistoryIcon, Activity, Link as LinkIcon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts';
 import { API_BASE_URL, AUTH_TOKEN_KEY, WORKOUT_STORAGE_KEY, sortGroups, SESSION_ID_KEY, ORDER_COUNTER_KEY, LAST_ACTIVE_KEY } from './constants';
+import { SetDisplayRow } from './components/SetDisplayRow';
+import { calcEffectiveWeight, USER_BODY_WEIGHT_DEFAULT } from './exerciseConfig';
+import type { Exercise, WorkoutSet, HistoryItem, ExerciseSessionData, SetType } from './types';
 
 // --- TYPES ---
 
-type Screen = 'home' | 'exercises' | 'workout' | 'history';
-
-interface Exercise {
-  id: string;
-  name: string;
-  muscleGroup: string;
-  description?: string;
-  imageUrl?: string;
-}
-
-interface WorkoutSet {
-  id: string;
-  weight: string;
-  reps: string;
-  rest: string;
-  completed: boolean;
-  prevWeight?: number;
-}
-
-interface HistoryItem {
-  date: string;
-  weight: number;
-  reps: number;
-  rest: number;
-  order?: number;
-}
-
-interface ExerciseSessionData {
-  exercise: Exercise;
-  note: string;
-  sets: WorkoutSet[];
-  history: HistoryItem[];
-}
+type Screen = 'home' | 'exercises' | 'workout' | 'history' | 'analytics';
 
 interface GlobalWorkoutSession {
   id: string;
@@ -117,7 +89,13 @@ const api = {
 
   getHistory: async (exerciseId: string) => {
     const data = await api.request(`history?exercise_id=${exerciseId}`);
-    return data || { history: [], note: '' };
+    const raw = data || { history: [], note: '' };
+    let history: HistoryItem[] = raw.history || [];
+    const first = history[0] as { sets?: unknown[] } | undefined;
+    if (history.length > 0 && first && 'sets' in first && Array.isArray(first.sets)) {
+      history = history.flatMap((d: { date: string; sets?: Record<string, unknown>[] }) => (d.sets || []).map((s) => ({ ...s, date: d.date }))) as HistoryItem[];
+    }
+    return { history, note: raw.note || '' };
   },
 
   getGlobalHistory: async () => {
@@ -283,7 +261,18 @@ const useSession = () => {
     localStorage.setItem(LAST_ACTIVE_KEY, Date.now().toString());
     return next;
   };
-  return { sessionId, incrementOrder };
+  const bodyWeightKey = 'gym_body_weight';
+  const [bodyWeight, setBodyWeight] = useState(() => {
+    try {
+      const v = localStorage.getItem(bodyWeightKey);
+      return v ? parseFloat(v) : USER_BODY_WEIGHT_DEFAULT;
+    } catch { return USER_BODY_WEIGHT_DEFAULT; }
+  });
+  const updateBodyWeight = (v: number) => {
+    setBodyWeight(v);
+    localStorage.setItem(bodyWeightKey, String(v));
+  };
+  return { sessionId, incrementOrder, bodyWeight, updateBodyWeight };
 };
 
 // --- UI COMPONENTS ---
@@ -337,16 +326,23 @@ const Modal = ({ isOpen, onClose, title, children, headerAction }: any) => (
 
 // --- FEATURES ---
 
-const TimerBlock = ({ timer, onToggle }: any) => (
-  <div className="sticky top-0 z-40 bg-zinc-950/80 backdrop-blur-md pb-4 pt-2 px-4 border-b border-zinc-800/50 mb-4">
-    <Card className="flex items-center justify-between p-3 px-5 shadow-xl shadow-black/50">
-      <div className="font-mono text-3xl font-bold tracking-wider text-zinc-50 tabular-nums">{timer.formatTime(timer.time)}</div>
-      <div className="flex gap-2">
-        <Button variant={timer.isRunning ? "danger" : "primary"} onClick={onToggle} className="w-20 h-10 text-sm">{timer.isRunning ? "Стоп" : "Старт"}</Button>
-      </div>
-    </Card>
-  </div>
-);
+const TimerBlock = ({ timer, onToggle, sessionTonnage = 0 }: any) => {
+  const minutes = timer.time / 60;
+  const density = minutes > 0 ? Math.round(sessionTonnage / minutes) : 0;
+  return (
+    <div className="sticky top-0 z-40 bg-zinc-950/80 backdrop-blur-md pb-4 pt-2 px-4 border-b border-zinc-800/50 mb-4">
+      <Card className="flex items-center justify-between p-3 px-5 shadow-xl shadow-black/50">
+        <div className="flex flex-col gap-0.5">
+          <div className="font-mono text-3xl font-bold tracking-wider text-zinc-50 tabular-nums">{timer.formatTime(timer.time)}</div>
+          {sessionTonnage > 0 && <div className="text-xs text-zinc-500">Плотность: {density} кг/мин</div>}
+        </div>
+        <div className="flex gap-2">
+          <Button variant={timer.isRunning ? "danger" : "primary"} onClick={onToggle} className="w-20 h-10 text-sm">{timer.isRunning ? "Стоп" : "Старт"}</Button>
+        </div>
+      </Card>
+    </div>
+  );
+};
 
 const NoteWidget = ({ initialValue, onChange }: any) => {
   const [isOpen, setIsOpen] = useState(false);
@@ -392,8 +388,15 @@ const HistoryListModal = ({ isOpen, onClose, history, exerciseName }: any) => {
             </div>
             <div className="bg-zinc-800/30 border border-zinc-800 rounded-xl overflow-hidden">
               {items.map((item, idx) => (
-                <div key={idx} className="p-3 border-b border-zinc-800 last:border-0 text-left text-sm text-zinc-400">
-                  {item.weight} кг х {item.reps} повт, {item.rest}м
+                <div key={idx} className="p-3 border-b border-zinc-800 last:border-0">
+                  <SetDisplayRow
+                    weight={item.weight}
+                    reps={item.reps}
+                    rest={item.rest}
+                    setType={item.set_type}
+                    rpe={item.rpe}
+                    rir={item.rir}
+                  />
                 </div>
               ))}
             </div>
@@ -405,58 +408,103 @@ const HistoryListModal = ({ isOpen, onClose, history, exerciseName }: any) => {
   );
 };
 
-const SetRow = ({ set, onUpdate, onDelete, onComplete }: { set: any; onUpdate: (sid: string, field: string, value: string) => void; onDelete: (sid: string) => void; onComplete: (sid: string) => void }) => {
-  const oneRM = set.weight && set.reps ? Math.round(parseFloat(set.weight) * (1 + parseInt(set.reps) / 30)) : 0;
-  const delta = set.prevWeight ? (parseFloat(set.weight) - set.prevWeight) : 0;
+const SET_TYPE_CYCLE: SetType[] = ['warmup', 'working', 'drop', 'failure'];
+const SET_TYPE_LABELS: Record<SetType, string> = { warmup: 'W', working: 'R', drop: 'D', failure: 'F' };
+
+const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, onUpdate, onDelete, onComplete }: { set: WorkoutSet; exercise?: Exercise; bodyWeight?: number; onUpdate: (sid: string, field: string, value: string | number) => void; onDelete: (sid: string) => void; onComplete: (sid: string) => void }) => {
+  const effectiveWeight = calcEffectiveWeight(exercise, parseFloat(set.weight || '0'), bodyWeight);
+  const oneRM = set.weight && set.reps ? Math.round(effectiveWeight * (1 + parseInt(set.reps) / 30)) : 0;
+  const delta = set.prevWeight ? (effectiveWeight - set.prevWeight) : 0;
   const deltaText = delta > 0 ? `+${delta}` : delta < 0 ? `${delta}` : '0';
   const deltaColor = delta > 0 ? 'text-green-500' : delta < 0 ? 'text-red-500' : 'text-zinc-500';
 
   return (
-    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`grid grid-cols-[auto_1fr_1fr_1fr_auto] gap-2 items-start mb-3 ${set.completed ? 'opacity-50 pointer-events-none grayscale' : ''}`}>
-      <button onClick={() => onComplete(set.id)} className={`w-12 h-12 rounded-xl border flex items-center justify-center transition-colors ${set.completed ? 'bg-green-500 border-green-500' : 'bg-zinc-900 border-zinc-700'}`}>
-        {set.completed && <Check className="w-6 h-6 text-white" />}
-      </button>
-      <div className="flex flex-col gap-1">
+    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`mb-3 ${set.completed ? 'opacity-50 pointer-events-none grayscale' : ''}`}>
+      <div className="grid grid-cols-[auto_auto_1fr_1fr_1fr_auto] gap-2 items-start">
+        <button
+          onClick={() => {
+            const idx = SET_TYPE_CYCLE.indexOf((set.setType || 'working') as SetType);
+            const next = SET_TYPE_CYCLE[(idx + 1) % SET_TYPE_CYCLE.length];
+            onUpdate(set.id, 'setType', next);
+          }}
+          className={`w-8 h-12 rounded-lg text-xs font-bold flex items-center justify-center transition-colors ${
+            (set.setType || 'working') === 'warmup' ? 'bg-zinc-700 text-zinc-400' :
+            (set.setType || 'working') === 'drop' ? 'bg-orange-900/50 text-orange-400' :
+            (set.setType || 'working') === 'failure' ? 'bg-red-900/50 text-red-400' :
+            'bg-zinc-800 text-zinc-200'
+          }`}
+          title={set.setType || 'working'}
+        >
+          {SET_TYPE_LABELS[(set.setType || 'working') as SetType]}
+        </button>
+        <button onClick={() => onComplete(set.id)} className={`w-12 h-12 rounded-xl border flex items-center justify-center transition-colors ${set.completed ? 'bg-green-500 border-green-500' : 'bg-zinc-900 border-zinc-700'}`}>
+          {set.completed && <Check className="w-6 h-6 text-white" />}
+        </button>
+        <div className="flex flex-col gap-1">
+          <input 
+            type="number" 
+            inputMode="decimal" 
+            placeholder="0" 
+            value={set.weight} 
+            onChange={e => onUpdate(set.id, 'weight', e.target.value)}
+            onFocus={e => e.target.select()}
+            className="w-full h-12 bg-zinc-800 rounded-xl text-center text-xl font-bold text-zinc-100 focus:ring-1 focus:ring-blue-500 outline-none tabular-nums" 
+          />
+          {(oneRM > 0 || set.prevWeight !== undefined || (set.rir != null && set.rir !== '')) && (
+            <div className="flex justify-between px-1 text-[10px]">
+              <span>
+                {oneRM > 0 && <span className="text-zinc-500">1PM:{oneRM}</span>}
+                {set.rir != null && set.rir !== '' && <span className="text-zinc-500 ml-1">| RIR: {set.rir}</span>}
+              </span>
+              {set.prevWeight !== undefined && <span className={`${deltaColor} font-medium`}>{deltaText}</span>}
+            </div>
+          )}
+        </div>
+        <input 
+          type="tel" 
+          inputMode="numeric" 
+          placeholder="0" 
+          value={set.reps} 
+          onChange={e => onUpdate(set.id, 'reps', e.target.value)}
+          onFocus={e => e.target.select()}
+          className="w-full h-12 bg-zinc-800 rounded-xl text-center text-xl font-bold text-zinc-100 focus:ring-1 focus:ring-blue-500 outline-none tabular-nums" 
+        />
         <input 
           type="number" 
           inputMode="decimal" 
           placeholder="0" 
-          value={set.weight} 
-          onChange={e => onUpdate(set.id, 'weight', e.target.value)}
+          value={set.rest} 
+          onChange={e => onUpdate(set.id, 'rest', e.target.value)}
           onFocus={e => e.target.select()}
-          className="w-full h-12 bg-zinc-800 rounded-xl text-center text-xl font-bold text-zinc-100 focus:ring-1 focus:ring-blue-500 outline-none tabular-nums" 
+          className="w-full h-12 bg-zinc-800 rounded-xl text-center text-zinc-400 focus:text-zinc-100 focus:ring-1 focus:ring-blue-500 outline-none tabular-nums" 
         />
-        {(oneRM > 0 || set.prevWeight) && (
-          <div className="flex justify-between px-1 text-[10px]">
-            {oneRM > 0 && <span className="text-zinc-500">1PM:{oneRM}</span>}
-            {set.prevWeight !== undefined && <span className={`${deltaColor} font-medium`}>{deltaText}</span>}
-          </div>
-        )}
+        <button onClick={() => onDelete(set.id)} className="w-10 h-12 flex items-center justify-center text-zinc-600 hover:text-red-500"><Trash2 className="w-5 h-5" /></button>
       </div>
-      <input 
-        type="tel" 
-        inputMode="numeric" 
-        placeholder="0" 
-        value={set.reps} 
-        onChange={e => onUpdate(set.id, 'reps', e.target.value)}
-        onFocus={e => e.target.select()}
-        className="w-full h-12 bg-zinc-800 rounded-xl text-center text-xl font-bold text-zinc-100 focus:ring-1 focus:ring-blue-500 outline-none tabular-nums" 
-      />
-      <input 
-        type="number" 
-        inputMode="decimal" 
-        placeholder="0" 
-        value={set.rest} 
-        onChange={e => onUpdate(set.id, 'rest', e.target.value)}
-        onFocus={e => e.target.select()}
-        className="w-full h-12 bg-zinc-800 rounded-xl text-center text-zinc-400 focus:text-zinc-100 focus:ring-1 focus:ring-blue-500 outline-none tabular-nums" 
-      />
-      <button onClick={() => onDelete(set.id)} className="w-10 h-12 flex items-center justify-center text-zinc-600 hover:text-red-500"><Trash2 className="w-5 h-5" /></button>
+      <div className="flex flex-wrap gap-2 mt-2 ml-14">
+        {([0, 1, 2, 3] as const).map(rirVal => (
+          <button
+            key={rirVal}
+            onClick={() => onUpdate(set.id, 'rir', set.rir === rirVal ? '' : rirVal)}
+            className={`px-2 py-1 text-xs rounded-lg border ${String(set.rir) === String(rirVal) ? 'bg-zinc-700 border-zinc-600 text-zinc-200' : 'bg-zinc-800/50 border-zinc-800 text-zinc-500'}`}
+          >
+            RIR {rirVal}{rirVal === 3 ? '+' : ''}
+          </button>
+        ))}
+        <input
+          type="number"
+          min={1}
+          max={10}
+          placeholder="RPE"
+          value={set.rpe ?? ''}
+          onChange={e => onUpdate(set.id, 'rpe', e.target.value)}
+          className="w-12 h-7 bg-zinc-800 rounded text-center text-xs text-zinc-400 focus:text-zinc-100 focus:ring-1 focus:ring-blue-500 outline-none"
+        />
+      </div>
     </motion.div>
   );
 };
 
-const WorkoutCard = ({ exerciseData, onAddSet, onUpdateSet, onDeleteSet, onCompleteSet, onNoteChange, onAddSuperset }: any) => {
+const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, onAddSet, onUpdateSet, onDeleteSet, onCompleteSet, onNoteChange, onAddSuperset }: any) => {
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const personalRecord = useMemo(() => {
     if (!exerciseData.history.length) return 0;
@@ -478,7 +526,8 @@ const WorkoutCard = ({ exerciseData, onAddSet, onUpdateSet, onDeleteSet, onCompl
       </div>
       <NoteWidget initialValue={exerciseData.note} onChange={onNoteChange} />
       <HistoryListModal isOpen={showHistoryModal} onClose={() => setShowHistoryModal(false)} history={exerciseData.history} exerciseName={exerciseData.exercise.name} />
-      <div className="grid grid-cols-[auto_1fr_1fr_1fr_auto] gap-2 mb-2 px-1">
+      <div className="grid grid-cols-[auto_auto_1fr_1fr_1fr_auto] gap-2 mb-2 px-1">
+        <div className="w-8" />
         <div className="w-10" />
         <div className="text-[10px] text-center text-zinc-500 font-bold uppercase">КГ</div>
         <div className="text-[10px] text-center text-zinc-500 font-bold uppercase">ПОВТ</div>
@@ -486,8 +535,8 @@ const WorkoutCard = ({ exerciseData, onAddSet, onUpdateSet, onDeleteSet, onCompl
         <div className="w-8" />
       </div>
       <div className="space-y-1">
-        {exerciseData.sets.map((set: any) => (
-          <SetRow key={set.id} set={set} onUpdate={onUpdateSet} onDelete={onDeleteSet} onComplete={onCompleteSet} />
+        {exerciseData.sets.map((set: WorkoutSet) => (
+          <SetRow key={set.id} set={set} exercise={exerciseData.exercise} bodyWeight={bodyWeight} onUpdate={onUpdateSet} onDelete={onDeleteSet} onComplete={onCompleteSet} />
         ))}
       </div>
       <div className="flex gap-2 mt-4">
@@ -500,7 +549,7 @@ const WorkoutCard = ({ exerciseData, onAddSet, onUpdateSet, onDeleteSet, onCompl
 
 // --- SCREENS ---
 
-const HomeScreen = ({ groups, onSearch, onSelectGroup, onAllExercises, onHistory }: any) => (
+const HomeScreen = ({ groups, onSearch, onSelectGroup, onAllExercises, onHistory, onAnalytics }: any) => (
   <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="p-4 space-y-6">
     <div className="flex items-center gap-2">
       <div className="relative flex-1">
@@ -508,6 +557,7 @@ const HomeScreen = ({ groups, onSearch, onSelectGroup, onAllExercises, onHistory
         <Input placeholder="Найти..." onChange={(e: React.ChangeEvent<HTMLInputElement>) => onSearch(e.target.value)} className="pl-12 bg-zinc-900 w-full" />
       </div>
       <button onClick={onHistory} className="p-3 bg-zinc-900 rounded-xl text-zinc-400 hover:text-blue-500"><HistoryIcon className="w-6 h-6" /></button>
+      <button onClick={onAnalytics} className="p-3 bg-zinc-900 rounded-xl text-zinc-400 hover:text-blue-500"><Activity className="w-6 h-6" /></button>
     </div>
     <div className="flex flex-col space-y-2">
       {groups.map((group: string) => (
@@ -584,7 +634,7 @@ const ExercisesListScreen = ({ exercises, title, onBack, onSelectExercise, onAdd
   );
 };
 
-const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incrementOrder, haptic, notify }: any) => {
+const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incrementOrder, bodyWeight = USER_BODY_WEIGHT_DEFAULT, haptic, notify }: any) => {
   const timer = useTimer();
   const [activeExercises, setActiveExercises] = useState<string[]>([initialExercise.id]);
   const [sessionData, setSessionData] = useState<Record<string, ExerciseSessionData>>({});
@@ -606,16 +656,33 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
           reps: h.reps.toString(), 
           rest: h.rest.toString(), 
           completed: false, 
-          prevWeight: h.weight
+          prevWeight: h.weight,
+          setType: (h.set_type as SetType) || 'working',
+          rpe: h.rpe,
+          rir: h.rir
         }));
       } else {
         initialSets = [{ id: crypto.randomUUID(), weight: '', reps: '', rest: '', completed: false, prevWeight: 0 }];
       }
-      return { ...prev, [exId]: { exercise: allExercises.find((e: Exercise) => e.id === exId)!, note: note || '', history, sets: initialSets } };
+      return { ...prev, [exId]: { exercise: allExercises.find((e: Exercise) => e.id === exId)!, note: note || '', history, sets: initialSets, sessionId } };
     });
   };
 
   useEffect(() => { activeExercises.forEach(id => loadExerciseData(id)); }, [activeExercises]);
+
+  const sessionTonnage = useMemo(() => {
+    let total = 0;
+    activeExercises.forEach(exId => {
+      const data = sessionData[exId];
+      if (!data) return;
+      const ex = allExercises.find((e: Exercise) => e.id === exId);
+      data.sets.filter((s: WorkoutSet) => s.completed && (s.setType || 'working') === 'working').forEach((s: WorkoutSet) => {
+        const w = calcEffectiveWeight(ex, parseFloat(s.weight || '0'), bodyWeight);
+        total += w * (parseInt(s.reps || '0') || 0);
+      });
+    });
+    return total;
+  }, [sessionData, activeExercises, allExercises, bodyWeight]);
 
   const handleCompleteSet = async (exId: string, setId: string) => {
     const set = sessionData[exId]?.sets.find(s => s.id === setId);
@@ -630,12 +697,17 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
       const order = incrementOrder();
       await api.saveSet({
         exercise_id: exId,
+        exercise_name: allExercises.find((e: Exercise) => e.id === exId)?.name,
         weight: parseFloat(set.weight),
         reps: parseInt(set.reps),
         rest: parseFloat(set.rest) || 0,
         note: sessionData[exId].note,
         set_group_id: sessionId,
-        order
+        session_id: sessionId,
+        order,
+        set_type: set.setType || 'working',
+        rpe: set.rpe != null && set.rpe !== '' ? parseFloat(String(set.rpe)) : undefined,
+        rir: set.rir != null && set.rir !== '' ? parseInt(String(set.rir), 10) : undefined
       });
       notify('success');
     } catch (e) {
@@ -643,7 +715,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
     }
   };
 
-  const handleUpdateSet = (exId: string, setId: string, field: string, val: string) => {
+  const handleUpdateSet = (exId: string, setId: string, field: string, val: string | number) => {
     setSessionData(prev => ({ ...prev, [exId]: { ...prev[exId], sets: prev[exId].sets.map(s => s.id === setId ? { ...s, [field]: val } : s) } }));
   };
   
@@ -651,7 +723,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
     setSessionData(prev => {
       const currentSets = prev[exId].sets;
       const lastSet = currentSets[currentSets.length - 1];
-      const newSet = { id: crypto.randomUUID(), weight: lastSet?.weight || '', reps: lastSet?.reps || '', rest: lastSet?.rest || '', completed: false, prevWeight: 0 };
+      const newSet: WorkoutSet = { id: crypto.randomUUID(), weight: lastSet?.weight || '', reps: lastSet?.reps || '', rest: lastSet?.rest || '', completed: false, prevWeight: 0, setType: 'working' };
       return { ...prev, [exId]: { ...prev[exId], sets: [...currentSets, newSet] } };
     });
   };
@@ -661,7 +733,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
       if (!prev[exId]) return prev;
       const filteredSets = prev[exId].sets.filter(s => s.id !== setId);
       const finalSets = filteredSets.length === 0 
-        ? [{ id: crypto.randomUUID(), weight: '', reps: '', rest: '', completed: false, prevWeight: 0 }]
+        ? [{ id: crypto.randomUUID(), weight: '', reps: '', rest: '', completed: false, prevWeight: 0, setType: 'working' as SetType }]
         : filteredSets;
       return { ...prev, [exId]: { ...prev[exId], sets: finalSets } };
     });
@@ -669,12 +741,12 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
 
   return (
     <div className="min-h-screen bg-zinc-950 pb-20">
-      <TimerBlock timer={timer} onToggle={() => timer.isRunning ? timer.reset() : timer.start()} />
+      <TimerBlock timer={timer} onToggle={() => timer.isRunning ? timer.reset() : timer.start()} sessionTonnage={sessionTonnage} />
       <div className="px-4 space-y-4">
         {activeExercises.map(exId => {
           const data = sessionData[exId];
           if (!data) return <div key={exId} className="h-40 bg-zinc-900 rounded-2xl animate-pulse" />;
-          return <WorkoutCard key={exId} exerciseData={data} onAddSet={() => handleAddSet(exId)} onUpdateSet={(sid: string, f: string, v: string) => handleUpdateSet(exId, sid, f, v)} onDeleteSet={(sid: string) => handleDeleteSet(exId, sid)} onCompleteSet={(sid: string) => handleCompleteSet(exId, sid)} onNoteChange={(val: string) => setSessionData(p => ({...p, [exId]: {...p[exId], note: val}}))} onAddSuperset={() => setIsAddModalOpen(true)} />;
+          return <WorkoutCard key={exId} exerciseData={data} bodyWeight={bodyWeight} onAddSet={() => handleAddSet(exId)} onUpdateSet={(sid: string, f: string, v: string) => handleUpdateSet(exId, sid, f, v)} onDeleteSet={(sid: string) => handleDeleteSet(exId, sid)} onCompleteSet={(sid: string) => handleCompleteSet(exId, sid)} onNoteChange={(val: string) => setSessionData(p => ({...p, [exId]: {...p[exId], note: val}}))} onAddSuperset={() => setIsAddModalOpen(true)} />;
         })}
       </div>
       <div className="px-4 mt-8 mb-20"><Button variant="primary" onClick={onBack} className="w-full h-14 text-lg font-semibold shadow-xl shadow-blue-900/20">Завершить упражнение</Button></div>
@@ -761,16 +833,18 @@ const HistoryScreen = ({ onBack }: any) => {
                           <div className="font-medium text-zinc-300 mb-2">{ex.name}</div>
                           {ex.sets && Array.isArray(ex.sets) && ex.sets.length > 0 ? (
                             <div className="space-y-1">
-                              {ex.sets.map((s: any, j: number) => {
-                                const weight = typeof s.weight === 'number' ? s.weight : parseFloat(String(s.weight || 0));
-                                const reps = typeof s.reps === 'number' ? s.reps : parseInt(String(s.reps || 0));
-                                const rest = typeof s.rest === 'number' ? s.rest : parseFloat(String(s.rest || 0));
-                                return (
-                                  <div key={j} className="text-sm text-zinc-400 text-left px-2 py-1 bg-zinc-800/30 rounded">
-                                    {weight} кг х {reps} повт, {rest}м
-                                  </div>
-                                );
-                              })}
+                              {ex.sets.map((s: any, j: number) => (
+                                <div key={j} className="px-2 py-1 bg-zinc-800/30 rounded">
+                                  <SetDisplayRow
+                                    weight={s.weight}
+                                    reps={s.reps}
+                                    rest={s.rest}
+                                    setType={s.set_type}
+                                    rpe={s.rpe}
+                                    rir={s.rir}
+                                  />
+                                </div>
+                              ))}
                             </div>
                           ) : <div className="text-xs text-zinc-500">Нет подходов</div>}
                         </div>
@@ -788,12 +862,120 @@ const HistoryScreen = ({ onBack }: any) => {
   );
 };
 
+const MUSCLE_ORDER = ['Спина', 'Ноги', 'Грудь', 'Плечи', 'Трицепс', 'Бицепс', 'Пресс', 'Кардио'];
+
+const AnalyticsScreen = ({ onBack }: any) => {
+  const [data, setData] = useState<{ volume?: number; acwr?: { acute: number; chronic: number; ratio: number; status: string }; muscleVolume?: Record<string, number>; muscleSets?: Record<string, number> } | null>(null);
+  const [period, setPeriod] = useState(14);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    api.getAnalytics(period).then((d) => {
+      setData(d);
+      setLoading(false);
+    });
+  }, [period]);
+
+  const muscleList = useMemo(() => {
+    const sets = data?.muscleSets || {};
+    const vol = data?.muscleVolume || {};
+    const hasData = MUSCLE_ORDER.some(m => (sets[m] ?? 0) > 0 || (vol[m] ?? 0) > 0);
+    return hasData ? MUSCLE_ORDER.filter(m => (sets[m] ?? 0) > 0 || (vol[m] ?? 0) > 0) : [...MUSCLE_ORDER];
+  }, [data?.muscleSets, data?.muscleVolume]);
+
+  const barColor = (sets: number) => {
+    if (sets < 6) return 'bg-zinc-600';
+    if (sets >= 10 && sets <= 15) return 'bg-green-600';
+    if (sets > 20) return 'bg-red-600';
+    return 'bg-zinc-500';
+  };
+
+  return (
+    <motion.div initial={{ x: 50, opacity: 0 }} animate={{ x: 0, opacity: 1 }} className="min-h-screen bg-zinc-950">
+      <div className="sticky top-0 z-30 bg-zinc-950/80 backdrop-blur-md border-b border-zinc-800 p-4 flex items-center gap-4">
+        <button onClick={onBack} className="p-2 -ml-2 text-zinc-400 active:text-white"><ChevronLeft className="w-6 h-6" /></button>
+        <h1 className="text-xl font-bold">Аналитика</h1>
+      </div>
+      <div className="p-4 space-y-6 pb-20">
+        {data?.acwr?.status === 'danger' && (
+          <div className="p-4 rounded-xl bg-red-900/40 border border-red-700 text-red-200 text-sm font-medium flex items-center gap-2">
+            <Activity className="w-5 h-5 flex-shrink-0" />
+            ACWR {data.acwr.ratio} — риск перетренированности. Снизьте нагрузку.
+          </div>
+        )}
+        <div className="flex gap-2">
+          {[7, 14, 28].map((d) => (
+            <button key={d} onClick={() => setPeriod(d)} className={`px-4 py-2 rounded-xl text-sm font-medium ${period === d ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-400'}`}>{d} дн.</button>
+          ))}
+        </div>
+        {loading ? (
+          <div className="text-center text-zinc-500 py-10">Загрузка...</div>
+        ) : (
+          <>
+            <Card className="p-4">
+              <h2 className="text-sm font-bold text-zinc-400 uppercase mb-3">Тоннаж по мышцам (подходы)</h2>
+              <div className="space-y-3">
+                {muscleList.map((m) => {
+                  const sets = (data?.muscleSets || {})[m] ?? 0;
+                  const pct = Math.min(100, (sets / 20) * 100);
+                  return (
+                    <div key={m} className="flex items-center gap-3">
+                      <span className="text-zinc-300 w-24 text-sm">{m}</span>
+                      <div className="flex-1 h-6 bg-zinc-800 rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full transition-all ${barColor(sets)}`} style={{ width: `${pct}%` }} />
+                      </div>
+                      <span className="text-zinc-500 text-sm w-8">{sets}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+            <Card className="p-4">
+              <h2 className="text-sm font-bold text-zinc-400 uppercase mb-3">Объём по группам (кг)</h2>
+              <div className="h-48">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={muscleList.map(m => ({ name: m, volume: Math.round((data?.muscleVolume || {})[m] ?? 0) }))} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                    <XAxis dataKey="name" tick={{ fill: '#a1a1aa', fontSize: 10 }} />
+                    <YAxis tick={{ fill: '#a1a1aa', fontSize: 10 }} />
+                    <Tooltip contentStyle={{ backgroundColor: '#27272a', border: '1px solid #3f3f46' }} formatter={(v: number | undefined) => [(v ?? 0).toLocaleString('ru') + ' кг', 'Тоннаж']} />
+                    <Bar dataKey="volume" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </Card>
+            <Card className="p-4">
+              <h2 className="text-sm font-bold text-zinc-400 uppercase mb-3">Объём нагрузки</h2>
+              <div className="text-2xl font-bold text-zinc-50">{(data?.volume ?? 0).toLocaleString('ru')} кг</div>
+              {data?.acwr && (
+                <div className="mt-2 text-sm text-zinc-400">
+                  ACWR: {data.acwr.ratio} (острая: {data.acwr.acute?.toLocaleString()}, хроническая: {data.acwr.chronic?.toLocaleString()})
+                </div>
+              )}
+            </Card>
+          </>
+        )}
+      </div>
+    </motion.div>
+  );
+};
+
 const EditExerciseModal = ({ isOpen, onClose, exercise, groups, onSave }: any) => {
   const [name, setName] = useState('');
   const [group, setGroup] = useState('');
   const [image, setImage] = useState('');
+  const [weightMultiplier, setWeightMultiplier] = useState<string>('1');
+  const [secondaryMuscles, setSecondaryMuscles] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
-  useEffect(() => { if (exercise) { setName(exercise.name); setGroup(exercise.muscleGroup); setImage(exercise.imageUrl || ''); } }, [exercise]);
+  useEffect(() => {
+    if (exercise) {
+      setName(exercise.name);
+      setGroup(exercise.muscleGroup);
+      setImage(exercise.imageUrl || '');
+      setWeightMultiplier(String(exercise.weightMultiplier ?? 1));
+      setSecondaryMuscles(exercise.secondaryMuscles || '');
+    }
+  }, [exercise]);
   
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -812,7 +994,15 @@ const EditExerciseModal = ({ isOpen, onClose, exercise, groups, onSave }: any) =
           <label className="text-sm text-zinc-400 mb-1 block">Группа</label>
           <div className="flex flex-wrap gap-2">{groups.map((g: string) => <button key={g} onClick={() => setGroup(g)} className={`px-3 py-2 rounded-xl text-sm border ${group === g ? 'bg-blue-600 border-blue-600 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-400'}`}>{g}</button>)}</div>
         </div>
-        <Button onClick={() => { onSave(exercise.id, { name, muscleGroup: group, imageUrl: image }); onClose(); }} className="w-full h-12">Сохранить</Button>
+        <div>
+          <label className="text-sm text-zinc-400 mb-1 block">Коэф. веса тела (0.68 для отжиманий)</label>
+          <Input type="number" step="0.01" min="0" max="2" value={weightMultiplier} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setWeightMultiplier(e.target.value)} placeholder="1" />
+        </div>
+        <div>
+          <label className="text-sm text-zinc-400 mb-1 block">Вторичные мышцы</label>
+          <Input value={secondaryMuscles} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSecondaryMuscles(e.target.value)} placeholder="Грудь, Трицепс" />
+        </div>
+        <Button onClick={() => { onSave(exercise.id, { name, muscleGroup: group, imageUrl: image, weightMultiplier: parseFloat(weightMultiplier) || 1, secondaryMuscles }); onClose(); }} className="w-full h-12">Сохранить</Button>
       </div>
     </Modal>
   );
@@ -822,7 +1012,7 @@ const EditExerciseModal = ({ isOpen, onClose, exercise, groups, onSave }: any) =
 
 const App = () => {
   const { haptic, notify } = useHaptics();
-  const { sessionId, incrementOrder } = useSession();
+  const { sessionId, incrementOrder, bodyWeight } = useSession();
   const [screen, setScreen] = useState<Screen>('home');
   const [groups, setGroups] = useState<string[]>([]);
   const [allExercises, setAllExercises] = useState<Exercise[]>([]);
@@ -901,7 +1091,7 @@ const App = () => {
     return (
       <div className="bg-zinc-950 min-h-screen flex items-center justify-center p-4">
         <div className="bg-zinc-900 p-6 rounded-2xl w-full max-w-sm space-y-4">
-          <h2 className="text-xl font-bold text-zinc-50 text-center">Вход в GymApp</h2>
+          <h2 className="text-xl font-bold text-zinc-50 text-center">Вход в gymtracker</h2>
           <Input type="password" placeholder="Секретный токен" value={authInput} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAuthInput(e.target.value)} />
           <Button className="w-full h-12" onClick={() => { localStorage.setItem(AUTH_TOKEN_KEY, authInput); setIsAuthenticated(true); }}>Войти</Button>
         </div>
@@ -911,10 +1101,11 @@ const App = () => {
 
   return (
     <div className="bg-zinc-950 min-h-screen text-zinc-50 font-sans selection:bg-blue-500/30 pt-safe">
-      {screen === 'home' && <HomeScreen groups={groups} onSearch={(q: string) => { setSearchQuery(q); if (q) setScreen('exercises'); }} onSelectGroup={(g: string) => { setSelectedGroup(g); setScreen('exercises'); }} onAllExercises={() => { setSelectedGroup(null); setScreen('exercises'); }} onHistory={() => setScreen('history')} />}
+      {screen === 'home' && <HomeScreen groups={groups} onSearch={(q: string) => { setSearchQuery(q); if (q) setScreen('exercises'); }} onSelectGroup={(g: string) => { setSelectedGroup(g); setScreen('exercises'); }} onAllExercises={() => { setSelectedGroup(null); setScreen('exercises'); }} onHistory={() => setScreen('history')} onAnalytics={() => setScreen('analytics')} />}
+      {screen === 'analytics' && <AnalyticsScreen onBack={() => setScreen('home')} />}
       {screen === 'history' && <HistoryScreen onBack={() => setScreen('home')} />}
       {screen === 'exercises' && <ExercisesListScreen exercises={filteredExercises} title={selectedGroup || (searchQuery ? `Поиск: ${searchQuery}` : 'Все упражнения')} searchQuery={searchQuery} onSearch={(q: string) => setSearchQuery(q)} onBack={() => { setSearchQuery(''); setSelectedGroup(null); setScreen('home'); }} onSelectExercise={(ex: Exercise) => { haptic('light'); setCurrentExercise(ex); setScreen('workout'); }} onAddExercise={() => setIsCreateModalOpen(true)} onEditExercise={(ex: Exercise) => setExerciseToEdit(ex)} />}
-      {screen === 'workout' && currentExercise && <WorkoutScreen initialExercise={currentExercise} allExercises={allExercises} sessionId={sessionId} incrementOrder={incrementOrder} haptic={haptic} notify={notify} onBack={() => setScreen('exercises')} />}
+      {screen === 'workout' && currentExercise && <WorkoutScreen initialExercise={currentExercise} allExercises={allExercises} sessionId={sessionId} incrementOrder={incrementOrder} bodyWeight={bodyWeight} haptic={haptic} notify={notify} onBack={() => setScreen('exercises')} />}
       
       <Modal isOpen={isCreateModalOpen} onClose={() => setIsCreateModalOpen(false)} title="Новое упражнение">
         <div className="space-y-4">

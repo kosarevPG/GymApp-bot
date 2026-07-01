@@ -12,6 +12,7 @@ ENV/
 # Environment variables
 .env
 credentials.json
+ydb-sa-key.json
 
 # IDE
 .vscode/

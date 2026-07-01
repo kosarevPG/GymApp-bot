@@ -1,4 +1,4 @@
-# GymApp - Telegram Mini App
+# gymtracker - Telegram Mini App
 
 Telegram-бот с веб-интерфейсом для записи подходов в тренажерном зале.
 
@@ -137,7 +137,7 @@ python bot.py
 ## 📁 Структура проекта
 
 ```
-GymApp/
+gymtracker/
 ├── bot.py                 # Основной файл бота
 ├── google_sheets.py       # Модуль для работы с Google Sheets
 ├── index.html            # Фронтенд (WebApp)
