@@ -23,6 +23,8 @@ export interface WorkoutSet {
   rpe?: number | string;
   rir?: number | string;
   isLowConfidence?: boolean;
+  requestId?: string;
+  order?: number;
 }
 
 export interface HistoryItem {

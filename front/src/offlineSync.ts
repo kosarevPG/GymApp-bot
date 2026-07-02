@@ -69,6 +69,24 @@ export function getQueue(): QueuedItem[] {
   }
 }
 
+export function upsertQueue(type: QueueItemType, data: Record<string, unknown>): string {
+  const id = String(data.client_request_id || crypto.randomUUID());
+  const queue = getQueue();
+  const existing = queue.find((item) => item.id === id);
+  if (existing) {
+    // Строка ещё не ушла на сервер: обновляем данные на месте. Если это был
+    // saveSet, тип сохраняем — строки в таблице ещё нет, update её не найдёт.
+    existing.data = { ...existing.data, ...data, client_request_id: id };
+    existing.attempts = 0;
+    existing.lastError = undefined;
+    persist(queue);
+    return id;
+  }
+  queue.push({ id, type, data: { ...data, client_request_id: id }, createdAt: Date.now(), attempts: 0 });
+  persist(queue);
+  return id;
+}
+
 export function getPendingCount(): number {
   return getQueue().length;
 }

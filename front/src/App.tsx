@@ -14,10 +14,12 @@ import type { Exercise, WorkoutSet, HistoryItem, ExerciseSessionData, SetType } 
 import {
   QUEUE_CHANGED_EVENT,
   addToQueue,
+  upsertQueue,
   getPendingCount,
   getQueue,
   markAttempt,
   removeFromQueue,
+  type QueuedItem,
 } from './offlineSync';
 
 // --- TYPES ---
@@ -156,9 +158,39 @@ const api = {
 
   updateSet: async (data: any): Promise<{ status?: string; pending_id?: string; offline?: boolean }> => {
     const clientRequestId = String(data.client_request_id || crypto.randomUUID());
-    const pendingId = addToQueue('updateSet', { ...data, client_request_id: clientRequestId });
+    const pendingId = upsertQueue('updateSet', { ...data, client_request_id: clientRequestId });
     queueMicrotask(() => { void api.syncOfflineQueue(); });
     return { status: 'queued', pending_id: pendingId, offline: !navigator.onLine };
+  },
+
+  deleteSet: async (data: any): Promise<boolean> => {
+    const id = String(data.client_request_id || '');
+    // Подход ещё не улетел на сервер — достаточно убрать его из очереди.
+    if (id && getQueue().some((item) => item.id === id && item.type === 'saveSet')) {
+      removeFromQueue(id);
+      return true;
+    }
+    const res = await api.request('delete_set', { method: 'POST', body: JSON.stringify(data) });
+    return !!res && res.status === 'success';
+  },
+
+  validateToken: async (token: string): Promise<'ok' | 'invalid' | 'offline'> => {
+    if (!API_BASE_URL) return 'offline';
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 10_000);
+    try {
+      const res = await fetch(`${API_BASE_URL}?url=/api/ping`, {
+        headers: { 'X-Auth-Token': token },
+        signal: controller.signal,
+      });
+      if (res.ok) return 'ok';
+      if (res.status === 401 || res.status === 403) return 'invalid';
+      return 'offline';
+    } catch {
+      return 'offline';
+    } finally {
+      window.clearTimeout(timeout);
+    }
   },
 
   syncOfflineQueue: async () => {
@@ -392,15 +424,22 @@ const Modal = ({ isOpen, onClose, title, children, headerAction }: any) => (
 
 // --- FEATURES ---
 
-const TimerBlock = ({ timer, onToggle, sessionTonnage = 0 }: any) => {
-  const minutes = timer.time / 60;
+const TimerBlock = ({ timer, onToggle, sessionTonnage = 0, restTarget = null }: any) => {
+  const minutes = timer.time / 60000;
   const density = minutes > 0 ? Math.round(sessionTonnage / minutes) : 0;
+  const remaining = restTarget != null ? restTarget - timer.time : null;
+  const resting = remaining != null && timer.isRunning && remaining > 0;
+  const restOver = remaining != null && timer.isRunning && remaining <= 0;
   return (
     <div className="sticky top-0 z-40 bg-zinc-950/80 backdrop-blur-md pb-4 pt-2 px-4 border-b border-zinc-800/50 mb-4">
       <Card className="flex items-center justify-between p-3 px-5 shadow-xl shadow-black/50">
         <div className="flex flex-col gap-0.5">
-          <div className="font-mono text-3xl font-bold tracking-wider text-zinc-50 tabular-nums">{timer.formatTime(timer.time)}</div>
-          {sessionTonnage > 0 && <div className="text-xs text-zinc-500">Плотность: {density} кг/мин</div>}
+          <div className={`font-mono text-3xl font-bold tracking-wider tabular-nums ${resting ? 'text-blue-400' : restOver ? 'text-amber-400' : 'text-zinc-50'}`}>
+            {resting ? timer.formatTime(remaining) : timer.formatTime(timer.time)}
+          </div>
+          {resting && <div className="text-xs text-blue-400/80">отдых — осталось до подхода</div>}
+          {restOver && <div className="text-xs text-amber-400/80">отдых окончен — работаем</div>}
+          {!resting && !restOver && sessionTonnage > 0 && <div className="text-xs text-zinc-500">Плотность: {density} кг/мин</div>}
         </div>
         <div className="flex gap-2">
           <Button variant={timer.isRunning ? "danger" : "primary"} onClick={onToggle} className="w-20 h-10 text-sm">{timer.isRunning ? "Стоп" : "Старт"}</Button>
@@ -486,9 +525,10 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, isActive
   const deltaColor = delta > 0 ? 'text-green-500' : delta < 0 ? 'text-red-500' : 'text-zinc-500';
 
   return (
-    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`mb-3 ${set.completed ? 'opacity-50 pointer-events-none grayscale' : ''}`}>
+    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`mb-3 ${set.completed ? 'opacity-60 grayscale' : ''}`}>
       <div className="grid grid-cols-[auto_auto_1fr_1fr_1fr_auto] gap-2 items-start">
         <button
+          disabled={set.completed}
           onClick={() => {
             const idx = SET_TYPE_CYCLE.indexOf((set.setType || 'working') as SetType);
             const next = SET_TYPE_CYCLE[(idx + 1) % SET_TYPE_CYCLE.length];
@@ -508,14 +548,15 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, isActive
           <Check className={`w-6 h-6 ${set.completed ? 'text-white' : 'text-zinc-700'}`} />
         </button>
         <div className="flex flex-col gap-1">
-          <input 
-            type="number" 
-            inputMode="decimal" 
-            placeholder="0" 
-            value={set.weight} 
+          <input
+            type="number"
+            inputMode="decimal"
+            placeholder="0"
+            value={set.weight}
+            disabled={set.completed}
             onChange={e => onUpdate(set.id, 'weight', e.target.value)}
             onFocus={e => e.target.select()}
-            className="w-full h-12 bg-zinc-800 rounded-xl text-center text-xl font-bold text-zinc-100 focus:ring-1 focus:ring-blue-500 outline-none tabular-nums" 
+            className="w-full h-12 bg-zinc-800 rounded-xl text-center text-xl font-bold text-zinc-100 focus:ring-1 focus:ring-blue-500 outline-none tabular-nums"
           />
           {(showTotal || oneRM > 0 || delta !== 0 || (set.rir != null && set.rir !== '')) && (
             <div className="flex justify-between px-1 text-[10px]">
@@ -528,23 +569,25 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, isActive
             </div>
           )}
         </div>
-        <input 
-          type="tel" 
-          inputMode="numeric" 
-          placeholder="0" 
-          value={set.reps} 
+        <input
+          type="tel"
+          inputMode="numeric"
+          placeholder="0"
+          value={set.reps}
+          disabled={set.completed}
           onChange={e => onUpdate(set.id, 'reps', e.target.value)}
           onFocus={e => e.target.select()}
-          className="w-full h-12 bg-zinc-800 rounded-xl text-center text-xl font-bold text-zinc-100 focus:ring-1 focus:ring-blue-500 outline-none tabular-nums" 
+          className="w-full h-12 bg-zinc-800 rounded-xl text-center text-xl font-bold text-zinc-100 focus:ring-1 focus:ring-blue-500 outline-none tabular-nums"
         />
         <input 
           type="number" 
           inputMode="decimal" 
           placeholder="0" 
-          value={set.rest} 
+          value={set.rest}
+          disabled={set.completed}
           onChange={e => onUpdate(set.id, 'rest', e.target.value)}
           onFocus={e => e.target.select()}
-          className="w-full h-12 bg-zinc-800 rounded-xl text-center text-zinc-400 focus:text-zinc-100 focus:ring-1 focus:ring-blue-500 outline-none tabular-nums" 
+          className="w-full h-12 bg-zinc-800 rounded-xl text-center text-zinc-400 focus:text-zinc-100 focus:ring-1 focus:ring-blue-500 outline-none tabular-nums"
         />
         <button onClick={() => onDelete(set.id)} className="w-10 h-12 flex items-center justify-center text-zinc-600 hover:text-red-500"><Trash2 className="w-5 h-5" /></button>
       </div>
@@ -619,7 +662,7 @@ const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, onAd
 
 // --- SCREENS ---
 
-const HomeScreen = ({ groups, onSearch, onSelectGroup, onAllExercises, onHistory, onAnalytics }: any) => (
+const HomeScreen = ({ groups, onSearch, onSelectGroup, onAllExercises, onHistory, onAnalytics, onSettings }: any) => (
   <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="p-4 space-y-6">
     <div className="flex items-center gap-2">
       <div className="relative flex-1">
@@ -628,6 +671,7 @@ const HomeScreen = ({ groups, onSearch, onSelectGroup, onAllExercises, onHistory
       </div>
       <button onClick={onHistory} className="p-3 bg-zinc-900 rounded-xl text-zinc-400 hover:text-blue-500"><HistoryIcon className="w-6 h-6" /></button>
       <button onClick={onAnalytics} className="p-3 bg-zinc-900 rounded-xl text-zinc-400 hover:text-blue-500"><Activity className="w-6 h-6" /></button>
+      <button onClick={onSettings} className="p-3 bg-zinc-900 rounded-xl text-zinc-400 hover:text-blue-500"><Settings className="w-6 h-6" /></button>
     </div>
     <div className="flex flex-col space-y-2">
       {groups.map((group: string) => (
@@ -704,10 +748,26 @@ const ExercisesListScreen = ({ exercises, title, onBack, onSelectExercise, onAdd
   );
 };
 
-const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incrementOrder, bodyWeight = USER_BODY_WEIGHT_DEFAULT, haptic, notify }: any) => {
+const readSavedWorkout = () => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(WORKOUT_STORAGE_KEY) || 'null');
+    if (saved && saved.timestamp && Date.now() - saved.timestamp < 86400000) return saved;
+  } catch (_) {}
+  return null;
+};
+
+const WorkoutScreen = ({ initialExercise, allExercises, onBack, onFinish, sessionId, incrementOrder, bodyWeight = USER_BODY_WEIGHT_DEFAULT, haptic, notify }: any) => {
   const timer = useTimer();
-  const [setGroupId] = useState(() => crypto.randomUUID());
-  const [activeExercises, setActiveExercises] = useState<string[]>([initialExercise.id]);
+  const savedWorkoutRef = useRef<any>(null);
+  if (savedWorkoutRef.current === null) {
+    const saved = readSavedWorkout();
+    // Восстанавливаем сессию, только если она включает открытое упражнение —
+    // иначе это новая тренировка поверх старой записи.
+    savedWorkoutRef.current = saved && Array.isArray(saved.activeExercises) && saved.activeExercises.includes(initialExercise.id) ? saved : false;
+  }
+  const savedWorkout = savedWorkoutRef.current || null;
+  const [setGroupId] = useState(() => savedWorkout?.setGroupId || crypto.randomUUID());
+  const [activeExercises, setActiveExercises] = useState<string[]>(() => savedWorkout?.activeExercises || [initialExercise.id]);
   const [sessionData, setSessionData] = useState<Record<string, ExerciseSessionData>>({});
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [supersetSearchQuery, setSupersetSearchQuery] = useState('');
@@ -716,6 +776,10 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
     const { history, note } = await api.getHistory(exId);
     setSessionData(prev => {
       if (prev[exId]) return prev;
+      const savedEx = savedWorkoutRef.current?.exercises?.[exId];
+      if (savedEx && Array.isArray(savedEx.sets) && savedEx.sets.length > 0) {
+        return { ...prev, [exId]: { exercise: allExercises.find((e: Exercise) => e.id === exId)!, note: savedEx.note ?? note ?? '', history, sets: savedEx.sets, sessionId } };
+      }
       let initialSets: WorkoutSet[] = [];
       if (history.length > 0) {
         const lastDate = history[0]?.date;
@@ -742,6 +806,27 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
 
   useEffect(() => { activeExercises.forEach(id => loadExerciseData(id)); }, [activeExercises]);
 
+  // Тренировка переживает закрытие мини-аппа: состояние пишется в localStorage
+  // на каждое изменение и восстанавливается при следующем открытии (до 24 ч).
+  useEffect(() => {
+    if (Object.keys(sessionData).length === 0) return;
+    try {
+      localStorage.setItem(WORKOUT_STORAGE_KEY, JSON.stringify({
+        timestamp: Date.now(),
+        setGroupId,
+        activeExercises,
+        exercises: Object.fromEntries(
+          Object.entries(sessionData).map(([id, d]) => [id, { sets: d.sets, note: d.note }])
+        ),
+      }));
+    } catch (_) {}
+  }, [sessionData, activeExercises, setGroupId]);
+
+  const finishWorkout = () => {
+    localStorage.removeItem(WORKOUT_STORAGE_KEY);
+    (onFinish || onBack)();
+  };
+
   const sessionTonnage = useMemo(() => {
     let total = 0;
     activeExercises.forEach(exId => {
@@ -756,20 +841,44 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
     return total;
   }, [sessionData, activeExercises, allExercises, bodyWeight]);
 
+  const [restTarget, setRestTarget] = useState<number | null>(null);
+  const restAlerted = useRef(false);
+
+  useEffect(() => {
+    if (!restTarget || !timer.isRunning || restAlerted.current) return;
+    if (timer.time >= restTarget) {
+      restAlerted.current = true;
+      haptic('heavy');
+      notify('warning');
+    }
+  }, [timer.time, restTarget, timer.isRunning]);
+
   const handleCompleteSet = async (exId: string, setId: string) => {
     const set = sessionData[exId]?.sets.find(s => s.id === setId);
-    if (!set || set.completed) return;
+    if (!set) return;
+    if (set.completed) {
+      // Повторный тап по галочке разблокирует подход для правки; при
+      // следующей галочке уйдёт update той же строки, а не новая запись.
+      haptic('light');
+      setSessionData(prev => ({ ...prev, [exId]: { ...prev[exId], sets: prev[exId].sets.map(s => s.id === setId ? { ...s, completed: false } : s) } }));
+      return;
+    }
     if (!set.weight || !set.reps) { notify('error'); return; }
-    
+
     haptic('medium');
+    const isEdit = !!set.requestId;
     setSessionData(prev => ({ ...prev, [exId]: { ...prev[exId], sets: prev[exId].sets.map(s => s.id === setId ? { ...s, completed: true } : s) } }));
-    timer.resetAndStart();
+    if (!isEdit) {
+      const restMs = (parseFloat(set.rest) || 0) * 60_000;
+      setRestTarget(restMs > 0 ? restMs : null);
+      restAlerted.current = false;
+      timer.resetAndStart();
+    }
 
     try {
-      const order = incrementOrder();
       const exercise = allExercises.find((e: Exercise) => e.id === exId);
       const inputWeight = parseFloat(set.weight);
-      await api.saveSet({
+      const payload = {
         exercise_id: exId,
         exercise_name: exercise?.name,
         input_weight: inputWeight,
@@ -779,11 +888,18 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
         note: sessionData[exId].note,
         set_group_id: setGroupId,
         session_id: sessionId,
-        order,
         set_type: set.setType || 'working',
         rpe: set.rpe != null && set.rpe !== '' ? parseFloat(String(set.rpe)) : undefined,
         rir: set.rir != null && set.rir !== '' ? parseInt(String(set.rir), 10) : undefined
-      });
+      };
+      if (isEdit) {
+        await api.updateSet({ ...payload, client_request_id: set.requestId, order: set.order });
+      } else {
+        const order = incrementOrder();
+        const result = await api.saveSet({ ...payload, order });
+        const requestId = result?.pending_id;
+        setSessionData(prev => ({ ...prev, [exId]: { ...prev[exId], sets: prev[exId].sets.map(s => s.id === setId ? { ...s, requestId, order } : s) } }));
+      }
       notify('success');
     } catch (e) {
       notify('error');
@@ -803,11 +919,18 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
     });
   };
 
-  const handleDeleteSet = (exId: string, setId: string) => {
+  const handleDeleteSet = async (exId: string, setId: string) => {
+    const set = sessionData[exId]?.sets.find(s => s.id === setId);
+    if (set?.requestId) {
+      // Подход уже записан в таблицу — удаляем и строку на сервере.
+      const ok = await api.deleteSet({ client_request_id: set.requestId, exercise_id: exId, set_group_id: setGroupId, order: set.order });
+      if (!ok) { notify('error'); return; }
+      haptic('medium');
+    }
     setSessionData(prev => {
       if (!prev[exId]) return prev;
       const filteredSets = prev[exId].sets.filter(s => s.id !== setId);
-      const finalSets = filteredSets.length === 0 
+      const finalSets = filteredSets.length === 0
         ? [{ id: crypto.randomUUID(), weight: '', reps: '', rest: '', completed: false, prevWeight: 0, setType: 'working' as SetType }]
         : filteredSets;
       return { ...prev, [exId]: { ...prev[exId], sets: finalSets } };
@@ -816,7 +939,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
 
   return (
     <div className="min-h-screen bg-zinc-950 pb-20">
-      <TimerBlock timer={timer} onToggle={() => timer.isRunning ? timer.reset() : timer.start()} sessionTonnage={sessionTonnage} />
+      <TimerBlock timer={timer} onToggle={() => { if (timer.isRunning) { timer.reset(); setRestTarget(null); } else { timer.start(); } }} sessionTonnage={sessionTonnage} restTarget={restTarget} />
       <div className="px-4 space-y-4">
         {activeExercises.map(exId => {
           const data = sessionData[exId];
@@ -824,7 +947,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
           return <WorkoutCard key={exId} exerciseData={data} bodyWeight={bodyWeight} onAddSet={() => handleAddSet(exId)} onUpdateSet={(sid: string, f: string, v: string) => handleUpdateSet(exId, sid, f, v)} onDeleteSet={(sid: string) => handleDeleteSet(exId, sid)} onCompleteSet={(sid: string) => handleCompleteSet(exId, sid)} onNoteChange={(val: string) => setSessionData(p => ({...p, [exId]: {...p[exId], note: val}}))} onAddSuperset={() => setIsAddModalOpen(true)} />;
         })}
       </div>
-      <div className="px-4 mt-8 mb-20"><Button variant="primary" onClick={onBack} className="w-full h-14 text-lg font-semibold shadow-xl shadow-blue-900/20">Завершить упражнение</Button></div>
+      <div className="px-4 mt-8 mb-20"><Button variant="primary" onClick={finishWorkout} className="w-full h-14 text-lg font-semibold shadow-xl shadow-blue-900/20">Завершить тренировку</Button></div>
       <Modal isOpen={isAddModalOpen} onClose={() => { setIsAddModalOpen(false); setSupersetSearchQuery(''); }} title="Добавить в суперсет">
         <div className="space-y-3">
           <div className="relative">
@@ -1111,7 +1234,7 @@ const EditExerciseModal = ({ isOpen, onClose, exercise, groups, onSave }: any) =
 
 const App = () => {
   const { haptic, notify } = useHaptics();
-  const { sessionId, incrementOrder, bodyWeight } = useSession();
+  const { sessionId, incrementOrder, bodyWeight, updateBodyWeight } = useSession();
   const [screen, setScreen] = useState<Screen>('home');
   const [groups, setGroups] = useState<string[]>([]);
   const [allExercises, setAllExercises] = useState<Exercise[]>([]);
@@ -1127,6 +1250,30 @@ const App = () => {
   // Состояние для авторизации
   const [isAuthenticated, setIsAuthenticated] = useState(!!localStorage.getItem(AUTH_TOKEN_KEY));
   const [authInput, setAuthInput] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [authChecking, setAuthChecking] = useState(false);
+
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [bodyWeightInput, setBodyWeightInput] = useState('');
+  const [isQueueOpen, setIsQueueOpen] = useState(false);
+  const [queueItems, setQueueItems] = useState<QueuedItem[]>([]);
+
+  const handleLogin = async () => {
+    const token = authInput.trim();
+    if (!token || authChecking) return;
+    setAuthChecking(true);
+    setAuthError('');
+    const status = await api.validateToken(token);
+    if (status === 'invalid') {
+      setAuthError('Неверный токен — проверь и попробуй ещё раз.');
+      setAuthChecking(false);
+      return;
+    }
+    // 'offline' пропускаем: приложение offline-first, проверим при синке.
+    localStorage.setItem(AUTH_TOKEN_KEY, token);
+    setAuthChecking(false);
+    setIsAuthenticated(true);
+  };
 
   useEffect(() => {
     if (allExercises.length === 0) return;
@@ -1159,7 +1306,7 @@ const App = () => {
 
   useEffect(() => {
     const cleanupNetwork = initNetworkListeners();
-    const updatePendingCount = () => setPendingCount(getPendingCount());
+    const updatePendingCount = () => { setPendingCount(getPendingCount()); setQueueItems(getQueue()); };
     window.addEventListener(QUEUE_CHANGED_EVENT, updatePendingCount);
     updatePendingCount();
     return () => {
@@ -1214,8 +1361,9 @@ const App = () => {
       <div className="bg-zinc-950 min-h-screen flex items-center justify-center p-4">
         <div className="bg-zinc-900 p-6 rounded-2xl w-full max-w-sm space-y-4">
           <h2 className="text-xl font-bold text-zinc-50 text-center">Вход в gymtracker</h2>
-          <Input type="password" placeholder="Секретный токен" value={authInput} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAuthInput(e.target.value)} />
-          <Button className="w-full h-12" onClick={() => { localStorage.setItem(AUTH_TOKEN_KEY, authInput); setIsAuthenticated(true); }}>Войти</Button>
+          <Input type="password" placeholder="Секретный токен" value={authInput} onChange={(e: React.ChangeEvent<HTMLInputElement>) => { setAuthInput(e.target.value); setAuthError(''); }} />
+          {authError && <div className="text-sm text-red-400 text-center">{authError}</div>}
+          <Button className="w-full h-12" onClick={handleLogin}>{authChecking ? 'Проверяю…' : 'Войти'}</Button>
         </div>
       </div>
     );
@@ -1223,17 +1371,17 @@ const App = () => {
 
   return (
     <div className="bg-zinc-950 min-h-screen text-zinc-50 font-sans selection:bg-blue-500/30 pt-safe">
-      {screen === 'home' && <HomeScreen groups={groups} onSearch={(q: string) => { setSearchQuery(q); if (q) setScreen('exercises'); }} onSelectGroup={(g: string) => { setSelectedGroup(g); setScreen('exercises'); }} onAllExercises={() => { setSelectedGroup(null); setScreen('exercises'); }} onHistory={() => setScreen('history')} onAnalytics={() => setScreen('analytics')} />}
+      {screen === 'home' && <HomeScreen groups={groups} onSearch={(q: string) => { setSearchQuery(q); if (q) setScreen('exercises'); }} onSelectGroup={(g: string) => { setSelectedGroup(g); setScreen('exercises'); }} onAllExercises={() => { setSelectedGroup(null); setScreen('exercises'); }} onHistory={() => setScreen('history')} onAnalytics={() => setScreen('analytics')} onSettings={() => { setBodyWeightInput(String(bodyWeight)); setIsSettingsOpen(true); }} />}
       {screen === 'analytics' && <AnalyticsScreen onBack={() => setScreen('home')} />}
       {screen === 'history' && <HistoryScreen onBack={() => setScreen('home')} />}
       {screen === 'exercises' && <ExercisesListScreen exercises={filteredExercises} title={selectedGroup || (searchQuery ? `Поиск: ${searchQuery}` : 'Все упражнения')} searchQuery={searchQuery} onSearch={(q: string) => setSearchQuery(q)} onBack={() => { setSearchQuery(''); setSelectedGroup(null); setScreen('home'); }} onSelectExercise={(ex: Exercise) => { haptic('light'); setCurrentExercise(ex); setScreen('workout'); }} onAddExercise={() => setIsCreateModalOpen(true)} onEditExercise={(ex: Exercise) => setExerciseToEdit(ex)} />}
-      {screen === 'workout' && currentExercise && <WorkoutScreen initialExercise={currentExercise} allExercises={allExercises} sessionId={sessionId} incrementOrder={incrementOrder} bodyWeight={bodyWeight} haptic={haptic} notify={notify} onBack={() => setScreen('exercises')} />}
+      {screen === 'workout' && currentExercise && <WorkoutScreen initialExercise={currentExercise} allExercises={allExercises} sessionId={sessionId} incrementOrder={incrementOrder} bodyWeight={bodyWeight} haptic={haptic} notify={notify} onBack={() => setScreen('exercises')} onFinish={() => { setCurrentExercise(null); setScreen('home'); }} />}
       {pendingCount > 0 && (
         <button
-          onClick={() => { void api.syncOfflineQueue(); }}
+          onClick={() => { setQueueItems(getQueue()); setIsQueueOpen(true); void api.syncOfflineQueue(); }}
           className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-full border border-amber-700/60 bg-amber-950/95 px-4 py-2 text-xs font-medium text-amber-200 shadow-xl"
         >
-          В очереди: {pendingCount} · нажмите для синхронизации
+          В очереди: {pendingCount} · подробнее
         </button>
       )}
       
@@ -1247,6 +1395,37 @@ const App = () => {
             </div>
           </div>
           <Button onClick={handleCreate} className="w-full h-12 mt-4">Создать</Button>
+        </div>
+      </Modal>
+      <Modal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} title="Настройки">
+        <div className="space-y-5">
+          <div>
+            <label className="text-sm text-zinc-400 mb-1 block">Вес тела, кг</label>
+            <Input type="number" inputMode="decimal" value={bodyWeightInput} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setBodyWeightInput(e.target.value)} />
+            <p className="text-xs text-zinc-500 mt-1">Используется для гравитрона, брусьев и упражнений со своим весом.</p>
+          </div>
+          <Button className="w-full h-12" onClick={() => { const v = parseFloat(bodyWeightInput.replace(',', '.')); if (v >= 30 && v <= 250) { updateBodyWeight(v); notify('success'); setIsSettingsOpen(false); } else { notify('error'); } }}>Сохранить</Button>
+          <div className="border-t border-zinc-800 pt-4">
+            <Button variant="secondary" className="w-full h-12 text-red-400" onClick={() => { localStorage.removeItem(AUTH_TOKEN_KEY); setIsSettingsOpen(false); setAuthInput(''); setIsAuthenticated(false); }}>Сменить токен (выйти)</Button>
+          </div>
+        </div>
+      </Modal>
+      <Modal isOpen={isQueueOpen} onClose={() => setIsQueueOpen(false)} title="Очередь синхронизации">
+        <div className="space-y-3">
+          {queueItems.length === 0 && <div className="text-center text-zinc-500 py-4 text-sm">Очередь пуста — всё синхронизировано.</div>}
+          {queueItems.map(item => (
+            <div key={item.id} className="flex items-center gap-3 p-3 bg-zinc-800/50 rounded-xl border border-zinc-800">
+              <div className="flex-1 min-w-0">
+                <div className="text-sm text-zinc-200 truncate">{String(item.data.exercise_name || 'Подход')}</div>
+                <div className="text-xs text-zinc-500">{String(item.data.input_weight ?? item.data.weight ?? '?')} кг × {String(item.data.reps ?? '?')} · {item.type === 'saveSet' ? 'новый подход' : 'правка'}</div>
+                {item.lastError && <div className="text-xs text-red-400">попыток: {item.attempts} · {item.lastError === 'authorization' ? 'токен не подходит' : item.lastError}</div>}
+              </div>
+              <button onClick={() => { removeFromQueue(item.id); }} className="p-2 text-zinc-500 hover:text-red-500 flex-shrink-0"><Trash2 className="w-5 h-5" /></button>
+            </div>
+          ))}
+          {queueItems.length > 0 && (
+            <Button className="w-full h-12" onClick={async () => { await api.syncOfflineQueue(); if (getQueue().length === 0) { setIsQueueOpen(false); notify('success'); } }}>Синхронизировать сейчас</Button>
+          )}
         </div>
       </Modal>
       {exerciseToEdit && <EditExerciseModal isOpen={!!exerciseToEdit} onClose={() => setExerciseToEdit(null)} exercise={exerciseToEdit} groups={groups} onSave={handleUpdate} />}
