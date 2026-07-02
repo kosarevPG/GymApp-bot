@@ -230,6 +230,8 @@ const api = {
 
 const useHaptics = () => {
   const haptic = (style: 'light' | 'medium' | 'heavy' | 'rigid' | 'soft') => {
+    const tg = (window as any).Telegram?.WebApp?.HapticFeedback;
+    if (tg?.impactOccurred) { try { tg.impactOccurred(style); return; } catch (_) {} }
     if (navigator.vibrate) {
       if (style === 'light') navigator.vibrate(10);
       else if (style === 'medium') navigator.vibrate(20);
@@ -237,6 +239,8 @@ const useHaptics = () => {
     }
   };
   const notify = (type: 'error' | 'success' | 'warning') => {
+    const tg = (window as any).Telegram?.WebApp?.HapticFeedback;
+    if (tg?.notificationOccurred) { try { tg.notificationOccurred(type); return; } catch (_) {} }
     if (navigator.vibrate) navigator.vibrate([30, 50, 30]);
   };
   return { haptic, notify };
@@ -473,7 +477,7 @@ const HistoryListModal = ({ isOpen, onClose, history, exerciseName }: any) => {
 const SET_TYPE_CYCLE: SetType[] = ['warmup', 'working', 'drop', 'failure'];
 const SET_TYPE_LABELS: Record<SetType, string> = { warmup: 'W', working: 'R', drop: 'D', failure: 'F' };
 
-const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, onUpdate, onDelete, onComplete }: { set: WorkoutSet; exercise?: Exercise; bodyWeight?: number; onUpdate: (sid: string, field: string, value: string | number) => void; onDelete: (sid: string) => void; onComplete: (sid: string) => void }) => {
+const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, isActive = false, onUpdate, onDelete, onComplete }: { set: WorkoutSet; exercise?: Exercise; bodyWeight?: number; isActive?: boolean; onUpdate: (sid: string, field: string, value: string | number) => void; onDelete: (sid: string) => void; onComplete: (sid: string) => void }) => {
   const effectiveWeight = calcEffectiveWeight(exercise, parseFloat(set.weight || '0'), bodyWeight);
   const showTotal = set.weight !== '' && effectiveWeight !== parseFloat(set.weight || '0');
   const oneRM = set.weight && set.reps ? Math.round(effectiveWeight * (1 + parseInt(set.reps) / 30)) : 0;
@@ -501,7 +505,7 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, onUpdate
           {SET_TYPE_LABELS[(set.setType || 'working') as SetType]}
         </button>
         <button onClick={() => onComplete(set.id)} className={`w-12 h-12 rounded-xl border flex items-center justify-center transition-colors ${set.completed ? 'bg-green-500 border-green-500' : 'bg-zinc-900 border-zinc-700'}`}>
-          {set.completed && <Check className="w-6 h-6 text-white" />}
+          <Check className={`w-6 h-6 ${set.completed ? 'text-white' : 'text-zinc-700'}`} />
         </button>
         <div className="flex flex-col gap-1">
           <input 
@@ -513,14 +517,14 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, onUpdate
             onFocus={e => e.target.select()}
             className="w-full h-12 bg-zinc-800 rounded-xl text-center text-xl font-bold text-zinc-100 focus:ring-1 focus:ring-blue-500 outline-none tabular-nums" 
           />
-          {(showTotal || oneRM > 0 || set.prevWeight !== undefined || (set.rir != null && set.rir !== '')) && (
+          {(showTotal || oneRM > 0 || delta !== 0 || (set.rir != null && set.rir !== '')) && (
             <div className="flex justify-between px-1 text-[10px]">
               <span>
                 {showTotal && <span className="text-blue-400 font-medium mr-1">Σ{effectiveWeight}</span>}
-                {oneRM > 0 && <span className="text-zinc-500">1PM:{oneRM}</span>}
+                {oneRM > 0 && <span className="text-zinc-500">1ПМ:{oneRM}</span>}
                 {set.rir != null && set.rir !== '' && <span className="text-zinc-500 ml-1">| RIR: {set.rir}</span>}
               </span>
-              {set.prevWeight !== undefined && <span className={`${deltaColor} font-medium`}>{deltaText}</span>}
+              {delta !== 0 && <span className={`${deltaColor} font-medium`}>{deltaText}</span>}
             </div>
           )}
         </div>
@@ -544,6 +548,7 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, onUpdate
         />
         <button onClick={() => onDelete(set.id)} className="w-10 h-12 flex items-center justify-center text-zinc-600 hover:text-red-500"><Trash2 className="w-5 h-5" /></button>
       </div>
+      {isActive && !set.completed && (
       <div className="flex flex-wrap gap-2 mt-2 ml-14">
         {([0, 1, 2, 3] as const).map(rirVal => (
           <button
@@ -564,6 +569,7 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, onUpdate
           className="w-12 h-7 bg-zinc-800 rounded text-center text-xs text-zinc-400 focus:text-zinc-100 focus:ring-1 focus:ring-blue-500 outline-none"
         />
       </div>
+      )}
     </motion.div>
   );
 };
@@ -600,7 +606,7 @@ const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, onAd
       </div>
       <div className="space-y-1">
         {exerciseData.sets.map((set: WorkoutSet) => (
-          <SetRow key={set.id} set={set} exercise={exerciseData.exercise} bodyWeight={bodyWeight} onUpdate={onUpdateSet} onDelete={onDeleteSet} onComplete={onCompleteSet} />
+          <SetRow key={set.id} set={set} exercise={exerciseData.exercise} bodyWeight={bodyWeight} isActive={set.id === exerciseData.sets.find((s: WorkoutSet) => !s.completed)?.id} onUpdate={onUpdateSet} onDelete={onDeleteSet} onComplete={onCompleteSet} />
         ))}
       </div>
       <div className="flex gap-2 mt-4">
@@ -934,7 +940,7 @@ const HistoryScreen = ({ onBack }: any) => {
 const MUSCLE_ORDER = ['Спина', 'Ноги', 'Грудь', 'Плечи', 'Трицепс', 'Бицепс', 'Пресс', 'Кардио'];
 
 const AnalyticsScreen = ({ onBack }: any) => {
-  const [data, setData] = useState<{ volume?: number; acwr?: { acute: number; chronic: number; ratio: number; status: string }; muscleVolume?: Record<string, number>; muscleSets?: Record<string, number> } | null>(null);
+  const [data, setData] = useState<{ volume?: number; acwr?: { acute: number; chronic: number; ratio: number; status: string; trainingDays?: number }; muscleVolume?: Record<string, number>; muscleSets?: Record<string, number> } | null>(null);
   const [period, setPeriod] = useState(14);
   const [loading, setLoading] = useState(true);
 
@@ -973,6 +979,12 @@ const AnalyticsScreen = ({ onBack }: any) => {
             ACWR {data.acwr.ratio} — риск перетренированности. Снизьте нагрузку.
           </div>
         )}
+        {data?.acwr?.status === 'building' && (
+          <div className="p-4 rounded-xl bg-zinc-800/60 border border-zinc-700 text-zinc-300 text-sm flex items-center gap-2">
+            <Activity className="w-5 h-5 flex-shrink-0 text-blue-400" />
+            Накапливаю базу: {data.acwr.trainingDays ?? 0} из 8 тренировок за 28 дней. Оценка нагрузки (ACWR) появится позже.
+          </div>
+        )}
         <div className="flex gap-2">
           {[7, 14, 28].map((d) => (
             <button key={d} onClick={() => setPeriod(d)} className={`px-4 py-2 rounded-xl text-sm font-medium ${period === d ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-400'}`}>{d} дн.</button>
@@ -983,7 +995,7 @@ const AnalyticsScreen = ({ onBack }: any) => {
         ) : (
           <>
             <Card className="p-4">
-              <h2 className="text-sm font-bold text-zinc-400 uppercase mb-3">Тоннаж по мышцам (подходы)</h2>
+              <h2 className="text-sm font-bold text-zinc-400 uppercase mb-3">Подходы по мышцам</h2>
               <div className="space-y-3">
                 {muscleList.map((m) => {
                   const sets = (data?.muscleSets || {})[m] ?? 0;
@@ -999,6 +1011,7 @@ const AnalyticsScreen = ({ onBack }: any) => {
                   );
                 })}
               </div>
+              <div className="mt-3 text-[10px] text-zinc-500">Зоны за период: серый — мало (&lt;6) · зелёный — оптимум (10–15) · красный — перебор (&gt;20)</div>
             </Card>
             <Card className="p-4">
               <h2 className="text-sm font-bold text-zinc-400 uppercase mb-3">Объём по группам (кг)</h2>
@@ -1018,7 +1031,9 @@ const AnalyticsScreen = ({ onBack }: any) => {
               <div className="text-2xl font-bold text-zinc-50">{(data?.volume ?? 0).toLocaleString('ru')} кг</div>
               {data?.acwr && (
                 <div className="mt-2 text-sm text-zinc-400">
-                  ACWR: {data.acwr.ratio} (острая: {data.acwr.acute?.toLocaleString()}, хроническая: {data.acwr.chronic?.toLocaleString()})
+                  {data.acwr.status === 'building'
+                    ? <>ACWR: н/д — мало данных (неделя за 7 дн: {data.acwr.acute?.toLocaleString('ru')} кг)</>
+                    : <>ACWR: {data.acwr.ratio} (острая: {data.acwr.acute?.toLocaleString('ru')}, хроническая: {data.acwr.chronic?.toLocaleString('ru')})</>}
                 </div>
               )}
             </Card>
@@ -1128,6 +1143,19 @@ const App = () => {
       } catch { localStorage.removeItem(WORKOUT_STORAGE_KEY); }
     }
   }, [allExercises]);
+
+  useEffect(() => {
+    const tg = (window as any).Telegram?.WebApp;
+    if (tg) {
+      try {
+        tg.ready();
+        tg.expand();
+        tg.disableVerticalSwipes?.();
+        tg.setHeaderColor?.('#09090b');
+        tg.setBackgroundColor?.('#09090b');
+      } catch (_) { /* старые клиенты Telegram */ }
+    }
+  }, []);
 
   useEffect(() => {
     const cleanupNetwork = initNetworkListeners();

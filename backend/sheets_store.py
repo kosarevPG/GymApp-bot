@@ -575,10 +575,33 @@ def get_analytics(days: int = 14) -> Dict[str, Any]:
             total += weight * _to_int(item.get("Reps"))
         return total
 
+    def training_days(period_days: int) -> int:
+        period_cutoff = datetime.now(MOSCOW_TZ) - timedelta(days=period_days)
+        days_seen = set()
+        for item in _log_records():
+            stamp = _parse_date(item.get("Date"))
+            if stamp < period_cutoff:
+                continue
+            set_type = str(item.get("Set_Type", "")).strip().lower()
+            if set_type and set_type != "working":
+                continue
+            days_seen.add(stamp.date())
+        return len(days_seen)
+
     acute = period_volume(7)
     chronic = period_volume(28) / 4.0
     ratio = acute / chronic if chronic else 0.0
-    status = "under" if ratio < 0.8 else "danger" if ratio > 1.5 else "optimal"
+    # ACWR не показателен без накопленной базы: после перерыва хроническая
+    # нагрузка занижена и коэффициент взлетает при любой тренировке.
+    days_28 = training_days(28)
+    if days_28 < 8:
+        status = "building"
+    elif ratio < 0.8:
+        status = "under"
+    elif ratio > 1.5:
+        status = "danger"
+    else:
+        status = "optimal"
     return {
         "proposals": [],
         "baseline": {},
@@ -588,6 +611,7 @@ def get_analytics(days: int = 14) -> Dict[str, Any]:
             "chronic": round(chronic, 1),
             "ratio": round(ratio, 2),
             "status": status,
+            "trainingDays": days_28,
         },
         "muscleVolume": {key: round(value, 1) for key, value in muscle_volume.items()},
         "muscleSets": muscle_sets,
