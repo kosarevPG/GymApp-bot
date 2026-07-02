@@ -1,7 +1,7 @@
 {
   "name": "gymtracker",
   "short_name": "gymtracker",
-  "start_url": "/GymApp/",
+  "start_url": "/GymApp-bot/",
   "display": "standalone",
   "background_color": "#09090b",
   "theme_color": "#09090b",
