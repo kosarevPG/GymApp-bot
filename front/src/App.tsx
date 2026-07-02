@@ -9,7 +9,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts';
 import { API_BASE_URL, AUTH_TOKEN_KEY, WORKOUT_STORAGE_KEY, sortGroups, SESSION_ID_KEY, ORDER_COUNTER_KEY, LAST_ACTIVE_KEY } from './constants';
 import { SetDisplayRow } from './components/SetDisplayRow';
-import { calcEffectiveWeight, USER_BODY_WEIGHT_DEFAULT } from './exerciseConfig';
+import { calcEffectiveWeight, weightInputLabel, WEIGHT_TYPE_OPTIONS, USER_BODY_WEIGHT_DEFAULT } from './exerciseConfig';
 import type { Exercise, WorkoutSet, HistoryItem, ExerciseSessionData, SetType } from './types';
 import {
   QUEUE_CHANGED_EVENT,
@@ -475,6 +475,7 @@ const SET_TYPE_LABELS: Record<SetType, string> = { warmup: 'W', working: 'R', dr
 
 const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, onUpdate, onDelete, onComplete }: { set: WorkoutSet; exercise?: Exercise; bodyWeight?: number; onUpdate: (sid: string, field: string, value: string | number) => void; onDelete: (sid: string) => void; onComplete: (sid: string) => void }) => {
   const effectiveWeight = calcEffectiveWeight(exercise, parseFloat(set.weight || '0'), bodyWeight);
+  const showTotal = set.weight !== '' && effectiveWeight !== parseFloat(set.weight || '0');
   const oneRM = set.weight && set.reps ? Math.round(effectiveWeight * (1 + parseInt(set.reps) / 30)) : 0;
   const delta = set.prevWeight ? (effectiveWeight - set.prevWeight) : 0;
   const deltaText = delta > 0 ? `+${delta}` : delta < 0 ? `${delta}` : '0';
@@ -512,9 +513,10 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, onUpdate
             onFocus={e => e.target.select()}
             className="w-full h-12 bg-zinc-800 rounded-xl text-center text-xl font-bold text-zinc-100 focus:ring-1 focus:ring-blue-500 outline-none tabular-nums" 
           />
-          {(oneRM > 0 || set.prevWeight !== undefined || (set.rir != null && set.rir !== '')) && (
+          {(showTotal || oneRM > 0 || set.prevWeight !== undefined || (set.rir != null && set.rir !== '')) && (
             <div className="flex justify-between px-1 text-[10px]">
               <span>
+                {showTotal && <span className="text-blue-400 font-medium mr-1">Σ{effectiveWeight}</span>}
                 {oneRM > 0 && <span className="text-zinc-500">1PM:{oneRM}</span>}
                 {set.rir != null && set.rir !== '' && <span className="text-zinc-500 ml-1">| RIR: {set.rir}</span>}
               </span>
@@ -591,7 +593,7 @@ const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, onAd
       <div className="grid grid-cols-[auto_auto_1fr_1fr_1fr_auto] gap-2 mb-2 px-1">
         <div className="w-8" />
         <div className="w-10" />
-        <div className="text-[10px] text-center text-zinc-500 font-bold uppercase">КГ</div>
+        <div className="text-[10px] text-center text-zinc-500 font-bold uppercase">{weightInputLabel(exerciseData.exercise)}</div>
         <div className="text-[10px] text-center text-zinc-500 font-bold uppercase">ПОВТ</div>
         <div className="text-[10px] text-center text-zinc-500 font-bold uppercase">МИН</div>
         <div className="w-8" />
@@ -1032,6 +1034,8 @@ const EditExerciseModal = ({ isOpen, onClose, exercise, groups, onSave }: any) =
   const [group, setGroup] = useState('');
   const [image, setImage] = useState('');
   const [weightMultiplier, setWeightMultiplier] = useState<string>('1');
+  const [weightType, setWeightType] = useState('');
+  const [baseWeight, setBaseWeight] = useState<string>('0');
   const [secondaryMuscles, setSecondaryMuscles] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -1040,6 +1044,8 @@ const EditExerciseModal = ({ isOpen, onClose, exercise, groups, onSave }: any) =
       setGroup(exercise.muscleGroup);
       setImage(exercise.imageUrl || '');
       setWeightMultiplier(String(exercise.weightMultiplier ?? 1));
+      setWeightType(exercise.weightType || 'Machine');
+      setBaseWeight(String(exercise.baseWeight ?? 0));
       setSecondaryMuscles(exercise.secondaryMuscles || '');
     }
   }, [exercise]);
@@ -1062,14 +1068,25 @@ const EditExerciseModal = ({ isOpen, onClose, exercise, groups, onSave }: any) =
           <div className="flex flex-wrap gap-2">{groups.map((g: string) => <button key={g} onClick={() => setGroup(g)} className={`px-3 py-2 rounded-xl text-sm border ${group === g ? 'bg-blue-600 border-blue-600 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-400'}`}>{g}</button>)}</div>
         </div>
         <div>
-          <label className="text-sm text-zinc-400 mb-1 block">Коэф. веса тела (0.68 для отжиманий)</label>
-          <Input type="number" step="0.01" min="0" max="2" value={weightMultiplier} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setWeightMultiplier(e.target.value)} placeholder="1" />
+          <label className="text-sm text-zinc-400 mb-1 block">Тип нагрузки</label>
+          <div className="flex flex-wrap gap-2">{WEIGHT_TYPE_OPTIONS.map(opt => <button key={opt.value} onClick={() => { setWeightType(opt.value); if (opt.value === 'Assisted') { setBaseWeight('90'); setWeightMultiplier('-1'); } }} className={`px-3 py-2 rounded-xl text-sm border ${weightType === opt.value ? 'bg-blue-600 border-blue-600 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-400'}`}>{opt.label}</button>)}</div>
         </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-sm text-zinc-400 mb-1 block">Гриф/база, кг</label>
+            <Input type="number" step="0.5" value={baseWeight} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setBaseWeight(e.target.value)} placeholder="0" />
+          </div>
+          <div>
+            <label className="text-sm text-zinc-400 mb-1 block">Множитель</label>
+            <Input type="number" step="0.01" value={weightMultiplier} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setWeightMultiplier(e.target.value)} placeholder="1" />
+          </div>
+        </div>
+        <div className="text-xs text-zinc-500 -mt-3">Множитель 2 — ввод «блины на сторону» или вес одной гантели. Для «Свой вес» — доля веса тела (0.68 для отжиманий).</div>
         <div>
           <label className="text-sm text-zinc-400 mb-1 block">Вторичные мышцы</label>
           <Input value={secondaryMuscles} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSecondaryMuscles(e.target.value)} placeholder="Грудь, Трицепс" />
         </div>
-        <Button onClick={() => { onSave(exercise.id, { name, muscleGroup: group, imageUrl: image, weightMultiplier: parseFloat(weightMultiplier) || 1, secondaryMuscles }); onClose(); }} className="w-full h-12">Сохранить</Button>
+        <Button onClick={() => { onSave(exercise.id, { name, muscleGroup: group, imageUrl: image, weightType, baseWeight: parseFloat(baseWeight) || 0, weightMultiplier: parseFloat(weightMultiplier) || 1, secondaryMuscles }); onClose(); }} className="w-full h-12">Сохранить</Button>
       </div>
     </Modal>
   );
