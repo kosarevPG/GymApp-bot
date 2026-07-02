@@ -47,7 +47,7 @@ cp front/.env.example front/.env.local
 Backend environment:
 
 - `SPREADSHEET_ID`
-- `GOOGLE_CREDENTIALS_JSON`
+- `GOOGLE_CREDENTIALS_BASE64`
 - `AUTH_TOKEN`
 - `BOT_TOKEN` (optional)
 - `TELEGRAM_WEBHOOK_SECRET` (recommended when the Telegram webhook is enabled)

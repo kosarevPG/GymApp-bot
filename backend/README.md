@@ -5,7 +5,7 @@ Yandex Cloud Function that stores workouts in the existing Google Spreadsheet.
 ## Environment
 
 - `SPREADSHEET_ID`
-- `GOOGLE_CREDENTIALS_JSON`
+- `GOOGLE_CREDENTIALS_BASE64`
 - `AUTH_TOKEN`
 - `BOT_TOKEN` (optional Telegram webhook)
 - `TELEGRAM_WEBHOOK_SECRET` (recommended for Telegram webhook)

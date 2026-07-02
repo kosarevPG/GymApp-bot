@@ -87,7 +87,7 @@ const api = {
         signal: options.signal || controller.signal,
         headers: { 
           'Content-Type': 'application/json', 
-          'Authorization': getToken(), 
+          'X-Auth-Token': getToken(),
           ...options.headers 
         }
       });
@@ -172,7 +172,7 @@ const api = {
         try {
           const res = await fetch(`${API_BASE_URL}?url=/api/${endpoint}`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': getToken() },
+            headers: { 'Content-Type': 'application/json', 'X-Auth-Token': getToken() },
             body: JSON.stringify(item.data),
             signal: controller.signal,
           });
@@ -217,7 +217,7 @@ const api = {
     try {
       const res = await fetch(`${API_BASE_URL}?url=/api/upload_image`, {
         method: 'POST',
-        headers: { 'Authorization': getToken() },
+        headers: { 'X-Auth-Token': getToken() },
         body: formData
       });
       if (!res.ok) throw new Error('Upload failed');

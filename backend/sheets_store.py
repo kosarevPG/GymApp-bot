@@ -17,6 +17,7 @@ import json
 import os
 import time
 import uuid
+import base64
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -61,6 +62,11 @@ def _credentials() -> Credentials:
     raw = os.getenv("GOOGLE_CREDENTIALS_JSON", "").strip()
     if raw:
         return Credentials.from_service_account_info(json.loads(raw), scopes=scopes)
+
+    encoded = os.getenv("GOOGLE_CREDENTIALS_BASE64", "").strip()
+    if encoded:
+        decoded = base64.b64decode(encoded).decode("utf-8")
+        return Credentials.from_service_account_info(json.loads(decoded), scopes=scopes)
 
     path = os.getenv("GOOGLE_CREDENTIALS_PATH", "credentials.json")
     if path and os.path.exists(path):

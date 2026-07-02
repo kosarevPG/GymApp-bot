@@ -15,7 +15,7 @@ Export the returned function ID and backend secrets:
 ```bash
 export FUNCTION_ID="<new function id>"
 export SPREADSHEET_ID="<spreadsheet id>"
-export GOOGLE_CREDENTIALS_JSON='<complete service account JSON>'
+export GOOGLE_CREDENTIALS_BASE64='<base64 encoded service account JSON>'
 export AUTH_TOKEN="<long random token>"
 export FRONTEND_URL="https://<user>.github.io/GymApp/"
 ```
