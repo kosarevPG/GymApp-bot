@@ -17,7 +17,7 @@ export FUNCTION_ID="<new function id>"
 export SPREADSHEET_ID="<spreadsheet id>"
 export GOOGLE_CREDENTIALS_BASE64='<base64 encoded service account JSON>'
 export AUTH_TOKEN="<long random token>"
-export FRONTEND_URL="https://<user>.github.io/GymApp/"
+export FRONTEND_URL="https://<user>.github.io/GymApp-bot/"
 ```
 
 Optional Telegram webhook variables:
