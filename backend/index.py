@@ -13,10 +13,13 @@ from urllib.request import Request, urlopen
 from sheets_store import (
     create_exercise,
     delete_set,
+    delete_workout,
+    export_data,
     get_analytics,
     get_exercise_history,
     get_global_history,
     get_init,
+    import_data,
     save_set,
     update_exercise,
     update_set,
@@ -189,6 +192,16 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             return response({"status": "success" if update_set(_body(event)) else "error"})
         if endpoint == "delete_set" and method == "POST":
             return response({"status": "success" if delete_set(_body(event)) else "error"})
+        if endpoint == "delete_workout" and method == "POST":
+            date_text = str(_body(event).get("date", "")).strip()
+            if not date_text:
+                return response({"error": "date is required"}, 400)
+            deleted = delete_workout(date_text)
+            return response({"status": "success" if deleted else "error", "deleted": deleted})
+        if endpoint == "export" and method == "GET":
+            return response(export_data())
+        if endpoint == "import" and method == "POST":
+            return response(import_data(_body(event)))
         if endpoint == "create_exercise" and method == "POST":
             data = _body(event)
             name = str(data.get("name", "")).strip()

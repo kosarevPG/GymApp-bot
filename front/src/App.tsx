@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts';
-import { API_BASE_URL, AUTH_TOKEN_KEY, WORKOUT_STORAGE_KEY, sortGroups, SESSION_ID_KEY, ORDER_COUNTER_KEY, LAST_ACTIVE_KEY } from './constants';
+import { API_BASE_URL, AUTH_TOKEN_KEY, WORKOUT_STORAGE_KEY, ACTIVE_WORKOUT_KEY, sortGroups, SESSION_ID_KEY, ORDER_COUNTER_KEY, LAST_ACTIVE_KEY } from './constants';
 import { SetDisplayRow } from './components/SetDisplayRow';
 import { calcEffectiveWeight, weightInputLabel, WEIGHT_TYPE_OPTIONS, USER_BODY_WEIGHT_DEFAULT } from './exerciseConfig';
 import type { Exercise, WorkoutSet, HistoryItem, ExerciseSessionData, SetType } from './types';
@@ -172,6 +172,30 @@ const api = {
     }
     const res = await api.request('delete_set', { method: 'POST', body: JSON.stringify(data) });
     return !!res && res.status === 'success';
+  },
+
+  deleteWorkout: async (date: string): Promise<{ status?: string; deleted?: number } | null> => {
+    return await api.request('delete_workout', { method: 'POST', body: JSON.stringify({ date }) });
+  },
+
+  exportData: async () => {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 60_000);
+    try {
+      return await api.request('export', { signal: controller.signal });
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  },
+
+  importData: async (payload: unknown) => {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 60_000);
+    try {
+      return await api.request('import', { method: 'POST', body: JSON.stringify(payload), signal: controller.signal });
+    } finally {
+      window.clearTimeout(timeout);
+    }
   },
 
   validateToken: async (token: string): Promise<'ok' | 'invalid' | 'offline'> => {
@@ -351,6 +375,16 @@ const useSession = () => {
     localStorage.setItem(LAST_ACTIVE_KEY, now.toString());
   }, []);
 
+  const resetSession = () => {
+    const newId = crypto.randomUUID();
+    setSessionId(newId);
+    setOrderCounter(0);
+    orderCounterRef.current = 0;
+    localStorage.setItem(SESSION_ID_KEY, newId);
+    localStorage.setItem(ORDER_COUNTER_KEY, '0');
+    localStorage.setItem(LAST_ACTIVE_KEY, Date.now().toString());
+  };
+
   const incrementOrder = () => {
     const next = orderCounterRef.current + 1;
     orderCounterRef.current = next;
@@ -370,7 +404,7 @@ const useSession = () => {
     setBodyWeight(v);
     localStorage.setItem(bodyWeightKey, String(v));
   };
-  return { sessionId, incrementOrder, bodyWeight, updateBodyWeight };
+  return { sessionId, incrementOrder, bodyWeight, updateBodyWeight, resetSession };
 };
 
 // --- UI COMPONENTS ---
@@ -662,8 +696,11 @@ const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, onAd
 
 // --- SCREENS ---
 
-const HomeScreen = ({ groups, onSearch, onSelectGroup, onAllExercises, onHistory, onAnalytics, onSettings }: any) => (
+const HomeScreen = ({ groups, workoutActive, onStartWorkout, onFinishWorkout, onSearch, onSelectGroup, onAllExercises, onHistory, onAnalytics, onSettings }: any) => (
   <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="p-4 space-y-6">
+    {workoutActive
+      ? <Button variant="secondary" onClick={onFinishWorkout} className="w-full h-14 text-lg border border-red-900/50 text-red-400">Закончить тренировку</Button>
+      : <Button variant="primary" onClick={onStartWorkout} className="w-full h-14 text-lg font-semibold shadow-xl shadow-blue-900/20">Начать тренировку</Button>}
     <div className="flex items-center gap-2">
       <div className="relative flex-1">
         <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-500" />
@@ -756,7 +793,7 @@ const readSavedWorkout = () => {
   return null;
 };
 
-const WorkoutScreen = ({ initialExercise, allExercises, onBack, onFinish, sessionId, incrementOrder, bodyWeight = USER_BODY_WEIGHT_DEFAULT, haptic, notify }: any) => {
+const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incrementOrder, bodyWeight = USER_BODY_WEIGHT_DEFAULT, haptic, notify }: any) => {
   const timer = useTimer();
   const savedWorkoutRef = useRef<any>(null);
   if (savedWorkoutRef.current === null) {
@@ -819,13 +856,13 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, onFinish, sessio
           Object.entries(sessionData).map(([id, d]) => [id, { sets: d.sets, note: d.note }])
         ),
       }));
+      // Открытое упражнение = тренировка де-факто идёт: отмечаем её активной,
+      // чтобы на главной появилась кнопка «Закончить тренировку».
+      if (!localStorage.getItem(ACTIVE_WORKOUT_KEY)) {
+        localStorage.setItem(ACTIVE_WORKOUT_KEY, JSON.stringify({ startedAt: Date.now() }));
+      }
     } catch (_) {}
   }, [sessionData, activeExercises, setGroupId]);
-
-  const finishWorkout = () => {
-    localStorage.removeItem(WORKOUT_STORAGE_KEY);
-    (onFinish || onBack)();
-  };
 
   const sessionTonnage = useMemo(() => {
     let total = 0;
@@ -947,7 +984,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, onFinish, sessio
           return <WorkoutCard key={exId} exerciseData={data} bodyWeight={bodyWeight} onAddSet={() => handleAddSet(exId)} onUpdateSet={(sid: string, f: string, v: string) => handleUpdateSet(exId, sid, f, v)} onDeleteSet={(sid: string) => handleDeleteSet(exId, sid)} onCompleteSet={(sid: string) => handleCompleteSet(exId, sid)} onNoteChange={(val: string) => setSessionData(p => ({...p, [exId]: {...p[exId], note: val}}))} onAddSuperset={() => setIsAddModalOpen(true)} />;
         })}
       </div>
-      <div className="px-4 mt-8 mb-20"><Button variant="primary" onClick={finishWorkout} className="w-full h-14 text-lg font-semibold shadow-xl shadow-blue-900/20">Завершить тренировку</Button></div>
+      <div className="px-4 mt-8 mb-20"><Button variant="primary" onClick={onBack} className="w-full h-14 text-lg font-semibold shadow-xl shadow-blue-900/20">Завершить упражнение</Button></div>
       <Modal isOpen={isAddModalOpen} onClose={() => { setIsAddModalOpen(false); setSupersetSearchQuery(''); }} title="Добавить в суперсет">
         <div className="space-y-3">
           <div className="relative">
@@ -988,10 +1025,66 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, onFinish, sessio
   );
 };
 
-const HistoryScreen = ({ onBack }: any) => {
+const HistoryScreen = ({ onBack, allExercises = [], bodyWeight = USER_BODY_WEIGHT_DEFAULT, notify, haptic }: any) => {
   const [history, setHistory] = useState<GlobalWorkoutSession[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  useEffect(() => { api.getGlobalHistory().then(data => setHistory(data)); }, []);
+  const [editTarget, setEditTarget] = useState<any>(null);
+  const [editW, setEditW] = useState('');
+  const [editR, setEditR] = useState('');
+  const [editRest, setEditRest] = useState('');
+  const [deleteDay, setDeleteDay] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = () => api.getGlobalHistory().then(data => setHistory(data));
+  useEffect(() => { refresh(); }, []);
+
+  const openEdit = (s: any, ex: any) => {
+    const exercise = allExercises.find((e: Exercise) => e.id === ex.exerciseId);
+    setEditTarget({ set: s, exerciseId: ex.exerciseId, exerciseName: ex.name, exercise });
+    setEditW(String(s.input_weight ?? s.weight ?? ''));
+    setEditR(String(s.reps ?? ''));
+    setEditRest(String(s.rest ?? ''));
+  };
+
+  // Строка в таблице ищется по client_request_id, для старых записей —
+  // по натуральному ключу (упражнение + сет-группа + порядок).
+  const locator = (t: any) => ({ client_request_id: String(t.set.id || ''), exercise_id: t.exerciseId, set_group_id: t.set.setGroupId, order: t.set.order });
+
+  const saveEdit = async () => {
+    if (!editTarget || busy) return;
+    const inputWeight = parseFloat(editW.replace(',', '.'));
+    const reps = parseInt(editR, 10);
+    if (Number.isNaN(inputWeight) || !(reps > 0)) { notify?.('error'); return; }
+    setBusy(true);
+    const res = await api.request('update_set', { method: 'POST', body: JSON.stringify({
+      ...locator(editTarget),
+      input_weight: inputWeight,
+      weight: calcEffectiveWeight(editTarget.exercise, inputWeight, bodyWeight),
+      reps,
+      rest: parseFloat(editRest.replace(',', '.')) || 0,
+    }) });
+    setBusy(false);
+    if (res && res.status === 'success') { haptic?.('medium'); notify?.('success'); setEditTarget(null); refresh(); }
+    else { notify?.('error'); }
+  };
+
+  const deleteEditSet = async () => {
+    if (!editTarget || busy) return;
+    setBusy(true);
+    const res = await api.request('delete_set', { method: 'POST', body: JSON.stringify(locator(editTarget)) });
+    setBusy(false);
+    if (res && res.status === 'success') { haptic?.('medium'); notify?.('success'); setEditTarget(null); refresh(); }
+    else { notify?.('error'); }
+  };
+
+  const deleteDayConfirmed = async () => {
+    if (!deleteDay || busy) return;
+    setBusy(true);
+    const res = await api.deleteWorkout(deleteDay);
+    setBusy(false);
+    if (res && res.status === 'success') { haptic?.('medium'); notify?.('success'); setDeleteDay(null); refresh(); }
+    else { notify?.('error'); }
+  };
 
   return (
     <motion.div initial={{ x: 50, opacity: 0 }} animate={{ x: 0, opacity: 1 }} className="min-h-screen bg-zinc-950">
@@ -1006,7 +1099,12 @@ const HistoryScreen = ({ onBack }: any) => {
               <div>
                 <div className="flex items-center gap-2 text-zinc-400 text-sm"><Calendar className="w-3 h-3" />{w.date} {w.muscleGroups.join(' • ')}</div>
               </div>
-              <ChevronDown className={`w-5 h-5 text-zinc-500 transition-transform ${expandedId === w.id ? 'rotate-180' : ''}`} />
+              <div className="flex items-center gap-1">
+                {expandedId === w.id && (
+                  <button onClick={(e) => { e.stopPropagation(); setDeleteDay(w.date); }} className="p-2 text-zinc-600 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>
+                )}
+                <ChevronDown className={`w-5 h-5 text-zinc-500 transition-transform ${expandedId === w.id ? 'rotate-180' : ''}`} />
+              </div>
             </div>
             <AnimatePresence>
               {expandedId === w.id && (
@@ -1032,7 +1130,7 @@ const HistoryScreen = ({ onBack }: any) => {
                           {ex.sets && Array.isArray(ex.sets) && ex.sets.length > 0 ? (
                             <div className="space-y-1">
                               {ex.sets.map((s: any, j: number) => (
-                                <div key={j} className="px-2 py-1 bg-zinc-800/30 rounded">
+                                <button key={j} onClick={() => openEdit(s, ex)} className="w-full px-2 py-1 bg-zinc-800/30 rounded flex items-center justify-between text-left active:bg-zinc-800/60">
                                   <SetDisplayRow
                                     weight={s.weight}
                                     reps={s.reps}
@@ -1041,7 +1139,8 @@ const HistoryScreen = ({ onBack }: any) => {
                                     rpe={s.rpe}
                                     rir={s.rir}
                                   />
-                                </div>
+                                  <Pencil className="w-3.5 h-3.5 text-zinc-600 flex-shrink-0 ml-2" />
+                                </button>
                               ))}
                             </div>
                           ) : <div className="text-xs text-zinc-500">Нет подходов</div>}
@@ -1056,6 +1155,27 @@ const HistoryScreen = ({ onBack }: any) => {
         ))}
         {history.length === 0 && <div className="text-center text-zinc-500 py-10 flex flex-col items-center"><Activity className="w-12 h-12 mb-3 opacity-20" /><p>Нет данных</p></div>}
       </div>
+      <Modal isOpen={!!editTarget} onClose={() => setEditTarget(null)} title="Правка подхода">
+        {editTarget && (
+          <div className="space-y-4">
+            <div className="text-sm text-zinc-400">{editTarget.exerciseName} · {editTarget.set.date}</div>
+            <div className="grid grid-cols-3 gap-2">
+              <div><label className="text-[10px] text-zinc-500 mb-1 block uppercase">{weightInputLabel(editTarget.exercise)}</label><Input type="number" inputMode="decimal" value={editW} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditW(e.target.value)} /></div>
+              <div><label className="text-[10px] text-zinc-500 mb-1 block uppercase">Повт</label><Input type="tel" inputMode="numeric" value={editR} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditR(e.target.value)} /></div>
+              <div><label className="text-[10px] text-zinc-500 mb-1 block uppercase">Мин</label><Input type="number" inputMode="decimal" value={editRest} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditRest(e.target.value)} /></div>
+            </div>
+            <Button className="w-full h-12" onClick={saveEdit}>{busy ? 'Сохраняю…' : 'Сохранить'}</Button>
+            <Button variant="secondary" className="w-full h-12 text-red-400" onClick={deleteEditSet}>Удалить подход</Button>
+          </div>
+        )}
+      </Modal>
+      <Modal isOpen={!!deleteDay} onClose={() => setDeleteDay(null)} title="Удалить тренировку?">
+        <div className="space-y-4">
+          <p className="text-sm text-zinc-400">Все подходы за {deleteDay} будут удалены из таблицы. Действие необратимо.</p>
+          <Button variant="danger" className="w-full h-12" onClick={deleteDayConfirmed}>{busy ? 'Удаляю…' : 'Да, удалить'}</Button>
+          <Button variant="secondary" className="w-full h-12" onClick={() => setDeleteDay(null)}>Отмена</Button>
+        </div>
+      </Modal>
     </motion.div>
   );
 };
@@ -1234,7 +1354,7 @@ const EditExerciseModal = ({ isOpen, onClose, exercise, groups, onSave }: any) =
 
 const App = () => {
   const { haptic, notify } = useHaptics();
-  const { sessionId, incrementOrder, bodyWeight, updateBodyWeight } = useSession();
+  const { sessionId, incrementOrder, bodyWeight, updateBodyWeight, resetSession } = useSession();
   const [screen, setScreen] = useState<Screen>('home');
   const [groups, setGroups] = useState<string[]>([]);
   const [allExercises, setAllExercises] = useState<Exercise[]>([]);
@@ -1257,6 +1377,89 @@ const App = () => {
   const [bodyWeightInput, setBodyWeightInput] = useState('');
   const [isQueueOpen, setIsQueueOpen] = useState(false);
   const [queueItems, setQueueItems] = useState<QueuedItem[]>([]);
+
+  const [workoutActive, setWorkoutActive] = useState(() => !!localStorage.getItem(ACTIVE_WORKOUT_KEY));
+  const [isFinishConfirmOpen, setIsFinishConfirmOpen] = useState(false);
+  const [importReport, setImportReport] = useState('');
+  const [dataBusy, setDataBusy] = useState(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
+
+  // Тренировка могла стартовать неявно (из экрана подходов) — освежаем флаг
+  // при каждом возврате на главную.
+  useEffect(() => {
+    if (screen === 'home') setWorkoutActive(!!localStorage.getItem(ACTIVE_WORKOUT_KEY));
+  }, [screen]);
+
+  const startWorkout = () => {
+    localStorage.setItem(ACTIVE_WORKOUT_KEY, JSON.stringify({ startedAt: Date.now() }));
+    setWorkoutActive(true);
+    haptic('medium');
+  };
+
+  const finishWorkoutConfirmed = () => {
+    localStorage.removeItem(ACTIVE_WORKOUT_KEY);
+    localStorage.removeItem(WORKOUT_STORAGE_KEY);
+    resetSession();
+    setWorkoutActive(false);
+    setIsFinishConfirmOpen(false);
+    setCurrentExercise(null);
+    notify('success');
+  };
+
+  const handleExport = async () => {
+    if (dataBusy) return;
+    setDataBusy(true);
+    const data = await api.exportData();
+    setDataBusy(false);
+    if (!data) { notify('error'); return; }
+    const text = JSON.stringify(data);
+    const fileName = `gymapp-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    try {
+      const file = new File([text], fileName, { type: 'application/json' });
+      const nav = navigator as any;
+      if (nav.canShare && nav.canShare({ files: [file] })) {
+        await nav.share({ files: [file], title: fileName });
+        notify('success');
+        return;
+      }
+    } catch (e) {
+      if (e instanceof Error && e.name === 'AbortError') return;
+    }
+    const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    notify('success');
+  };
+
+  const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || dataBusy) return;
+    try {
+      const payload = JSON.parse(await file.text());
+      setDataBusy(true);
+      setImportReport('');
+      const result = await api.importData(payload);
+      setDataBusy(false);
+      if (!result) { notify('error'); setImportReport('Импорт не удался — проверь файл и сеть.'); return; }
+      notify('success');
+      setImportReport(`Упражнения: +${result.exercises_added ?? 0}, обновлено ${result.exercises_updated ?? 0}. Подходы: +${result.log_added ?? 0}, пропущено дублей ${result.log_skipped ?? 0}.`);
+      const fresh = await api.getInit();
+      if (fresh && fresh.groups) {
+        setGroups(sortGroups(fresh.groups));
+        setAllExercises(fresh.exercises || []);
+      }
+    } catch {
+      setDataBusy(false);
+      notify('error');
+      setImportReport('Файл не похож на бэкап GymApp (ожидается JSON экспорта).');
+    }
+  };
 
   const handleLogin = async () => {
     const token = authInput.trim();
@@ -1371,11 +1574,11 @@ const App = () => {
 
   return (
     <div className="bg-zinc-950 min-h-screen text-zinc-50 font-sans selection:bg-blue-500/30 pt-safe">
-      {screen === 'home' && <HomeScreen groups={groups} onSearch={(q: string) => { setSearchQuery(q); if (q) setScreen('exercises'); }} onSelectGroup={(g: string) => { setSelectedGroup(g); setScreen('exercises'); }} onAllExercises={() => { setSelectedGroup(null); setScreen('exercises'); }} onHistory={() => setScreen('history')} onAnalytics={() => setScreen('analytics')} onSettings={() => { setBodyWeightInput(String(bodyWeight)); setIsSettingsOpen(true); }} />}
+      {screen === 'home' && <HomeScreen groups={groups} workoutActive={workoutActive} onStartWorkout={startWorkout} onFinishWorkout={() => setIsFinishConfirmOpen(true)} onSearch={(q: string) => { setSearchQuery(q); if (q) setScreen('exercises'); }} onSelectGroup={(g: string) => { setSelectedGroup(g); setScreen('exercises'); }} onAllExercises={() => { setSelectedGroup(null); setScreen('exercises'); }} onHistory={() => setScreen('history')} onAnalytics={() => setScreen('analytics')} onSettings={() => { setBodyWeightInput(String(bodyWeight)); setIsSettingsOpen(true); }} />}
       {screen === 'analytics' && <AnalyticsScreen onBack={() => setScreen('home')} />}
-      {screen === 'history' && <HistoryScreen onBack={() => setScreen('home')} />}
+      {screen === 'history' && <HistoryScreen onBack={() => setScreen('home')} allExercises={allExercises} bodyWeight={bodyWeight} notify={notify} haptic={haptic} />}
       {screen === 'exercises' && <ExercisesListScreen exercises={filteredExercises} title={selectedGroup || (searchQuery ? `Поиск: ${searchQuery}` : 'Все упражнения')} searchQuery={searchQuery} onSearch={(q: string) => setSearchQuery(q)} onBack={() => { setSearchQuery(''); setSelectedGroup(null); setScreen('home'); }} onSelectExercise={(ex: Exercise) => { haptic('light'); setCurrentExercise(ex); setScreen('workout'); }} onAddExercise={() => setIsCreateModalOpen(true)} onEditExercise={(ex: Exercise) => setExerciseToEdit(ex)} />}
-      {screen === 'workout' && currentExercise && <WorkoutScreen initialExercise={currentExercise} allExercises={allExercises} sessionId={sessionId} incrementOrder={incrementOrder} bodyWeight={bodyWeight} haptic={haptic} notify={notify} onBack={() => setScreen('exercises')} onFinish={() => { setCurrentExercise(null); setScreen('home'); }} />}
+      {screen === 'workout' && currentExercise && <WorkoutScreen initialExercise={currentExercise} allExercises={allExercises} sessionId={sessionId} incrementOrder={incrementOrder} bodyWeight={bodyWeight} haptic={haptic} notify={notify} onBack={() => setScreen('exercises')} />}
       {pendingCount > 0 && (
         <button
           onClick={() => { setQueueItems(getQueue()); setIsQueueOpen(true); void api.syncOfflineQueue(); }}
@@ -1405,9 +1608,24 @@ const App = () => {
             <p className="text-xs text-zinc-500 mt-1">Используется для гравитрона, брусьев и упражнений со своим весом.</p>
           </div>
           <Button className="w-full h-12" onClick={() => { const v = parseFloat(bodyWeightInput.replace(',', '.')); if (v >= 30 && v <= 250) { updateBodyWeight(v); notify('success'); setIsSettingsOpen(false); } else { notify('error'); } }}>Сохранить</Button>
+          <div className="border-t border-zinc-800 pt-4 space-y-3">
+            <div className="text-sm font-medium text-zinc-400">Данные</div>
+            <Button variant="secondary" className="w-full h-12" onClick={handleExport}>{dataBusy ? 'Готовлю…' : 'Экспорт (упражнения + тренировки)'}</Button>
+            <Button variant="secondary" className="w-full h-12" onClick={() => importInputRef.current?.click()}>{dataBusy ? 'Импортирую…' : 'Импорт из файла'}</Button>
+            <input ref={importInputRef} type="file" accept=".json,application/json" className="hidden" onChange={handleImportFile} />
+            {importReport && <p className="text-xs text-zinc-400">{importReport}</p>}
+            <p className="text-xs text-zinc-500">Экспорт делает полный слепок таблицы. Импорт добавляет недостающее и не создаёт дубли.</p>
+          </div>
           <div className="border-t border-zinc-800 pt-4">
             <Button variant="secondary" className="w-full h-12 text-red-400" onClick={() => { localStorage.removeItem(AUTH_TOKEN_KEY); setIsSettingsOpen(false); setAuthInput(''); setIsAuthenticated(false); }}>Сменить токен (выйти)</Button>
           </div>
+        </div>
+      </Modal>
+      <Modal isOpen={isFinishConfirmOpen} onClose={() => setIsFinishConfirmOpen(false)} title="Закончить тренировку?">
+        <div className="space-y-4">
+          <p className="text-sm text-zinc-400">Выполненные подходы уже сохранены в таблице. Незавершённые строки и восстановление сессии будут очищены.</p>
+          <Button className="w-full h-12" onClick={finishWorkoutConfirmed}>Да, закончить</Button>
+          <Button variant="secondary" className="w-full h-12" onClick={() => setIsFinishConfirmOpen(false)}>Отмена</Button>
         </div>
       </Modal>
       <Modal isOpen={isQueueOpen} onClose={() => setIsQueueOpen(false)} title="Очередь синхронизации">

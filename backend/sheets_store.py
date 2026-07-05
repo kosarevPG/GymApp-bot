@@ -412,6 +412,139 @@ def delete_set(data: Dict[str, Any]) -> bool:
     return True
 
 
+def delete_workout(date_text: str) -> int:
+    """Удаляет все строки LOG за указанную дату (часть до запятой в Date)."""
+    date_text = str(date_text or "").strip()
+    if not date_text:
+        return 0
+    rows = [
+        int(record["_row_number"])
+        for record in _log_records(force=True)
+        if str(record.get("Date", "")).split(",")[0].strip() == date_text
+    ]
+    if not rows:
+        return 0
+    sheet, _ = _worksheets()
+    requests = [
+        {
+            "deleteDimension": {
+                "range": {
+                    "sheetId": sheet.id,
+                    "dimension": "ROWS",
+                    "startIndex": row_number - 1,
+                    "endIndex": row_number,
+                }
+            }
+        }
+        for row_number in sorted(rows, reverse=True)
+    ]
+    sheet.spreadsheet.batch_update({"requests": requests})
+    _invalidate_log_cache()
+    return len(rows)
+
+
+def export_data() -> Dict[str, Any]:
+    """Полный слепок таблицы: сырые значения листов с заголовками."""
+    log_sheet, exercises_sheet = _worksheets()
+    return {
+        "format": "gymapp-backup-v1",
+        "exported_at": datetime.now(MOSCOW_TZ).isoformat(),
+        "exercises": exercises_sheet.get_all_values(),
+        "log": log_sheet.get_all_values(),
+    }
+
+
+def _log_fingerprint(get) -> str:
+    return "|".join([get("Date"), get("Exercise_ID"), get("Set_Group_ID"), get("Order"), get("Reps")])
+
+
+def import_data(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Импорт слепка export_data: упражнения сливаются по ID, подходы
+    добавляются только новые (по Client_Request_ID или натуральному ключу)."""
+    result = {"exercises_added": 0, "exercises_updated": 0, "log_added": 0, "log_skipped": 0}
+    log_sheet, exercises_sheet = _worksheets()
+
+    ex_values = data.get("exercises") or []
+    if isinstance(ex_values, list) and len(ex_values) > 1:
+        in_headers = [str(header).strip() for header in ex_values[0]]
+        in_map = {header: index for index, header in enumerate(in_headers)}
+        existing = exercises_sheet.get_all_values()
+        headers = [str(header).strip() for header in existing[0]]
+        id_index = headers.index("ID") if "ID" in headers else 0
+        row_by_id = {
+            str(row[id_index]).strip(): index
+            for index, row in enumerate(existing[1:], start=2)
+            if len(row) > id_index and str(row[id_index]).strip()
+        }
+        cells = []
+        appends = []
+        for row in ex_values[1:]:
+            def get_ex(header: str, row=row) -> str:
+                index = in_map.get(header)
+                return str(row[index]).strip() if index is not None and index < len(row) else ""
+
+            exercise_id = get_ex("ID")
+            if not exercise_id:
+                continue
+            aligned = [get_ex(header) for header in headers]
+            if exercise_id in row_by_id:
+                row_number = row_by_id[exercise_id]
+                cells.extend(
+                    gspread.Cell(row_number, column + 1, aligned[column])
+                    for column in range(len(headers))
+                )
+                result["exercises_updated"] += 1
+            else:
+                appends.append(aligned)
+        if cells:
+            exercises_sheet.update_cells(cells, value_input_option="USER_ENTERED")
+        if appends:
+            exercises_sheet.append_rows(appends, value_input_option="USER_ENTERED")
+            result["exercises_added"] = len(appends)
+        _invalidate_exercise_cache()
+
+    log_values = data.get("log") or []
+    if isinstance(log_values, list) and len(log_values) > 1:
+        in_headers = [str(header).strip() for header in log_values[0]]
+        in_map = {header: index for index, header in enumerate(in_headers)}
+        headers = _ensure_optional_log_headers()
+        existing_records = _log_records(force=True)
+        existing_ids = {
+            str(record.get("Client_Request_ID", "")).strip()
+            for record in existing_records
+        } - {""}
+        existing_fingerprints = {
+            _log_fingerprint(lambda header, record=record: str(record.get(header, "")).strip())
+            for record in existing_records
+        }
+        appends = []
+        for row in log_values[1:]:
+            def get_log(header: str, row=row) -> str:
+                index = in_map.get(header)
+                return str(row[index]).strip() if index is not None and index < len(row) else ""
+
+            if not get_log("Date") or not get_log("Exercise_ID"):
+                continue
+            request_id = get_log("Client_Request_ID")
+            fingerprint = _log_fingerprint(get_log)
+            if (request_id and request_id in existing_ids) or fingerprint in existing_fingerprints:
+                result["log_skipped"] += 1
+                continue
+            aligned = [get_log(header) for header in headers]
+            if "Client_Request_ID" in headers and not request_id:
+                aligned[headers.index("Client_Request_ID")] = str(uuid.uuid4())
+            appends.append(aligned)
+            existing_fingerprints.add(fingerprint)
+            if request_id:
+                existing_ids.add(request_id)
+        if appends:
+            log_sheet.append_rows(appends, value_input_option="USER_ENTERED")
+            result["log_added"] = len(appends)
+        _invalidate_log_cache()
+
+    return result
+
+
 def create_exercise(name: str, group: str) -> Dict[str, Any]:
     _, sheet = _worksheets()
     headers = [str(value).strip() for value in sheet.row_values(1)]
