@@ -1544,8 +1544,27 @@ const App = () => {
 
   const handleCreate = async () => {
     if (!newName || !newGroup) return;
+    // Локальная проверка: не шлём запрос, если имя уже занято.
+    const wanted = newName.trim().toLowerCase();
+    if (allExercises.some(ex => ex.name.trim().toLowerCase() === wanted)) {
+      notify('error');
+      setImportReport('');
+      alert('Упражнение с таким названием уже есть в библиотеке.');
+      return;
+    }
     const newEx = await api.createExercise(newName, newGroup);
-    if (newEx) { setAllExercises(p => [...p, newEx]); setIsCreateModalOpen(false); setNewName(''); notify('success'); }
+    if (!newEx) { notify('error'); return; }
+    // Сервер вернул существующее (дубль перехвачен) — не добавляем вторую копию.
+    if ((newEx as any).deduplicated) {
+      setAllExercises(p => p.some(ex => ex.id === newEx.id) ? p : [...p, newEx]);
+      notify('warning');
+      alert('Такое упражнение уже было — открыл существующее, дубль не создан.');
+    } else {
+      setAllExercises(p => [...p, newEx]);
+      notify('success');
+    }
+    setIsCreateModalOpen(false);
+    setNewName('');
   };
 
   const handleUpdate = async (id: string, updates: Partial<Exercise>) => {

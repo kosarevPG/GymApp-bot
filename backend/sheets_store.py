@@ -546,6 +546,15 @@ def import_data(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def create_exercise(name: str, group: str) -> Dict[str, Any]:
+    # Защита от дублей: если упражнение с таким названием уже есть, возвращаем
+    # его, а не создаём вторую копию (частая причина дублей в каталоге).
+    wanted = name.strip().casefold()
+    for record in _exercise_records(force=True):
+        if str(record.get("Name", "")).strip().casefold() == wanted:
+            result = _exercise_to_api(record)
+            result["deduplicated"] = True
+            return result
+
     _, sheet = _worksheets()
     headers = [str(value).strip() for value in sheet.row_values(1)]
     exercise_id = str(uuid.uuid4())
