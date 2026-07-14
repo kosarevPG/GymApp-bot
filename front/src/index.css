@@ -1,3 +1,11 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Safe-area: внутри Telegram inset = 0 (webview ниже шапки клиента),
+   в standalone-режиме (с домашнего экрана) — реальный вырез под чёлку.
+   Одни и те же утилиты подстраивают оба режима без ветвления. */
+.pt-safe { padding-top: env(safe-area-inset-top); }
+.pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+.pt-safe-2 { padding-top: calc(0.5rem + env(safe-area-inset-top)); }
+.pt-safe-4 { padding-top: calc(1rem + env(safe-area-inset-top)); }

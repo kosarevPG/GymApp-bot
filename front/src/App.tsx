@@ -465,7 +465,7 @@ const TimerBlock = ({ timer, onToggle, sessionTonnage = 0, restTarget = null }: 
   const resting = remaining != null && timer.isRunning && remaining > 0;
   const restOver = remaining != null && timer.isRunning && remaining <= 0;
   return (
-    <div className="sticky top-0 z-40 bg-zinc-950/80 backdrop-blur-md pb-4 pt-2 px-4 border-b border-zinc-800/50 mb-4">
+    <div className="sticky top-0 z-40 bg-zinc-950/80 backdrop-blur-md pb-4 pt-safe-2 px-4 border-b border-zinc-800/50 mb-4">
       <Card className="flex items-center justify-between p-3 px-5 shadow-xl shadow-black/50">
         <div className="flex flex-col gap-0.5">
           <div className={`font-mono text-3xl font-bold tracking-wider tabular-nums ${resting ? 'text-blue-400' : restOver ? 'text-amber-400' : 'text-zinc-50'}`}>
@@ -697,7 +697,7 @@ const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, onAd
 // --- SCREENS ---
 
 const HomeScreen = ({ groups, workoutActive, onStartWorkout, onFinishWorkout, onSearch, onSelectGroup, onAllExercises, onHistory, onAnalytics, onSettings }: any) => (
-  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="p-4 space-y-6">
+  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="px-4 pb-4 pt-safe-4 space-y-6">
     {workoutActive
       ? <Button variant="secondary" onClick={onFinishWorkout} className="w-full h-14 text-lg border border-red-900/50 text-red-400">Закончить тренировку</Button>
       : <Button variant="primary" onClick={onStartWorkout} className="w-full h-14 text-lg font-semibold shadow-xl shadow-blue-900/20">Начать тренировку</Button>}
@@ -737,7 +737,7 @@ const ExercisesListScreen = ({ exercises, title, onBack, onSelectExercise, onAdd
   
   return (
     <motion.div initial={{ x: 50, opacity: 0 }} animate={{ x: 0, opacity: 1 }} className="flex flex-col h-full">
-      <div className="sticky top-0 z-30 bg-zinc-950/80 backdrop-blur-md border-b border-zinc-800 p-4 flex items-center justify-between gap-4">
+      <div className="sticky top-0 z-30 bg-zinc-950/80 backdrop-blur-md border-b border-zinc-800 px-4 pb-4 pt-safe-4 flex items-center justify-between gap-4">
         <div className="flex items-center gap-2 flex-1 min-w-0">
           <button onClick={onBack} className="p-2 -ml-2 text-zinc-400 active:text-white"><ChevronLeft className="w-6 h-6" /></button>
           {searchQuery ? (
@@ -1088,7 +1088,7 @@ const HistoryScreen = ({ onBack, allExercises = [], bodyWeight = USER_BODY_WEIGH
 
   return (
     <motion.div initial={{ x: 50, opacity: 0 }} animate={{ x: 0, opacity: 1 }} className="min-h-screen bg-zinc-950">
-      <div className="sticky top-0 z-30 bg-zinc-950/80 backdrop-blur-md border-b border-zinc-800 p-4 flex items-center gap-4">
+      <div className="sticky top-0 z-30 bg-zinc-950/80 backdrop-blur-md border-b border-zinc-800 px-4 pb-4 pt-safe-4 flex items-center gap-4">
         <button onClick={onBack} className="p-2 -ml-2 text-zinc-400 active:text-white"><ChevronLeft className="w-6 h-6" /></button>
         <h1 className="text-xl font-bold">История</h1>
       </div>
@@ -1211,7 +1211,7 @@ const AnalyticsScreen = ({ onBack }: any) => {
 
   return (
     <motion.div initial={{ x: 50, opacity: 0 }} animate={{ x: 0, opacity: 1 }} className="min-h-screen bg-zinc-950">
-      <div className="sticky top-0 z-30 bg-zinc-950/80 backdrop-blur-md border-b border-zinc-800 p-4 flex items-center gap-4">
+      <div className="sticky top-0 z-30 bg-zinc-950/80 backdrop-blur-md border-b border-zinc-800 px-4 pb-4 pt-safe-4 flex items-center gap-4">
         <button onClick={onBack} className="p-2 -ml-2 text-zinc-400 active:text-white"><ChevronLeft className="w-6 h-6" /></button>
         <h1 className="text-xl font-bold">Аналитика</h1>
       </div>
@@ -1592,7 +1592,7 @@ const App = () => {
   }
 
   return (
-    <div className="bg-zinc-950 min-h-screen text-zinc-50 font-sans selection:bg-blue-500/30 pt-safe">
+    <div className="bg-zinc-950 min-h-screen text-zinc-50 font-sans selection:bg-blue-500/30 pb-safe">
       {screen === 'home' && <HomeScreen groups={groups} workoutActive={workoutActive} onStartWorkout={startWorkout} onFinishWorkout={() => setIsFinishConfirmOpen(true)} onSearch={(q: string) => { setSearchQuery(q); if (q) setScreen('exercises'); }} onSelectGroup={(g: string) => { setSelectedGroup(g); setScreen('exercises'); }} onAllExercises={() => { setSelectedGroup(null); setScreen('exercises'); }} onHistory={() => setScreen('history')} onAnalytics={() => setScreen('analytics')} onSettings={() => { setBodyWeightInput(String(bodyWeight)); setIsSettingsOpen(true); }} />}
       {screen === 'analytics' && <AnalyticsScreen onBack={() => setScreen('home')} />}
       {screen === 'history' && <HistoryScreen onBack={() => setScreen('home')} allExercises={allExercises} bodyWeight={bodyWeight} notify={notify} haptic={haptic} />}
