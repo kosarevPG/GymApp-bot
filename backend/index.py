@@ -10,6 +10,7 @@ from typing import Any, Dict
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
+from object_storage import UploadError, upload_image
 from sheets_store import (
     create_exercise,
     delete_set,
@@ -220,7 +221,16 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         if endpoint == "confirm_baseline" and method == "POST":
             return response({"status": "ok"})
         if endpoint == "upload_image" and method == "POST":
-            return response({"error": "Image upload is not implemented"}, 501)
+            data = _body(event)
+            try:
+                url = upload_image(
+                    str(data.get("data_base64", "")),
+                    str(data.get("content_type", "")),
+                )
+            except UploadError as error:
+                logger.warning("Image upload rejected: %s", error)
+                return response({"error": str(error)}, 400)
+            return response({"status": "success", "url": url})
         return response({"error": f"Route not found: {endpoint}"}, 404)
     except Exception as error:
         logger.exception("Request failed: %s", error)

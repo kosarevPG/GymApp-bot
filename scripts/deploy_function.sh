@@ -35,6 +35,10 @@ ENV_ARGS=()
 [ -n "$BOT_TOKEN" ] && ENV_ARGS+=(--environment "BOT_TOKEN=$BOT_TOKEN")
 [ -n "$TELEGRAM_WEBHOOK_SECRET" ] && ENV_ARGS+=(--environment "TELEGRAM_WEBHOOK_SECRET=$TELEGRAM_WEBHOOK_SECRET")
 [ -n "$FRONTEND_URL" ] && ENV_ARGS+=(--environment "FRONTEND_URL=$FRONTEND_URL")
+[ -n "$S3_BUCKET" ] && ENV_ARGS+=(--environment "S3_BUCKET=$S3_BUCKET")
+[ -n "$S3_ACCESS_KEY_ID" ] && ENV_ARGS+=(--environment "S3_ACCESS_KEY_ID=$S3_ACCESS_KEY_ID")
+[ -n "$S3_SECRET_ACCESS_KEY" ] && ENV_ARGS+=(--environment "S3_SECRET_ACCESS_KEY=$S3_SECRET_ACCESS_KEY")
+[ -n "$S3_ENDPOINT" ] && ENV_ARGS+=(--environment "S3_ENDPOINT=$S3_ENDPOINT")
 
 echo "Деплой функции $FUNCTION_ID..."
 DEPLOY_RESULT="$(yc serverless function version create \

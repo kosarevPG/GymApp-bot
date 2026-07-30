@@ -269,20 +269,53 @@ const api = {
     return await api.request('ping');
   },
 
-  uploadImage: async (file: File) => {
-    const formData = new FormData();
-    formData.append('image', file);
+  // Принимает уже сжатый data:-URL и возвращает публичную ссылку из хранилища.
+  uploadImage: async (dataUrl: string): Promise<{ url?: string; error?: string }> => {
+    const parsed = /^data:([^;]+);base64,(.+)$/.exec(dataUrl);
+    if (!parsed) return { error: 'Не удалось прочитать файл' };
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 60_000);
     try {
+      if (!API_BASE_URL) return { error: 'Бэкенд не настроен' };
       const res = await fetch(`${API_BASE_URL}?url=/api/upload_image`, {
         method: 'POST',
-        headers: { 'X-Auth-Token': getToken() },
-        body: formData
+        headers: { 'Content-Type': 'application/json', 'X-Auth-Token': getToken() },
+        body: JSON.stringify({ content_type: parsed[1], data_base64: parsed[2] }),
+        signal: controller.signal,
       });
-      if (!res.ok) throw new Error('Upload failed');
-      return await res.json();
-    } catch (e) { return null; }
+      const payload = await res.json().catch(() => null);
+      if (!res.ok || !payload?.url) return { error: payload?.error || `Ошибка загрузки (${res.status})` };
+      return { url: payload.url as string };
+    } catch (e) {
+      return { error: e instanceof Error && e.name === 'AbortError' ? 'Загрузка не уложилась в минуту' : 'Нет сети' };
+    } finally {
+      window.clearTimeout(timeout);
+    }
   }
 };
+
+/**
+ * Ужимает снимок до разумного размера прямо на телефоне: камеры отдают
+ * 3–8 МБ, а для карточки упражнения хватает ~1024 px по длинной стороне.
+ */
+const compressImage = (file: File, maxSide = 1024, quality = 0.8): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(img.width * scale));
+      canvas.height = Math.max(1, Math.round(img.height * scale));
+      const ctx = canvas.getContext('2d');
+      if (!ctx) { reject(new Error('canvas')); return; }
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error('image')); };
+    img.src = objectUrl;
+  });
 
 // --- HOOKS ---
 
@@ -1347,20 +1380,52 @@ const EditExerciseModal = ({ isOpen, onClose, exercise, groups, onSave }: any) =
       setWeightType(exercise.weightType || 'Machine');
       setBaseWeight(String(exercise.baseWeight ?? 0));
       setSecondaryMuscles(exercise.secondaryMuscles || '');
+      setUploadState('idle');
+      setUploadError('');
     }
   }, [exercise]);
   
-  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const [uploadState, setUploadState] = useState<'idle' | 'busy' | 'error'>('idle');
+  const [uploadError, setUploadError] = useState('');
+
+  // Снимок сразу уезжает в хранилище: в таблице должна оказаться ссылка,
+  // data:-URL туда не записать.
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) { const r = new FileReader(); r.onloadend = () => setImage(r.result as string); r.readAsDataURL(file); }
+    e.target.value = '';
+    if (!file) return;
+    setUploadState('busy');
+    setUploadError('');
+    const previous = image;
+    try {
+      const compressed = await compressImage(file);
+      setImage(compressed);
+      const result = await api.uploadImage(compressed);
+      if (!result.url) {
+        setImage(previous);
+        setUploadError(result.error || 'Не удалось загрузить');
+        setUploadState('error');
+        return;
+      }
+      setImage(result.url);
+      setUploadState('idle');
+    } catch {
+      setImage(previous);
+      setUploadError('Не удалось обработать снимок');
+      setUploadState('error');
+    }
   };
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Редактировать">
       <div className="space-y-6">
-        <div onClick={() => fileRef.current?.click()} className="w-full h-48 bg-zinc-800 rounded-2xl overflow-hidden relative flex items-center justify-center cursor-pointer border border-zinc-700 border-dashed">
+        <div onClick={() => { if (uploadState !== 'busy') fileRef.current?.click(); }} className="w-full h-48 bg-zinc-800 rounded-2xl overflow-hidden relative flex items-center justify-center cursor-pointer border border-zinc-700 border-dashed">
           {image ? <img src={image} className="w-full h-full object-cover" alt="" /> : <div className="flex flex-col items-center text-zinc-500"><Camera className="w-8 h-8 mb-2" /><span className="text-sm">Фото</span></div>}
+          {uploadState === 'busy' && (
+            <div className="absolute inset-0 bg-black/70 flex items-center justify-center text-sm text-zinc-200">Загружаю…</div>
+          )}
         </div>
+        {uploadState === 'error' && <div className="-mt-4 text-sm text-red-400">{uploadError}</div>}
         <input ref={fileRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleFile} />
         <div><label className="text-sm text-zinc-400 mb-1 block">Название</label><Input value={name} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)} /></div>
         <div>
@@ -1386,7 +1451,7 @@ const EditExerciseModal = ({ isOpen, onClose, exercise, groups, onSave }: any) =
           <label className="text-sm text-zinc-400 mb-1 block">Вторичные мышцы</label>
           <Input value={secondaryMuscles} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSecondaryMuscles(e.target.value)} placeholder="Грудь, Трицепс" />
         </div>
-        <Button onClick={() => { onSave(exercise.id, { name, muscleGroup: group, imageUrl: image, weightType, baseWeight: parseFloat(baseWeight) || 0, weightMultiplier: parseFloat(weightMultiplier) || 1, secondaryMuscles }); onClose(); }} className="w-full h-12">Сохранить</Button>
+        <Button onClick={() => { if (uploadState === 'busy') return; onSave(exercise.id, { name, muscleGroup: group, imageUrl: image, weightType, baseWeight: parseFloat(baseWeight) || 0, weightMultiplier: parseFloat(weightMultiplier) || 1, secondaryMuscles }); onClose(); }} className="w-full h-12">{uploadState === 'busy' ? 'Ждём фото…' : 'Сохранить'}</Button>
       </div>
     </Modal>
   );
