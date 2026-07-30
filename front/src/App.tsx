@@ -103,8 +103,10 @@ const api = {
     }
   },
 
-  getInit: async () => {
-    const data = await api.request('init');
+  // refresh=1 обходит кэш каталога на бэкенде — нужен сразу после правки,
+  // иначе ответ может прийти с данными до неё и затереть изменение в UI.
+  getInit: async (refresh = false) => {
+    const data = await api.request(refresh ? 'init?refresh=1' : 'init');
     if (data && data.exercises) {
       cacheExercises(data);
       return data;
@@ -366,6 +368,10 @@ const useSession = () => {
       orderCounterRef.current = 0;
       localStorage.setItem(SESSION_ID_KEY, newId);
       localStorage.setItem(ORDER_COUNTER_KEY, '0');
+      // Тренировка не может пережить свою сессию: иначе восстановленный
+      // setGroupId встретится с обнулённым Order, и подходы уйдут в дубли.
+      localStorage.removeItem(WORKOUT_STORAGE_KEY);
+      localStorage.removeItem(ACTIVE_WORKOUT_KEY);
     } else {
       setSessionId(savedSession || '');
       const restoredOrder = parseInt(savedOrder || '0');
@@ -393,6 +399,15 @@ const useSession = () => {
     localStorage.setItem(LAST_ACTIVE_KEY, Date.now().toString());
     return next;
   };
+
+  // Подтягивает счётчик под уже записанные подходы восстановленной тренировки,
+  // чтобы новый Order не совпал с существующей строкой в таблице.
+  const ensureOrderAtLeast = (value: number) => {
+    if (!Number.isFinite(value) || value <= orderCounterRef.current) return;
+    orderCounterRef.current = value;
+    setOrderCounter(value);
+    localStorage.setItem(ORDER_COUNTER_KEY, value.toString());
+  };
   const bodyWeightKey = 'gym_body_weight';
   const [bodyWeight, setBodyWeight] = useState(() => {
     try {
@@ -404,7 +419,7 @@ const useSession = () => {
     setBodyWeight(v);
     localStorage.setItem(bodyWeightKey, String(v));
   };
-  return { sessionId, incrementOrder, bodyWeight, updateBodyWeight, resetSession };
+  return { sessionId, incrementOrder, ensureOrderAtLeast, bodyWeight, updateBodyWeight, resetSession };
 };
 
 // --- UI COMPONENTS ---
@@ -793,24 +808,45 @@ const readSavedWorkout = () => {
   return null;
 };
 
-const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incrementOrder, bodyWeight = USER_BODY_WEIGHT_DEFAULT, haptic, notify }: any) => {
+/** Сегодняшняя дата в том же виде, в каком её пишет бэкенд: «2026.07.31». */
+const todayInLogFormat = () =>
+  new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Moscow' }).replace(/-/g, '.');
+
+const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incrementOrder, ensureOrderAtLeast, bodyWeight = USER_BODY_WEIGHT_DEFAULT, haptic, notify }: any) => {
   const timer = useTimer();
   const savedWorkoutRef = useRef<any>(null);
   if (savedWorkoutRef.current === null) {
-    const saved = readSavedWorkout();
-    // Восстанавливаем сессию, только если она включает открытое упражнение —
-    // иначе это новая тренировка поверх старой записи.
-    savedWorkoutRef.current = saved && Array.isArray(saved.activeExercises) && saved.activeExercises.includes(initialExercise.id) ? saved : false;
+    savedWorkoutRef.current = readSavedWorkout() || false;
   }
   const savedWorkout = savedWorkoutRef.current || null;
-  const [setGroupId] = useState(() => savedWorkout?.setGroupId || crypto.randomUUID());
-  const [activeExercises, setActiveExercises] = useState<string[]>(() => savedWorkout?.activeExercises || [initialExercise.id]);
+  // Блок упражнения переживает переход к другому упражнению и обратно: сохранёнка
+  // держит всю тренировку, а не только последний открытый экран.
+  const savedBlock = savedWorkout?.exercises?.[initialExercise.id] || null;
+  const savedGroupId: string | null =
+    savedBlock?.setGroupId ||
+    (Array.isArray(savedWorkout?.activeExercises) && savedWorkout.activeExercises.includes(initialExercise.id)
+      ? savedWorkout?.setGroupId || null
+      : null);
+
+  const [setGroupId] = useState(() => savedGroupId || crypto.randomUUID());
+  const [activeExercises, setActiveExercises] = useState<string[]>(() => {
+    const saved = savedWorkout?.activeExercises;
+    // Суперсет восстанавливаем целиком — он делит один setGroupId.
+    if (savedGroupId && Array.isArray(saved) && saved.length > 1 && saved.includes(initialExercise.id)) return saved;
+    return [initialExercise.id];
+  });
   const [sessionData, setSessionData] = useState<Record<string, ExerciseSessionData>>({});
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [supersetSearchQuery, setSupersetSearchQuery] = useState('');
 
   const loadExerciseData = async (exId: string) => {
     const { history, note } = await api.getHistory(exId);
+    const restored = savedWorkoutRef.current?.exercises?.[exId];
+    if (restored && Array.isArray(restored.sets)) {
+      // Восстановленные подходы уже занимают свои Order в таблице — счётчик
+      // сессии обязан продолжиться после них, а не начаться заново.
+      ensureOrderAtLeast?.(Math.max(0, ...restored.sets.map((s: WorkoutSet) => s.order || 0)));
+    }
     setSessionData(prev => {
       if (prev[exId]) return prev;
       const savedEx = savedWorkoutRef.current?.exercises?.[exId];
@@ -818,10 +854,12 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
         return { ...prev, [exId]: { exercise: allExercises.find((e: Exercise) => e.id === exId)!, note: savedEx.note ?? note ?? '', history, sets: savedEx.sets, sessionId } };
       }
       let initialSets: WorkoutSet[] = [];
-      if (history.length > 0) {
-        const lastDate = history[0]?.date;
+      // Шаблон берём с прошлой тренировки. Сегодняшние подходы уже в журнале:
+      // подставить их как незавершённые — значит записать вторые копии.
+      const templateDate = history.map(h => h.date).find(date => date && date !== todayInLogFormat());
+      if (templateDate) {
         const lastDateItems = history
-          .filter(h => h.date === lastDate)
+          .filter(h => h.date === templateDate)
           .sort((a, b) => (a.order || 0) - (b.order || 0));
         initialSets = lastDateItems.map(h => ({
           id: crypto.randomUUID(), 
@@ -848,13 +886,17 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
   useEffect(() => {
     if (Object.keys(sessionData).length === 0) return;
     try {
+      // Сливаем, а не перезаписываем: блоки других упражнений этой тренировки
+      // должны пережить переход к следующему упражнению и обратно.
+      const blocks: Record<string, unknown> = { ...(readSavedWorkout()?.exercises || {}) };
+      Object.entries(sessionData).forEach(([id, d]) => {
+        blocks[id] = { sets: d.sets, note: d.note, setGroupId };
+      });
       localStorage.setItem(WORKOUT_STORAGE_KEY, JSON.stringify({
         timestamp: Date.now(),
         setGroupId,
         activeExercises,
-        exercises: Object.fromEntries(
-          Object.entries(sessionData).map(([id, d]) => [id, { sets: d.sets, note: d.note }])
-        ),
+        exercises: blocks,
       }));
       // Открытое упражнение = тренировка де-факто идёт: отмечаем её активной,
       // чтобы на главной появилась кнопка «Закончить тренировку».
@@ -1354,7 +1396,7 @@ const EditExerciseModal = ({ isOpen, onClose, exercise, groups, onSave }: any) =
 
 const App = () => {
   const { haptic, notify } = useHaptics();
-  const { sessionId, incrementOrder, bodyWeight, updateBodyWeight, resetSession } = useSession();
+  const { sessionId, incrementOrder, ensureOrderAtLeast, bodyWeight, updateBodyWeight, resetSession } = useSession();
   const [screen, setScreen] = useState<Screen>('home');
   const [groups, setGroups] = useState<string[]>([]);
   const [allExercises, setAllExercises] = useState<Exercise[]>([]);
@@ -1449,7 +1491,7 @@ const App = () => {
       if (!result) { notify('error'); setImportReport('Импорт не удался — проверь файл и сеть.'); return; }
       notify('success');
       setImportReport(`Упражнения: +${result.exercises_added ?? 0}, обновлено ${result.exercises_updated ?? 0}. Подходы: +${result.log_added ?? 0}, пропущено дублей ${result.log_skipped ?? 0}.`);
-      const fresh = await api.getInit();
+      const fresh = await api.getInit(true);
       if (fresh && fresh.groups) {
         setGroups(sortGroups(fresh.groups));
         setAllExercises(fresh.exercises || []);
@@ -1539,7 +1581,7 @@ const App = () => {
     let list = allExercises;
     if (selectedGroup) list = list.filter(ex => ex.muscleGroup === selectedGroup);
     if (debouncedSearchQuery) list = list.filter(ex => ex.name.toLowerCase().includes(debouncedSearchQuery.toLowerCase()));
-    return list.sort((a, b) => a.name.localeCompare(b.name, 'ru', { sensitivity: 'base' }));
+    return [...list].sort((a, b) => a.name.localeCompare(b.name, 'ru', { sensitivity: 'base' }));
   }, [allExercises, selectedGroup, debouncedSearchQuery]);
 
   const handleCreate = async () => {
@@ -1565,13 +1607,14 @@ const App = () => {
     }
     setIsCreateModalOpen(false);
     setNewName('');
+    setNewGroup('');
   };
 
   const handleUpdate = async (id: string, updates: Partial<Exercise>) => {
     setAllExercises(p => p.map(ex => ex.id === id ? { ...ex, ...updates } : ex));
     const result = await api.updateExercise(id, updates);
     if (result) {
-      const freshData = await api.getInit();
+      const freshData = await api.getInit(true);
       if (freshData && freshData.exercises) setAllExercises(freshData.exercises);
       notify('success');
     } else { notify('error'); }
@@ -1597,7 +1640,7 @@ const App = () => {
       {screen === 'analytics' && <AnalyticsScreen onBack={() => setScreen('home')} />}
       {screen === 'history' && <HistoryScreen onBack={() => setScreen('home')} allExercises={allExercises} bodyWeight={bodyWeight} notify={notify} haptic={haptic} />}
       {screen === 'exercises' && <ExercisesListScreen exercises={filteredExercises} title={selectedGroup || (searchQuery ? `Поиск: ${searchQuery}` : 'Все упражнения')} searchQuery={searchQuery} onSearch={(q: string) => setSearchQuery(q)} onBack={() => { setSearchQuery(''); setSelectedGroup(null); setScreen('home'); }} onSelectExercise={(ex: Exercise) => { haptic('light'); setCurrentExercise(ex); setScreen('workout'); }} onAddExercise={() => setIsCreateModalOpen(true)} onEditExercise={(ex: Exercise) => setExerciseToEdit(ex)} />}
-      {screen === 'workout' && currentExercise && <WorkoutScreen initialExercise={currentExercise} allExercises={allExercises} sessionId={sessionId} incrementOrder={incrementOrder} bodyWeight={bodyWeight} haptic={haptic} notify={notify} onBack={() => setScreen('exercises')} />}
+      {screen === 'workout' && currentExercise && <WorkoutScreen initialExercise={currentExercise} allExercises={allExercises} sessionId={sessionId} incrementOrder={incrementOrder} ensureOrderAtLeast={ensureOrderAtLeast} bodyWeight={bodyWeight} haptic={haptic} notify={notify} onBack={() => setScreen('exercises')} />}
       {pendingCount > 0 && (
         <button
           onClick={() => { setQueueItems(getQueue()); setIsQueueOpen(true); void api.syncOfflineQueue(); }}

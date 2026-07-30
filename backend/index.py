@@ -175,7 +175,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         if endpoint == "ping" and method == "GET":
             return response({"status": "ok", "storage": "google-sheets"})
         if endpoint == "init" and method == "GET":
-            return response(get_init())
+            refresh = str(params.get("refresh", "")).strip().lower() in {"1", "true", "yes"}
+            return response(get_init(force=refresh))
         if endpoint == "history" and method == "GET":
             exercise_id = params.get("exercise_id", "")
             if not exercise_id:

@@ -30,6 +30,7 @@ MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 LOG_SHEET = os.getenv("GOOGLE_LOG_SHEET", "LOG")
 EXERCISES_SHEET = os.getenv("GOOGLE_EXERCISES_SHEET", "EXERCISES")
 OPTIONAL_LOG_HEADERS = ["Set_Type", "RPE", "RIR", "Session_ID", "Client_Request_ID"]
+OPTIONAL_EXERCISE_HEADERS = ["Secondary_Muscles"]
 
 _client = None
 _spreadsheet = None
@@ -155,11 +156,14 @@ def _exercise_to_api(record: Dict[str, Any]) -> Dict[str, Any]:
         "weightType": str(record.get("Weight_Type", "")).strip(),
         "baseWeight": _to_float(record.get("Base_Wt")),
         "weightMultiplier": _to_float(record.get("Multiplier"), 1.0),
+        "secondaryMuscles": str(record.get("Secondary_Muscles", "")).strip(),
     }
 
 
-def get_init() -> Dict[str, Any]:
-    exercises = [_exercise_to_api(record) for record in _exercise_records()]
+def get_init(force: bool = False) -> Dict[str, Any]:
+    """force=True обходит 5-минутный кэш каталога: нужен сразу после правки
+    упражнения, иначе соседний инстанс функции вернёт данные до правки."""
+    exercises = [_exercise_to_api(record) for record in _exercise_records(force=force)]
     exercises = [exercise for exercise in exercises if exercise["id"] and exercise["name"]]
     exercises.sort(key=lambda exercise: exercise["name"].casefold())
     groups = sorted(
@@ -169,8 +173,8 @@ def get_init() -> Dict[str, Any]:
     return {"groups": groups, "exercises": exercises}
 
 
-def _exercise_maps() -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
-    records = _exercise_records()
+def _exercise_maps(force: bool = False) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+    records = _exercise_records(force=force)
     by_id = {str(record.get("ID", "")).strip(): record for record in records}
     by_name = {str(record.get("Name", "")).strip(): record for record in records}
     return by_id, by_name
@@ -268,25 +272,33 @@ def _ensure_optional_log_headers() -> List[str]:
     return headers
 
 
-def _find_existing_request(
+def _find_by_request_id(
     records: Iterable[Dict[str, Any]],
     client_request_id: str,
+) -> Optional[Dict[str, Any]]:
+    if not client_request_id:
+        return None
+    for record in records:
+        if str(record.get("Client_Request_ID", "")).strip() == client_request_id:
+            return record
+    return None
+
+
+def _find_by_natural_key(
+    records: Iterable[Dict[str, Any]],
     exercise_id: str,
     set_group_id: str,
     order: int,
 ) -> Optional[Dict[str, Any]]:
+    """Запасной поиск для строк, записанных до появления Client_Request_ID."""
+    if not (exercise_id and set_group_id and order > 0):
+        return None
     for record in records:
-        if client_request_id and str(record.get("Client_Request_ID", "")).strip() == client_request_id:
-            return record
-        same_natural_key = (
-            exercise_id
-            and set_group_id
-            and order > 0
-            and str(record.get("Exercise_ID", "")).strip() == exercise_id
+        if (
+            str(record.get("Exercise_ID", "")).strip() == exercise_id
             and str(record.get("Set_Group_ID", "")).strip() == set_group_id
             and _to_int(record.get("Order")) == order
-        )
-        if same_natural_key:
+        ):
             return record
     return None
 
@@ -298,6 +310,11 @@ def save_set(data: Dict[str, Any]) -> Dict[str, Any]:
 
     by_id, _ = _exercise_maps()
     exercise = by_id.get(exercise_id)
+    if not exercise:
+        # Упражнение могло появиться только что: каталог кэшируется на 5 минут,
+        # и соседний инстанс функции его ещё не видит.
+        by_id, _ = _exercise_maps(force=True)
+        exercise = by_id.get(exercise_id)
     if not exercise:
         return {"status": "error", "error": "Unknown exercise_id"}
 
@@ -311,13 +328,10 @@ def save_set(data: Dict[str, Any]) -> Dict[str, Any]:
     set_group_id = str(data.get("set_group_id") or data.get("session_id") or "").strip()
     order = _to_int(data.get("order"))
 
-    existing = _find_existing_request(
-        _log_records(force=True),
-        client_request_id,
-        exercise_id,
-        set_group_id,
-        order,
-    )
+    # Дубли ловим только по идемпотентному ключу клиента. Натуральный ключ здесь
+    # использовать нельзя: (упражнение + группа + Order) повторяется на законных
+    # основаниях, и новый подход молча терялся бы вместо записи.
+    existing = _find_by_request_id(_log_records(force=True), client_request_id)
     if existing:
         return {
             "status": "success",
@@ -366,12 +380,11 @@ def _locate_log_row(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     exercise_id = str(data.get("exercise_id", "")).strip()
     set_group_id = str(data.get("set_group_id") or data.get("session_id") or "").strip()
     order = _to_int(data.get("order"))
-    return _find_existing_request(
-        _log_records(force=True),
-        request_id,
-        exercise_id,
-        set_group_id,
-        order,
+    records = _log_records(force=True)
+    # Точный ключ клиента всегда важнее натурального: иначе более ранняя строка
+    # с тем же (упражнение + группа + Order) перехватывает правку чужого подхода.
+    return _find_by_request_id(records, request_id) or _find_by_natural_key(
+        records, exercise_id, set_group_id, order
     )
 
 
@@ -574,8 +587,23 @@ def create_exercise(name: str, group: str) -> Dict[str, Any]:
     return _exercise_to_api(values)
 
 
+def _ensure_optional_exercise_headers() -> List[str]:
+    """Добавляет недостающие необязательные колонки каталога (в конец листа)."""
+    _, sheet = _worksheets()
+    headers = [str(value).strip() for value in sheet.row_values(1)]
+    missing = [header for header in OPTIONAL_EXERCISE_HEADERS if header not in headers]
+    if missing:
+        headers.extend(missing)
+        sheet.update("A1", [headers], value_input_option="RAW")
+        _invalidate_exercise_cache()
+    return headers
+
+
 def update_exercise(exercise_id: str, updates: Dict[str, Any]) -> bool:
     _, sheet = _worksheets()
+    # Колонку заводим только когда пользователь реально сохраняет это поле.
+    if str(updates.get("secondaryMuscles", "")).strip():
+        _ensure_optional_exercise_headers()
     values = sheet.get_all_values()
     if not values:
         return False
@@ -597,6 +625,7 @@ def update_exercise(exercise_id: str, updates: Dict[str, Any]) -> bool:
         "weightType": "Weight_Type",
         "baseWeight": "Base_Wt",
         "weightMultiplier": "Multiplier",
+        "secondaryMuscles": "Secondary_Muscles",
     }
     cells = []
     for api_name, sheet_name in mapping.items():
