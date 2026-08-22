@@ -1,5 +1,7 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import index
@@ -39,6 +41,29 @@ class HandlerTests(unittest.TestCase):
         ):
             result = index.handler(self.event("GET", "/api/init", init_data=""), None)
         self.assertEqual(result["statusCode"], 401)
+
+    def test_static_frontend_does_not_bypass_api_auth(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(index, "STATIC_ROOT", Path(directory)):
+            Path(directory, "index.html").write_text("<h1>GymApp staging</h1>", encoding="utf-8")
+            static_result = index.handler({"httpMethod": "GET", "path": "/"}, None)
+            self.assertEqual(static_result["statusCode"], 200)
+            self.assertIn("GymApp staging", static_result["body"])
+
+            with patch.object(
+                index,
+                "authenticate_init_data",
+                side_effect=AuthenticationError("Telegram initData is required"),
+            ):
+                api_result = index.handler(self.event("GET", "/api/init", init_data=""), None)
+            self.assertEqual(api_result["statusCode"], 401)
+
+            with patch.object(
+                index,
+                "authenticate_init_data",
+                side_effect=AuthenticationError("Telegram initData is required"),
+            ):
+                api_root_result = index.handler(self.event("GET", "/api", init_data=""), None)
+            self.assertEqual(api_root_result["statusCode"], 401)
 
     def test_nested_query_string_is_parsed_and_user_is_server_owned(self):
         with self.auth(), patch.object(

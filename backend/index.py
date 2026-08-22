@@ -5,7 +5,9 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import mimetypes
 import os
+from pathlib import Path
 from typing import Any, Dict
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
@@ -31,6 +33,8 @@ from telegram_auth import AuthenticationError, authenticate_init_data
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+STATIC_ROOT = Path(__file__).with_name("static")
 
 CORS_HEADERS = {
     "Content-Type": "application/json; charset=utf-8",
@@ -66,7 +70,7 @@ def _headers(event: Dict[str, Any]) -> Dict[str, str]:
     return {str(key).lower(): str(value) for key, value in raw.items()}
 
 
-def _route(event: Dict[str, Any]) -> tuple[str, Dict[str, str]]:
+def _route(event: Dict[str, Any]) -> tuple[str, Dict[str, str], str, bool]:
     event_query = event.get("queryStringParameters") or {}
     if not isinstance(event_query, dict):
         event_query = {}
@@ -76,7 +80,8 @@ def _route(event: Dict[str, Any]) -> tuple[str, Dict[str, str]]:
         routed_url = str(event.get("url") or event.get("path") or "/api/ping")
     parsed = urlparse(routed_url if "://" in routed_url else f"https://local{routed_url}")
     path = parsed.path or "/api/ping"
-    endpoint = path.split("/api/", 1)[-1].strip("/") if "/api/" in path else path.strip("/")
+    is_api = path == "/api" or path.startswith("/api/")
+    endpoint = path.removeprefix("/api/").strip("/") if is_api else path.strip("/")
     endpoint = endpoint or "ping"
 
     params = {
@@ -86,7 +91,34 @@ def _route(event: Dict[str, Any]) -> tuple[str, Dict[str, str]]:
     for key, value in event_query.items():
         if key != "url" and value is not None:
             params[str(key)] = str(value[-1] if isinstance(value, list) else value)
-    return endpoint, params
+    return endpoint, params, path, is_api
+
+
+def _static_response(path: str) -> Dict[str, Any]:
+    relative = path.lstrip("/") or "index.html"
+    candidate = (STATIC_ROOT / relative).resolve()
+    static_root = STATIC_ROOT.resolve()
+    if static_root not in candidate.parents and candidate != static_root:
+        return response({"error": "Route not found"}, 404)
+    if not candidate.is_file():
+        candidate = STATIC_ROOT / "index.html"
+    if not candidate.is_file():
+        return response({"error": "Static frontend is not deployed"}, 404)
+
+    content_type = mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
+    content = candidate.read_bytes()
+    headers = {
+        "Content-Type": f"{content_type}; charset=utf-8" if content_type.startswith("text/") or content_type in {"application/javascript", "application/json"} else content_type,
+        "Cache-Control": "no-cache" if candidate.name == "index.html" else "public, max-age=31536000, immutable",
+    }
+    if content_type.startswith("text/") or content_type in {"application/javascript", "application/json", "image/svg+xml"}:
+        return {"statusCode": 200, "headers": headers, "body": content.decode("utf-8")}
+    return {
+        "statusCode": 200,
+        "headers": headers,
+        "body": base64.b64encode(content).decode("ascii"),
+        "isBase64Encoded": True,
+    }
 
 
 def _body(event: Dict[str, Any]) -> Dict[str, Any]:
@@ -156,9 +188,11 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     if method == "OPTIONS":
         return {"statusCode": 204, "headers": CORS_HEADERS, "body": ""}
 
-    endpoint, params = _route(event)
+    endpoint, params, path, is_api = _route(event)
     headers = _headers(event)
     try:
+        if method == "GET" and not is_api:
+            return _static_response(path)
         if endpoint == "telegram":
             if method != "POST":
                 return response({"error": "Method not allowed"}, 405)
