@@ -9,7 +9,7 @@ Telegram
   → React/Vite on GitHub Pages
   → local cache + durable offline queue
   → Yandex Cloud Function
-  → existing Google Spreadsheet
+  → Supabase normalized gym tables
 ```
 
 The UI never waits for the backend before accepting a completed set. Every set
@@ -19,7 +19,8 @@ background. The backend deduplicates retries.
 ## Project layout
 
 - `front/` — React/Vite Mini App.
-- `backend/` — Yandex Cloud Function using the actual Google Sheets schema.
+- `backend/` — Yandex Cloud Function validating Telegram `initData` and using
+  the Supabase adapter.
 - `scripts/deploy_function.sh` — safe backend deployment; requires an explicit
   new `FUNCTION_ID`.
 - `bot.py` and `google_sheets.py` — legacy Render implementation. Do not deploy
@@ -46,11 +47,12 @@ cp front/.env.example front/.env.local
 
 Backend environment:
 
-- `SPREADSHEET_ID`
-- `GOOGLE_CREDENTIALS_BASE64`
-- `AUTH_TOKEN`
-- `BOT_TOKEN` (optional)
-- `TELEGRAM_WEBHOOK_SECRET` (recommended when the Telegram webhook is enabled)
+- `SUPABASE_URL`
+- `SUPABASE_SECRET_KEY` (server-only)
+- `BOT_TOKEN`
+- `TELEGRAM_USER_MAP`
+- `TELEGRAM_INIT_DATA_MAX_AGE_SECONDS` (optional, default `86400`)
+- `TELEGRAM_WEBHOOK_SECRET` (required when the webhook is enabled)
 - `FRONTEND_URL`
 
 See `DEPLOY_PROD.md` for deployment.

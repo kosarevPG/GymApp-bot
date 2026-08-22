@@ -3,7 +3,7 @@
  *
  * A set is written here before any network request. The queue survives page
  * reloads and every item carries a stable client_request_id so retrying a
- * request cannot create duplicate rows in Google Sheets.
+ * request cannot create duplicate rows in Supabase.
  */
 
 const QUEUE_KEY = 'gym_offline_queue_v2';
