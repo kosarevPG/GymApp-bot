@@ -22,3 +22,14 @@ allowlist, and supplies `user_id` to the storage adapter itself.
 
 The Supabase secret must exist only in the Yandex Function environment. Never
 put it in Vite variables, GitHub Pages, or the repository.
+
+`save_set` requires the timezone-aware `performed_at` captured when the item
+enters the offline queue. The adapter converts it to `Europe/Moscow`, derives
+`workout_date`, and maintains session bounds from the minimum/maximum actual
+set timestamps. Reads page through the complete Data API result instead of
+assuming the default 1000-row response is complete.
+
+`delete_workout` should receive `session_id`. The legacy date-only form is
+accepted only when that date resolves to exactly one owner session; ambiguity
+returns HTTP 409. Deleting a workout sends one owner-scoped session DELETE and
+relies on the database foreign-key cascades.

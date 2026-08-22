@@ -12,6 +12,7 @@ from urllib.request import Request, urlopen
 
 from object_storage import UploadError, upload_image
 from supabase_store import (
+    ConflictError,
     create_exercise,
     delete_set,
     delete_workout,
@@ -190,9 +191,9 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         if endpoint == "delete_workout" and method == "POST":
             data = _body(event)
             date_text = str(data.get("date", "")).strip()
-            if not date_text:
-                return response({"error": "date is required"}, 400)
             session_id = str(data.get("session_id", "")).strip()
+            if not date_text and not session_id:
+                return response({"error": "session_id or date is required"}, 400)
             deleted = delete_workout(user_id, date_text, session_id=session_id)
             return response({"status": "success" if deleted else "error", "deleted": deleted})
         if endpoint == "export" and method == "GET":
@@ -231,6 +232,9 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     except AuthenticationError as error:
         logger.warning("Authentication rejected: %s", error)
         return response({"error": str(error)}, error.status)
+    except ConflictError as error:
+        logger.warning("Ambiguous workout deletion rejected: %s", error)
+        return response({"error": str(error), "code": "ambiguous_workout_date"}, 409)
     except Exception as error:
         logger.exception("Request failed: %s", error)
         return response({"error": "Internal server error"}, 500)

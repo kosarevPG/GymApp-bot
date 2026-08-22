@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 LIVE_NAMESPACE = uuid.UUID("7bd184da-f675-4d11-b7c9-cc795ab7975c")
+READ_PAGE_SIZE = 500
 EXERCISE_SELECT = (
     "id,user_id,source,source_key,name_ru,name_en,muscle_group,description,"
     "image_url,image_url_2,weight_type,base_weight_kg,multiplier,tonnage_mode,"
@@ -61,6 +62,23 @@ def _valid_client_request_id(value: Any) -> str:
 
 def _api_date(value: Any) -> str:
     return str(value or "").split("T", 1)[0].replace("-", ".")
+
+
+def _aware_datetime(value: Any, field: str) -> datetime:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{field} is required")
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError(f"{field} must be an ISO 8601 timestamp") from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"{field} must include a timezone offset")
+    return parsed.astimezone(MOSCOW_TZ)
+
+
+class ConflictError(Exception):
+    pass
 
 
 class SupabaseRestClient:
@@ -118,6 +136,7 @@ class SupabaseRestClient:
         filters: Optional[Dict[str, Any]] = None,
         order: str = "",
         limit: Optional[int] = None,
+        offset: int = 0,
     ) -> List[Dict[str, Any]]:
         query: Dict[str, str] = {"select": columns}
         for key, value in (filters or {}).items():
@@ -126,6 +145,8 @@ class SupabaseRestClient:
             query["order"] = order
         if limit is not None:
             query["limit"] = str(limit)
+        if offset:
+            query["offset"] = str(offset)
         return self._request("GET", table, query=query)
 
     def upsert(
@@ -163,11 +184,39 @@ class SupabaseStore:
         value = self._clock()
         return value if value.tzinfo else value.replace(tzinfo=MOSCOW_TZ)
 
+    def _select(
+        self,
+        table: str,
+        *,
+        columns: str = "*",
+        filters: Optional[Dict[str, Any]] = None,
+        order: str = "id.asc",
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Read every page; hosted Data API projects commonly cap pages at 1000."""
+        rows: List[Dict[str, Any]] = []
+        offset = 0
+        while limit is None or len(rows) < limit:
+            requested = min(READ_PAGE_SIZE, limit - len(rows)) if limit is not None else READ_PAGE_SIZE
+            page = self.client.select(
+                table,
+                columns=columns,
+                filters=filters,
+                order=order,
+                limit=requested,
+                offset=offset,
+            )
+            if not page:
+                break
+            rows.extend(page)
+            offset += len(page)
+        return rows[:limit] if limit is not None else rows
+
     def _exercises(self, user_id: str, *, active_only: bool = False) -> List[Dict[str, Any]]:
         filters: Dict[str, Any] = {"user_id": user_id}
         if active_only:
             filters["is_active"] = "true"
-        return self.client.select(
+        return self._select(
             "gym_exercises", columns=EXERCISE_SELECT, filters=filters
         )
 
@@ -175,7 +224,7 @@ class SupabaseStore:
         wanted = str(exercise_id or "").strip()
         if not wanted:
             return None
-        rows = self.client.select(
+        rows = self._select(
             "gym_exercises",
             columns=EXERCISE_SELECT,
             filters={"user_id": user_id, "source_key": wanted},
@@ -187,7 +236,7 @@ class SupabaseStore:
             canonical = str(uuid.UUID(wanted))
         except ValueError:
             return None
-        rows = self.client.select(
+        rows = self._select(
             "gym_exercises",
             columns=EXERCISE_SELECT,
             filters={"user_id": user_id, "id": canonical},
@@ -219,23 +268,28 @@ class SupabaseStore:
         groups = sorted({row["muscleGroup"] for row in exercises if row["muscleGroup"]}, key=str.casefold)
         return {"groups": groups, "exercises": exercises}
 
-    def _ensure_session(self, user_id: str, session_ref: str, now: datetime) -> Dict[str, Any]:
+    def _ensure_session(self, user_id: str, session_ref: str, performed_at: datetime) -> Dict[str, Any]:
         if not session_ref:
             raise ValueError("session_id is required")
         source_record_id = f"live:{session_ref}"
-        existing = self.client.select(
+        existing = self._select(
             "gym_workout_sessions",
             filters={"user_id": user_id, "source": "gymapp", "source_record_id": source_record_id},
             limit=1,
         )
-        started_at = existing[0].get("started_at") if existing else now.isoformat()
-        workout_date = existing[0].get("workout_date") if existing else now.date().isoformat()
+        actual_times = [performed_at]
+        if existing:
+            for field in ("started_at", "ended_at"):
+                if existing[0].get(field):
+                    actual_times.append(_aware_datetime(existing[0][field], field))
+        started_at = min(actual_times)
+        ended_at = max(actual_times)
         row = {
             "id": existing[0]["id"] if existing else _stable_uuid(user_id, "session", session_ref),
             "user_id": user_id,
-            "workout_date": workout_date,
-            "started_at": started_at,
-            "ended_at": now.isoformat(),
+            "workout_date": started_at.date().isoformat(),
+            "started_at": started_at.isoformat(),
+            "ended_at": ended_at.isoformat(),
             "source": "gymapp",
             "source_record_id": source_record_id,
             "source_payload": {"client_session_id": session_ref},
@@ -250,7 +304,7 @@ class SupabaseStore:
     ) -> Dict[str, Any]:
         group_ref = group_ref or session_ref
         source_record_id = f"live:{session_ref}:{group_ref}"
-        existing = self.client.select(
+        existing = self._select(
             "gym_set_groups",
             filters={"user_id": user_id, "source": "gymapp", "source_record_id": source_record_id},
             limit=1,
@@ -274,14 +328,26 @@ class SupabaseStore:
     def save_set(self, user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         try:
             request_id = _valid_client_request_id(data.get("client_request_id") or data.get("request_id"))
+            performed_at = _aware_datetime(data.get("performed_at"), "performed_at")
         except ValueError as error:
             return {"status": "error", "error": str(error)}
-        existing = self.client.select(
+        if performed_at > self._now() + timedelta(minutes=5):
+            return {"status": "error", "error": "performed_at is in the future"}
+        existing = self._select(
             "gym_sets",
             filters={"user_id": user_id, "client_request_id": request_id},
             limit=1,
         )
         if existing:
+            try:
+                stored_at = _aware_datetime(existing[0].get("performed_at"), "stored performed_at")
+            except ValueError as error:
+                return {"status": "error", "error": str(error)}
+            if stored_at != performed_at:
+                return {
+                    "status": "error",
+                    "error": "performed_at does not match the existing client_request_id",
+                }
             return {"status": "success", "request_id": request_id, "deduplicated": True}
 
         exercise = self._resolve_exercise(user_id, str(data.get("exercise_id") or ""))
@@ -296,8 +362,7 @@ class SupabaseStore:
         session_ref = str(data.get("session_id") or "").strip()
         group_ref = str(data.get("set_group_id") or session_ref).strip()
         try:
-            now = self._now()
-            session = self._ensure_session(user_id, session_ref, now)
+            session = self._ensure_session(user_id, session_ref, performed_at)
             group = self._ensure_group(user_id, session, session_ref, group_ref, position)
             set_type = str(data.get("set_type") or "working").lower()
             if set_type not in {"warmup", "working", "drop", "failure", "other"}:
@@ -308,7 +373,7 @@ class SupabaseStore:
                 "session_id": session["id"],
                 "set_group_id": group["id"],
                 "exercise_id": exercise["id"],
-                "performed_at": now.isoformat(),
+                "performed_at": performed_at.isoformat(),
                 "position": position,
                 "input_weight_kg": max(0, _to_float(data.get("input_weight", data.get("weight")))),
                 "total_weight_kg": max(0, _to_float(data.get("weight", data.get("input_weight")))),
@@ -328,7 +393,7 @@ class SupabaseStore:
             written = self.client.upsert(
                 "gym_sets", row, on_conflict="user_id,client_request_id"
             )
-            group_sets = self.client.select(
+            group_sets = self._select(
                 "gym_sets",
                 columns="exercise_id",
                 filters={"user_id": user_id, "set_group_id": group["id"]},
@@ -353,7 +418,7 @@ class SupabaseStore:
             request_id = _valid_client_request_id(request_id)
         except ValueError:
             return None
-        rows = self.client.select(
+        rows = self._select(
             "gym_sets", filters={"user_id": user_id, "client_request_id": request_id}, limit=1
         )
         return rows[0] if rows else None
@@ -392,13 +457,13 @@ class SupabaseStore:
         ))
         if not deleted:
             return False
-        if existing.get("set_group_id") and not self.client.select(
+        if existing.get("set_group_id") and not self._select(
             "gym_sets", filters={"user_id": user_id, "set_group_id": existing["set_group_id"]}, limit=1
         ):
             self.client.delete(
                 "gym_set_groups", filters={"user_id": user_id, "id": existing["set_group_id"]}
             )
-        if not self.client.select(
+        if not self._select(
             "gym_sets", filters={"user_id": user_id, "session_id": existing["session_id"]}, limit=1
         ):
             self.client.delete(
@@ -407,26 +472,30 @@ class SupabaseStore:
         return True
 
     def delete_workout(self, user_id: str, date_text: str, session_id: str = "") -> int:
-        iso_date = str(date_text or "").strip().replace(".", "-")
-        filters = {"user_id": user_id, "workout_date": iso_date}
         if session_id:
-            filters["id"] = session_id
-        sessions = self.client.select("gym_workout_sessions", filters=filters)
-        deleted = 0
-        for session in sessions:
-            sets = self.client.select(
-                "gym_sets", filters={"user_id": user_id, "session_id": session["id"]}
+            deleted = self.client.delete(
+                "gym_workout_sessions", filters={"user_id": user_id, "id": session_id}
             )
-            deleted += len(sets)
-            self.client.delete("gym_sets", filters={"user_id": user_id, "session_id": session["id"]})
-            self.client.delete("gym_set_groups", filters={"user_id": user_id, "session_id": session["id"]})
-            self.client.delete("gym_workout_sessions", filters={"user_id": user_id, "id": session["id"]})
-        return deleted
+            return len(deleted)
+
+        iso_date = str(date_text or "").strip().replace(".", "-")
+        sessions = self._select(
+            "gym_workout_sessions",
+            filters={"user_id": user_id, "workout_date": iso_date},
+        )
+        if len(sessions) > 1:
+            raise ConflictError("Multiple workout sessions exist for this date; session_id is required")
+        if not sessions:
+            return 0
+        deleted = self.client.delete(
+            "gym_workout_sessions", filters={"user_id": user_id, "id": sessions[0]["id"]}
+        )
+        return len(deleted)
 
     def _data(self, user_id: str):
-        sessions = self.client.select("gym_workout_sessions", filters={"user_id": user_id})
-        groups = self.client.select("gym_set_groups", filters={"user_id": user_id})
-        sets = self.client.select("gym_sets", filters={"user_id": user_id})
+        sessions = self._select("gym_workout_sessions", filters={"user_id": user_id})
+        groups = self._select("gym_set_groups", filters={"user_id": user_id})
+        sets = self._select("gym_sets", filters={"user_id": user_id})
         exercises = self._exercises(user_id)
         return sessions, groups, sets, exercises
 
@@ -457,17 +526,30 @@ class SupabaseStore:
         group_by_id = {row["id"]: row for row in groups}
         matching = [row for row in sets if row.get("exercise_id") == exercise["id"]]
         matching.sort(key=lambda row: (str(row.get("performed_at") or ""), _to_int(row.get("position"))), reverse=True)
-        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        grouped: Dict[str, Dict[str, Any]] = {}
         for row in matching:
             session = session_by_id.get(row.get("session_id"), {})
+            session_id = str(session.get("id") or row.get("session_id") or "")
             date = _api_date(session.get("workout_date"))
-            if date:
-                grouped.setdefault(date, []).append(self._set_to_api(row, group_by_id.get(row.get("set_group_id"))))
-        dates = sorted(grouped, reverse=True)[: max(1, min(limit, 100))]
+            if date and session_id:
+                group = grouped.setdefault(
+                    session_id,
+                    {"session_id": session_id, "date": date, "sets": [], "latest": ""},
+                )
+                group["sets"].append(
+                    self._set_to_api(row, group_by_id.get(row.get("set_group_id")))
+                )
+                group["latest"] = max(group["latest"], str(row.get("performed_at") or ""))
+        history = sorted(grouped.values(), key=lambda group: group["latest"], reverse=True)
+        history = history[: max(1, min(limit, 100))]
         return {
             "history": [
-                {"date": date, "sets": sorted(grouped[date], key=lambda item: item["order"])}
-                for date in dates
+                {
+                    "session_id": group["session_id"],
+                    "date": group["date"],
+                    "sets": sorted(group["sets"], key=lambda item: item["order"]),
+                }
+                for group in history
             ],
             "note": str(exercise.get("technique_note") or ""),
         }

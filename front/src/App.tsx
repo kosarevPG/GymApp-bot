@@ -123,7 +123,9 @@ const api = {
     let history: HistoryItem[] = raw.history || [];
     const first = history[0] as { sets?: unknown[] } | undefined;
     if (history.length > 0 && first && 'sets' in first && Array.isArray(first.sets)) {
-      history = history.flatMap((d: { date: string; sets?: Record<string, unknown>[] }) => (d.sets || []).map((s) => ({ ...s, date: d.date }))) as HistoryItem[];
+      history = history.flatMap((d: { session_id?: string; date: string; sets?: Record<string, unknown>[] }) =>
+        (d.sets || []).map((s) => ({ ...s, date: d.date, session_id: d.session_id }))
+      ) as HistoryItem[];
     }
     return { history, note: raw.note || '' };
   },
@@ -554,13 +556,14 @@ const NoteWidget = ({ initialValue, onChange }: any) => {
 
 const HistoryListModal = ({ isOpen, onClose, history, exerciseName }: any) => {
   const groupedHistory = useMemo(() => {
-    const groups: Record<string, HistoryItem[]> = {};
+    const groups: Record<string, { date: string; items: HistoryItem[] }> = {};
     history.forEach((item: HistoryItem) => {
-      if (!groups[item.date]) groups[item.date] = [];
-      groups[item.date].push(item);
+      const key = item.session_id || `legacy:${item.date}`;
+      if (!groups[key]) groups[key] = { date: item.date, items: [] };
+      groups[key].items.push(item);
     });
-    Object.keys(groups).forEach(date => {
-      groups[date].sort((a, b) => (a.order || 0) - (b.order || 0));
+    Object.values(groups).forEach(group => {
+      group.items.sort((a, b) => (a.order || 0) - (b.order || 0));
     });
     return groups;
   }, [history]);
@@ -568,13 +571,13 @@ const HistoryListModal = ({ isOpen, onClose, history, exerciseName }: any) => {
   return (
     <Modal isOpen={isOpen} onClose={onClose} title={`История: ${exerciseName}`}>
       <div className="space-y-6">
-        {Object.entries(groupedHistory).map(([date, items]) => (
-          <div key={date}>
+        {Object.entries(groupedHistory).map(([sessionId, group]) => (
+          <div key={sessionId}>
             <div className="flex items-center gap-2 mb-2 sticky top-0 bg-zinc-900 py-1 z-10">
-              <Calendar className="w-4 h-4 text-zinc-500" /><span className="text-sm font-bold text-zinc-400 uppercase tracking-wider">{date}</span>
+              <Calendar className="w-4 h-4 text-zinc-500" /><span className="text-sm font-bold text-zinc-400 uppercase tracking-wider">{group.date}</span>
             </div>
             <div className="bg-zinc-800/30 border border-zinc-800 rounded-xl overflow-hidden">
-              {items.map((item, idx) => (
+              {group.items.map((item, idx) => (
                 <div key={idx} className="p-3 border-b border-zinc-800 last:border-0">
                   <SetDisplayRow
                     weight={item.weight}
@@ -889,10 +892,12 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
       let initialSets: WorkoutSet[] = [];
       // Шаблон берём с прошлой тренировки. Сегодняшние подходы уже в журнале:
       // подставить их как незавершённые — значит записать вторые копии.
-      const templateDate = history.map(h => h.date).find(date => date && date !== todayInLogFormat());
-      if (templateDate) {
+      const templateItem = history.find(h => h.date && h.date !== todayInLogFormat());
+      if (templateItem) {
         const lastDateItems = history
-          .filter(h => h.date === templateDate)
+          .filter(h => templateItem.session_id
+            ? h.session_id === templateItem.session_id
+            : h.date === templateItem.date)
           .sort((a, b) => (a.order || 0) - (b.order || 0));
         initialSets = lastDateItems.map(h => ({
           id: crypto.randomUUID(), 

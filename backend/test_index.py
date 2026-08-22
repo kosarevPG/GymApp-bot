@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 import index
+from supabase_store import ConflictError
 from telegram_auth import AuthenticatedUser, AuthenticationError
 
 
@@ -64,6 +65,19 @@ class HandlerTests(unittest.TestCase):
             result = index.handler(self.event("POST", "/api/save_set", payload), None)
         self.assertEqual(result["statusCode"], 200)
         save.assert_called_once_with(USER_ID, payload)
+
+    def test_ambiguous_date_delete_returns_conflict(self):
+        with self.auth(), patch.object(
+            index,
+            "delete_workout",
+            side_effect=ConflictError("Multiple workout sessions exist for this date"),
+        ):
+            result = index.handler(
+                self.event("POST", "/api/delete_workout", {"date": "2026.08.22"}),
+                None,
+            )
+        self.assertEqual(result["statusCode"], 409)
+        self.assertEqual(json.loads(result["body"])["code"], "ambiguous_workout_date")
 
 
 if __name__ == "__main__":
