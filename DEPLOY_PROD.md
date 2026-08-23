@@ -10,30 +10,46 @@ yc serverless function create --name gymapp-v2
 yc serverless function get gymapp-v2
 ```
 
-Export the returned function ID and backend secrets:
-
-```bash
-export FUNCTION_ID="<new function id>"
-export SPREADSHEET_ID="<spreadsheet id>"
-export GOOGLE_CREDENTIALS_BASE64='<base64 encoded service account JSON>'
-export AUTH_TOKEN="<long random token>"
-export FRONTEND_URL="https://<user>.github.io/GymApp-bot/"
-```
-
-Optional Telegram webhook variables:
-
-```bash
-export BOT_TOKEN="<telegram bot token>"
-export TELEGRAM_WEBHOOK_SECRET="<random secret>"
-```
-
 Deploy:
 
 ```bash
-./scripts/deploy_function.sh
+FUNCTION_ID="<function id>" ./scripts/deploy_function.sh
 ```
 
 Entrypoint: `index.handler`. Runtime: Python 3.12.
+
+### About the environment — read this before changing it
+
+`yc serverless function version create` replaces the version's environment
+**wholesale**: anything not passed via `--environment` is gone in the new
+version. The script therefore **inherits the current `$latest` environment** and
+lets shell variables override individual keys. It refuses to deploy if the
+result would lose a key that the live version has; removing one is a separate,
+deliberate act:
+
+```bash
+FUNCTION_ID="…" ENV_DROP="SPREADSHEET_ID,GOOGLE_CREDENTIALS_BASE64" ./scripts/deploy_function.sh
+```
+
+This is not hypothetical. Before 2026-08-23 the script built the list only from
+shell variables and did not know about `SUPABASE_*` at all — following this
+runbook would have deployed a version with no Supabase configuration and taken
+production down on the spot. The Sheets-era variables (`SPREADSHEET_ID`,
+`GOOGLE_CREDENTIALS_BASE64`, `AUTH_TOKEN`) are no longer required.
+
+Check what would be sent without deploying:
+
+```bash
+FUNCTION_ID="<function id>" DRY_RUN=1 ./scripts/deploy_function.sh
+```
+
+Roll back to the previous version at any time:
+
+```bash
+yc serverless function version set-tag --id <previous version id> --tag '$latest'
+```
+
+The script prints the previous version id before and after deploying.
 
 ## 2. Verify the backend
 
