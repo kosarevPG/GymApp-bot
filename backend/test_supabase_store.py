@@ -486,3 +486,87 @@ class WorkoutSessionLookupTests(unittest.TestCase):
         self.assertIsNotNone(found)
         self.assertEqual(found["id"], empty_id)
         self.assertEqual(found["exercises"], [])
+
+
+class ExerciseTargetTests(unittest.TestCase):
+    """Release B: progression targets are stored, never inferred."""
+
+    def setUp(self):
+        self.client = MemoryClient(max_page_size=500)
+        self.client.tables["gym_exercises"].append({
+            "id": EXERCISE_ID, "user_id": USER_ID, "source": "gymapp",
+            "source_key": "legacy-exercise", "name_ru": "Жим",
+            "muscle_group": "Грудь", "weight_type": "Barbell",
+            "base_weight_kg": 20, "multiplier": 2, "tonnage_mode": "external_load",
+            "technique_note": "", "is_active": True, "source_payload": {},
+            "rep_range_low": None, "rep_range_high": None, "input_weight_step": None,
+            "target_working_sets": None, "rir_target_max": None,
+        })
+        self.store = SupabaseStore(
+            self.client,
+            now=lambda: datetime(2026, 8, 24, 10, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        )
+
+    def test_unconfigured_targets_are_null_not_zero(self):
+        exercise = self.store.get_init(USER_ID)["exercises"][0]
+        for key in ("repRangeLow", "repRangeHigh", "inputWeightStep",
+                    "targetWorkingSets", "rirTargetMax"):
+            self.assertIsNone(exercise[key], key)
+
+    def test_targets_round_trip(self):
+        self.store.update_exercise(USER_ID, "legacy-exercise", {
+            "repRangeLow": 10, "repRangeHigh": 12,
+            "inputWeightStep": 1.25, "targetWorkingSets": 3, "rirTargetMax": 2,
+        })
+        exercise = self.store.get_init(USER_ID)["exercises"][0]
+        self.assertEqual(exercise["repRangeLow"], 10)
+        self.assertEqual(exercise["repRangeHigh"], 12)
+        self.assertEqual(exercise["inputWeightStep"], 1.25)
+        self.assertEqual(exercise["targetWorkingSets"], 3)
+        self.assertEqual(exercise["rirTargetMax"], 2)
+
+    def test_absent_keys_leave_stored_values_alone(self):
+        self.store.update_exercise(USER_ID, "legacy-exercise", {
+            "repRangeLow": 8, "repRangeHigh": 10, "inputWeightStep": 2.5,
+        })
+        self.store.update_exercise(USER_ID, "legacy-exercise", {"name": "Жим лёжа"})
+        exercise = self.store.get_init(USER_ID)["exercises"][0]
+        self.assertEqual(exercise["name"], "Жим лёжа")
+        self.assertEqual(exercise["repRangeLow"], 8)
+        self.assertEqual(exercise["inputWeightStep"], 2.5)
+
+    def test_explicit_null_clears_a_target(self):
+        self.store.update_exercise(USER_ID, "legacy-exercise", {"repRangeLow": 8, "repRangeHigh": 10})
+        self.store.update_exercise(USER_ID, "legacy-exercise", {"repRangeLow": None, "repRangeHigh": None})
+        exercise = self.store.get_init(USER_ID)["exercises"][0]
+        self.assertIsNone(exercise["repRangeLow"])
+        self.assertIsNone(exercise["repRangeHigh"])
+
+    def test_half_a_range_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self.store.update_exercise(USER_ID, "legacy-exercise", {"repRangeLow": 10})
+        with self.assertRaises(ValueError):
+            self.store.update_exercise(USER_ID, "legacy-exercise", {"repRangeHigh": 12})
+
+    def test_inverted_range_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self.store.update_exercise(USER_ID, "legacy-exercise", {"repRangeLow": 12, "repRangeHigh": 10})
+
+    def test_nothing_is_inferred_from_history(self):
+        """Saving sets must never populate a target by itself."""
+        self.client.tables["gym_workout_sessions"].append({
+            "id": "s1", "user_id": USER_ID, "workout_date": "2026-08-24",
+            "source": "gymapp", "source_record_id": "2026-08-24:1",
+        })
+        for i in range(1, 4):
+            self.client.tables["gym_sets"].append({
+                "id": f"set-{i}", "user_id": USER_ID, "session_id": "s1",
+                "exercise_id": EXERCISE_ID, "position": i, "reps": 12,
+                "total_weight_kg": 80, "input_weight_kg": 30, "rest_seconds": 90,
+                "set_type": "working", "include_in_tonnage": True, "source": "gymapp",
+                "source_record_id": f"s1:{i}",
+                "performed_at": "2026-08-24T10:00:00+03:00",
+            })
+        exercise = self.store.get_init(USER_ID)["exercises"][0]
+        self.assertIsNone(exercise["repRangeLow"])
+        self.assertIsNone(exercise["targetWorkingSets"])

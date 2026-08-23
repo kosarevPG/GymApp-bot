@@ -274,7 +274,12 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             exercise_id = str(data.get("id", "")).strip()
             if not exercise_id:
                 return response({"error": "id is required"}, 400)
-            ok = update_exercise(user_id, exercise_id, data.get("updates") or {})
+            try:
+                ok = update_exercise(user_id, exercise_id, data.get("updates") or {})
+            except ValueError as error:
+                # A malformed progression target is the client's mistake, not a
+                # server fault — say what is wrong instead of returning a 500.
+                return response({"error": str(error)}, 400)
             return response({"status": "success" if ok else "error"})
         if endpoint == "confirm_baseline" and method == "POST":
             return response({"status": "ok"})

@@ -30,7 +30,10 @@ READ_PAGE_SIZE = 500
 EXERCISE_SELECT = (
     "id,user_id,source,source_key,name_ru,name_en,muscle_group,description,"
     "image_url,image_url_2,weight_type,base_weight_kg,multiplier,tonnage_mode,"
-    "technique_note,is_active,source_payload"
+    "technique_note,is_active,source_payload,"
+    # Release B progression targets. All nullable: absent means "not configured",
+    # and the app offers a setup button rather than inventing a range.
+    "rep_range_low,rep_range_high,input_weight_step,target_working_sets,rir_target_max"
 )
 
 
@@ -53,6 +56,12 @@ def _optional_float(value: Any) -> Optional[float]:
     if value in (None, ""):
         return None
     return _to_float(value)
+
+
+def _optional_int(value: Any) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    return _to_int(value)
 
 
 def _stable_uuid(*parts: Any) -> str:
@@ -269,6 +278,13 @@ class SupabaseStore:
             "baseWeight": _to_float(record.get("base_weight_kg")),
             "weightMultiplier": _to_float(record.get("multiplier"), 1.0),
             "secondaryMuscles": str(source_payload.get("secondary_muscles") or ""),
+            # None rather than 0 — the difference between "no target" and "a
+            # target of zero" is the whole point of these being nullable.
+            "repRangeLow": _optional_int(record.get("rep_range_low")),
+            "repRangeHigh": _optional_int(record.get("rep_range_high")),
+            "inputWeightStep": _optional_float(record.get("input_weight_step")),
+            "targetWorkingSets": _optional_int(record.get("target_working_sets")),
+            "rirTargetMax": _optional_float(record.get("rir_target_max")),
         }
 
     def get_init(self, user_id: str, force: bool = False) -> Dict[str, Any]:
@@ -708,6 +724,29 @@ class SupabaseStore:
             "baseWeight": "base_weight_kg", "weightMultiplier": "multiplier",
         }
         values = {column: updates[key] for key, column in mapping.items() if key in updates}
+
+        # Progression targets. Sent explicitly or not at all: a key that is
+        # absent leaves the stored value alone, and an explicit null clears it.
+        # Nothing here is derived from history — suggestions are made in the UI
+        # and only reach this call once the user has confirmed them.
+        target_ints = {"repRangeLow": "rep_range_low", "repRangeHigh": "rep_range_high",
+                       "targetWorkingSets": "target_working_sets"}
+        target_floats = {"inputWeightStep": "input_weight_step", "rirTargetMax": "rir_target_max"}
+        for key, column in target_ints.items():
+            if key in updates:
+                values[column] = _optional_int(updates[key])
+        for key, column in target_floats.items():
+            if key in updates:
+                values[column] = _optional_float(updates[key])
+
+        # A range is stored whole or not at all; the CHECK enforces it too, but
+        # failing here gives the client a usable message instead of a 500.
+        low = values.get("rep_range_low", exercise.get("rep_range_low"))
+        high = values.get("rep_range_high", exercise.get("rep_range_high"))
+        if (low is None) != (high is None):
+            raise ValueError("rep_range_low and rep_range_high must be set together")
+        if low is not None and high is not None and low > high:
+            raise ValueError("rep_range_low must not exceed rep_range_high")
         if "secondaryMuscles" in updates:
             payload = dict(exercise.get("source_payload") or {})
             payload["secondary_muscles"] = str(updates["secondaryMuscles"] or "")
