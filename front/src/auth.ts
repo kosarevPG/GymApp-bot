@@ -2,7 +2,7 @@ import { createClient, type Session } from '@supabase/supabase-js';
 
 
 const supabaseUrl = String(import.meta.env.VITE_SUPABASE_URL || '').trim();
-const supabasePublishableKey = String(import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || '').trim();
+export const supabasePublishableKey = String(import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || '').trim();
 
 export const STANDALONE_AUTH_REQUIRED_EVENT = 'gym-standalone-auth-required';
 

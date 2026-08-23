@@ -8,6 +8,7 @@ export class AuthRequiredError extends Error {
 export interface AuthenticatedFetchDependencies {
   getTelegramInitData: () => string;
   getStandaloneAccessToken: (forceRefresh?: boolean) => Promise<string | null>;
+  getStandaloneApiKey?: () => string;
   onStandaloneAuthRequired: () => void;
   fetchImpl?: typeof fetch;
 }
@@ -38,6 +39,8 @@ export function createAuthenticatedFetch(deps: AuthenticatedFetchDependencies) {
         headers.delete('Authorization');
       } else {
         headers.set('Authorization', `Bearer ${token}`);
+        const apiKey = deps.getStandaloneApiKey?.() || '';
+        if (apiKey) headers.set('apikey', apiKey);
         headers.delete('X-Telegram-Init-Data');
       }
       return (deps.fetchImpl || fetch)(input, { ...init, headers });
