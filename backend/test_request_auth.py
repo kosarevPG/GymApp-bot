@@ -75,6 +75,21 @@ class RequestAuthTests(unittest.TestCase):
         self.assertEqual(captured["request"].get_header("Apikey"), "publishable-test-key")
         self.assertEqual(captured["timeout"], 10)
 
+    def test_edge_proxy_token_is_reverified_by_yandex_backend(self):
+        with patch.object(
+            request_auth, "urlopen", return_value=FakeResponse({"id": USER_ID})
+        ) as auth_api:
+            result = request_auth.authenticate_request(
+                {"x-supabase-access-token": "edge-forwarded-access-token"}
+            )
+        self.assertEqual(result.user_id, USER_ID)
+        self.assertEqual(result.source, "supabase")
+        request = auth_api.call_args.args[0]
+        self.assertEqual(
+            request.get_header("Authorization"),
+            "Bearer edge-forwarded-access-token",
+        )
+
     def test_expired_supabase_token_is_rejected(self):
         error = HTTPError(
             "https://project.supabase.co/auth/v1/user",

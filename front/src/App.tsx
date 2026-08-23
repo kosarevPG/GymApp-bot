@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts';
-import { API_BASE_URL, WORKOUT_STORAGE_KEY, ACTIVE_WORKOUT_KEY, sortGroups, SESSION_ID_KEY, ORDER_COUNTER_KEY, LAST_ACTIVE_KEY } from './constants';
+import { API_BASE_URL, STANDALONE_API_BASE_URL, WORKOUT_STORAGE_KEY, ACTIVE_WORKOUT_KEY, sortGroups, SESSION_ID_KEY, ORDER_COUNTER_KEY, LAST_ACTIVE_KEY } from './constants';
 import { SetDisplayRow } from './components/SetDisplayRow';
 import { calcEffectiveWeight, weightInputLabel, WEIGHT_TYPE_OPTIONS, USER_BODY_WEIGHT_DEFAULT } from './exerciseConfig';
 import type { Exercise, WorkoutSet, HistoryItem, ExerciseSessionData, SetType } from './types';
@@ -31,6 +31,7 @@ import {
   signOutStandalone,
   STANDALONE_AUTH_REQUIRED_EVENT,
   supabaseAuth,
+  supabasePublishableKey,
 } from './auth';
 import { AuthRequiredError, createAuthenticatedFetch } from './authenticatedFetch';
 
@@ -55,8 +56,12 @@ interface GlobalWorkoutSession {
 const authenticatedFetch = createAuthenticatedFetch({
   getTelegramInitData,
   getStandaloneAccessToken,
+  getStandaloneApiKey: () => supabasePublishableKey,
   onStandaloneAuthRequired: requireStandaloneSignIn,
 });
+
+const getApiBaseUrl = () => getTelegramInitData() ? API_BASE_URL : STANDALONE_API_BASE_URL;
+const getApiUrl = (endpoint: string) => `${getApiBaseUrl()}?url=/api/${endpoint}`;
 
 const cacheExercises = (data: any) => {
   try { localStorage.setItem('gym_exercises_cache', JSON.stringify(data)); } catch (_) {}
@@ -98,8 +103,8 @@ const api = {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 12_000);
     try {
-      if (!API_BASE_URL) throw new Error('VITE_API_BASE_URL is not configured');
-      const url = endpoint.startsWith('http') ? endpoint : `${API_BASE_URL}?url=/api/${endpoint}`;
+      if (!getApiBaseUrl()) throw new Error('API base URL is not configured');
+      const url = endpoint.startsWith('http') ? endpoint : getApiUrl(endpoint);
       const res = await authenticatedFetch(url, {
         ...options,
         signal: options.signal || controller.signal,
@@ -218,11 +223,11 @@ const api = {
   },
 
   validateSession: async (): Promise<'ok' | 'invalid' | 'offline'> => {
-    if (!API_BASE_URL) return 'offline';
+    if (!getApiBaseUrl()) return 'offline';
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 10_000);
     try {
-      const res = await authenticatedFetch(`${API_BASE_URL}?url=/api/ping`, {
+      const res = await authenticatedFetch(getApiUrl('ping'), {
         signal: controller.signal,
       });
       if (res.ok) return 'ok';
@@ -236,7 +241,7 @@ const api = {
   },
 
   syncOfflineQueue: async () => {
-    if (syncInFlight || !navigator.onLine || !API_BASE_URL) return;
+    if (syncInFlight || !navigator.onLine || !getApiBaseUrl()) return;
     syncInFlight = true;
     try {
       for (const item of getQueue()) {
@@ -244,7 +249,7 @@ const api = {
         const controller = new AbortController();
         const timeout = window.setTimeout(() => controller.abort(), 12_000);
         try {
-          const res = await authenticatedFetch(`${API_BASE_URL}?url=/api/${endpoint}`, {
+          const res = await authenticatedFetch(getApiUrl(endpoint), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(item.data),
@@ -293,8 +298,8 @@ const api = {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 60_000);
     try {
-      if (!API_BASE_URL) return { error: 'Бэкенд не настроен' };
-      const res = await authenticatedFetch(`${API_BASE_URL}?url=/api/upload_image`, {
+      if (!getApiBaseUrl()) return { error: 'Бэкенд не настроен' };
+      const res = await authenticatedFetch(getApiUrl('upload_image'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content_type: parsed[1], data_base64: parsed[2] }),

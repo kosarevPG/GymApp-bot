@@ -25,6 +25,9 @@ class AuthenticatedRequestUser:
 
 
 def _bearer_token(headers: Dict[str, str]) -> str:
+    proxied = (headers.get("x-supabase-access-token") or "").strip()
+    if proxied:
+        return proxied
     value = (headers.get("authorization") or "").strip()
     parts = value.split()
     if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1]:

@@ -1,4 +1,5 @@
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
+export const STANDALONE_API_BASE_URL = import.meta.env.VITE_STANDALONE_API_BASE_URL || API_BASE_URL;
 
 export const WORKOUT_STORAGE_KEY = 'gym_workout_state_v2';
 export const ACTIVE_WORKOUT_KEY = 'gym_active_workout';

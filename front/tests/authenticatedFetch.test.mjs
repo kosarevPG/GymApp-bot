@@ -58,6 +58,7 @@ test('standalone mode refreshes an expired token once', async () => {
       refreshCalls.push(refresh);
       return refresh ? 'fresh-token' : 'expired-token';
     },
+    getStandaloneApiKey: () => 'publishable-test-key',
     onStandaloneAuthRequired: () => assert.fail('refresh should recover the session'),
     fetchImpl: async (_input, init) => {
       requests += 1;
