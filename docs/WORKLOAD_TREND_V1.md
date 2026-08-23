@@ -128,18 +128,57 @@ Presentation rules, enforced by tests in both repos:
 - **No recommendation.** The contract states what happened to volume. What to
   do about it is not its job.
 
+## What the fixture hash does and does not guarantee
+
+Each repo pins the sha256 above in three places — this document, its fixture,
+and its test — and asserts all three agree after normalising CRLF.
+
+**It guarantees**, inside one repo: the fixture cannot be edited unnoticed. Any
+change to it fails that repo's suite until the hash is deliberately re-pinned in
+both the doc and the test.
+
+**It does not guarantee** anything across repos. Each suite hashes its *own*
+copy, so a self-consistent one-sided change — edit the implementation, edit the
+fixture, re-pin the hash, all in one repo — leaves both suites green while the
+two apps compute or render different things. This was verified rather than
+assumed: changing only GymApp's insufficiency sentence and re-pinning its hash
+kept GymApp at 8/8 and HealthOS green, with the two apps showing different text
+for the same state.
+
+The real cross-repo check is therefore a separate, explicit one.
+
+## Cross-repo drift check
+
+`scripts/check-contract-drift.mjs` in **HealthOS** compares the local contract
+and fixture against GymApp-bot's copies on `main`, and runs as the
+`contract drift (workload-trend-v1)` CI job.
+
+The direction is deliberate. GymApp-bot is public, so HealthOS reads it with no
+credentials at all. The reverse would require giving a **public** repo a token
+for a **private** one, which is a worse trade than the check is worth — so
+GymApp's CI performs only the intra-repo three-way check, and the cross-repo
+comparison lives on the HealthOS side alone.
+
+Availability is never a failure: the script exits 0 with a `SKIP` notice when
+GitHub is unreachable, rate-limits, or the file is absent (which is normal while
+one side's change has not merged yet). It exits non-zero only when both files
+are fetched and genuinely differ.
+
+```bash
+node scripts/check-contract-drift.mjs
+```
+
 ## Changing this contract
 
-The fixture file is byte-identical in both repos and both test suites assert
-the sha256 above (after normalising CRLF). To change behaviour:
-
 1. Edit `docs/fixtures/workload-trend-v1.json`.
-2. Copy it to the other repo.
-3. Update the hash in `docs/WORKLOAD_TREND_V1.md`,
-   `medical/tests/workload-trend.test.mjs` and
-   `backend/test_workload_trend.py` in both repos.
+2. Copy it to the other repo — nothing detects this for you at edit time; the
+   drift job catches it after the first side merges.
+3. Re-pin the hash in `docs/WORKLOAD_TREND_V1.md`, in
+   `medical/tests/workload-trend.test.mjs` and in
+   `backend/test_workload_trend.py`, in both repos.
 4. Update both implementations until the shared cases pass again.
+5. Land both PRs close together. Between the two merges the drift job reports a
+   mismatch, and that is correct — the contract really is inconsistent then.
 
-Skipping step 2 makes both suites fail, which is the intended behaviour.
 A behaviour change that is not backwards compatible gets a new version
 (`workload-trend-v2`) rather than a silent edit of this one.

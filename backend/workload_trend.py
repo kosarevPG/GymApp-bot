@@ -6,9 +6,11 @@ thresholds, no traffic-light colours.
 
 The contract and the rationale live in docs/WORKLOAD_TREND_V1.md. HealthOS
 carries an identical copy of that doc and of docs/fixtures/workload-trend-v1.json
-(medical/src/lib/workloadTrend.js is the JS twin of this module), and both repos
-assert the same fixture hash, so the two implementations cannot drift apart
-silently.
+(medical/src/lib/workloadTrend.js is the JS twin of this module). The pinned
+fixture hash guards against an unnoticed edit *within* this repo; it cannot see
+the other repo at all. Divergence between the two is caught by HealthOS's
+scripts/check-contract-drift.mjs, which reads this repo's public copy — see
+docs/WORKLOAD_TREND_V1.md for why the check runs in that direction only.
 """
 from __future__ import annotations
 

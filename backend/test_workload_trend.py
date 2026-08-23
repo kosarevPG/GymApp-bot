@@ -1,6 +1,7 @@
 import hashlib
 import json
 import pathlib
+import re
 import unittest
 
 from workload_trend import (
@@ -12,11 +13,14 @@ from workload_trend import (
 
 FIXTURE_PATH = pathlib.Path(__file__).resolve().parent.parent / "docs" / "fixtures" / "workload-trend-v1.json"
 
-# HealthOS carries an identical copy of this fixture and asserts the same digest
-# (medical/tests/workload-trend.test.mjs). If one repo edits the file without
-# the other, both test suites fail instead of the two implementations silently
-# drifting apart. CRLF is normalised away first so a Windows checkout and a
-# Linux CI runner agree on the hash.
+# This pin catches an unnoticed edit of the fixture INSIDE this repo: changing it
+# fails here until the hash is deliberately re-pinned in both this file and
+# docs/WORKLOAD_TREND_V1.md. It says nothing about HealthOS's copy — a
+# self-consistent one-sided change here would leave both suites green. The
+# cross-repo comparison lives in HealthOS (scripts/check-contract-drift.mjs),
+# which reads this repo's public copy; see docs/WORKLOAD_TREND_V1.md for why it
+# runs in that direction only.
+# CRLF is normalised first so a Windows checkout and a Linux runner agree.
 FIXTURE_SHA256 = "619c4854797130089ad8b458e7cf016ed5b3ec83da45eeda415c13fde5a40e90"
 
 # No risk/alarm vocabulary may re-enter the rendered sentence — that is the
@@ -40,6 +44,13 @@ class WorkloadTrendFixtureTest(unittest.TestCase):
             "hash here, in HealthOS medical/tests/workload-trend.test.mjs, and in "
             "docs/WORKLOAD_TREND_V1.md — and copy the file to the other repo." % actual,
         )
+
+    def test_documented_hash_matches_the_pinned_one(self):
+        """The doc must not quietly describe a different contract than the tests."""
+        doc = (FIXTURE_PATH.parent.parent / "WORKLOAD_TREND_V1.md").read_text(encoding="utf-8")
+        documented = re.search(r"`([0-9a-f]{64})`", doc)
+        self.assertIsNotNone(documented, "no fixture hash found in docs/WORKLOAD_TREND_V1.md")
+        self.assertEqual(documented.group(1), FIXTURE_SHA256)
 
     def test_contract_header(self):
         _, fixture = _load()
