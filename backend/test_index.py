@@ -49,6 +49,10 @@ class HandlerTests(unittest.TestCase):
             self.assertEqual(static_result["statusCode"], 200)
             self.assertIn("GymApp staging", static_result["body"])
 
+            yandex_root_result = index.handler({"httpMethod": "GET"}, None)
+            self.assertEqual(yandex_root_result["statusCode"], 200)
+            self.assertIn("GymApp staging", yandex_root_result["body"])
+
             with patch.object(
                 index,
                 "authenticate_init_data",

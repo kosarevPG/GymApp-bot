@@ -77,7 +77,10 @@ def _route(event: Dict[str, Any]) -> tuple[str, Dict[str, str], str, bool]:
 
     routed_url = str(event_query.get("url") or "").strip()
     if not routed_url:
-        routed_url = str(event.get("url") or event.get("path") or "/api/ping")
+        # Yandex's public function gateway omits both fields for a bare GET to
+        # the function URL. Treat that request as the static application root;
+        # API calls always provide their explicit route through ?url=/api/....
+        routed_url = str(event.get("url") or event.get("path") or "/")
     parsed = urlparse(routed_url if "://" in routed_url else f"https://local{routed_url}")
     path = parsed.path or "/api/ping"
     is_api = path == "/api" or path.startswith("/api/")
