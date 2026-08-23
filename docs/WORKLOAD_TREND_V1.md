@@ -159,10 +159,18 @@ for a **private** one, which is a worse trade than the check is worth — so
 GymApp's CI performs only the intra-repo three-way check, and the cross-repo
 comparison lives on the HealthOS side alone.
 
+It reads the peer through the **GitHub Contents API**, not
+`raw.githubusercontent`. The raw host is CDN-fronted and kept serving a
+pre-merge copy for minutes after a push, ignoring both `Cache-Control: no-cache`
+and a cache-busting query parameter — measured during this work, not assumed.
+A stale read there yields a *false* DRIFT, which is worse than a SKIP: it blocks
+a correct merge and teaches everyone to ignore the job. The API returned the
+fresh blob immediately in the same test.
+
 Availability is never a failure: the script exits 0 with a `SKIP` notice when
-GitHub is unreachable, rate-limits, or the file is absent (which is normal while
-one side's change has not merged yet). It exits non-zero only when both files
-are fetched and genuinely differ.
+the API is unreachable, rate-limits, or the file is absent (which is normal while
+one side's change has not merged yet), and retries once on a transient 5xx. It
+exits non-zero only when both files are read and genuinely differ.
 
 ```bash
 node scripts/check-contract-drift.mjs
