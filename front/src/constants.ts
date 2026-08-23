@@ -1,8 +1,9 @@
-export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://functions.yandexcloud.net/d4errkd42gb1i7s41qsd'; // <-- Вставьте тут вашу реальную ссылку!
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
 export const AUTH_TOKEN_KEY = 'gym_auth_token'; // <-- Новый ключ для пароля
 
 export const WORKOUT_STORAGE_KEY = 'gym_workout_state_v2';
+export const ACTIVE_WORKOUT_KEY = 'gym_active_workout';
 export const EDIT_EXERCISE_DRAFT_KEY = 'gym_edit_exercise_draft';
 export const SESSION_ID_KEY = 'gym_session_id';
 export const ORDER_COUNTER_KEY = 'gym_order_counter';

@@ -11,7 +11,9 @@ ENV/
 
 # Environment variables
 .env
+**/.env.local
 credentials.json
+ydb-sa-key.json
 
 # IDE
 .vscode/
@@ -29,3 +31,4 @@ Thumbs.db
 # Frontend
 front/node_modules/
 front/dist/
+backend-deploy.zip
