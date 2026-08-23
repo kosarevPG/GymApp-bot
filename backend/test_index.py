@@ -45,10 +45,16 @@ class HandlerTests(unittest.TestCase):
 
     def test_static_frontend_does_not_bypass_api_auth(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(index, "STATIC_ROOT", Path(directory)):
-            Path(directory, "index.html").write_text("<h1>GymApp staging</h1>", encoding="utf-8")
+            Path(directory, "index.html").write_text(
+                '<h1>GymApp staging</h1><script src="/assets/app.js"></script>'
+                '<link rel="manifest" href="./manifest.json">',
+                encoding="utf-8",
+            )
             static_result = index.handler({"httpMethod": "GET", "path": "/"}, None)
             self.assertEqual(static_result["statusCode"], 200)
             self.assertIn("GymApp staging", static_result["body"])
+            self.assertIn('src="?url=/assets/app.js"', static_result["body"])
+            self.assertIn('href="?url=/manifest.json"', static_result["body"])
 
             yandex_root_result = index.handler({"httpMethod": "GET"}, None)
             self.assertEqual(yandex_root_result["statusCode"], 200)
