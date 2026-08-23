@@ -115,6 +115,45 @@ class HandlerTests(unittest.TestCase):
         self.assertEqual(result["statusCode"], 409)
         self.assertEqual(json.loads(result["body"])["code"], "ambiguous_workout_date")
 
+    def test_session_deeplink_requires_auth(self):
+        with patch.object(
+            index,
+            "authenticate_request",
+            side_effect=AuthenticationError("Authentication is required"),
+        ), patch.object(index, "get_workout_session") as lookup:
+            result = index.handler(
+                self.event("GET", "/api/session?session_id=e96b22f8-695a-40b0-916a-57f3a33db4f1", init_data=""),
+                None,
+            )
+        self.assertEqual(result["statusCode"], 401)
+        lookup.assert_not_called()
+
+    def test_session_deeplink_uses_the_server_resolved_owner(self):
+        session_id = "e96b22f8-695a-40b0-916a-57f3a33db4f1"
+        with self.auth(), patch.object(
+            index, "get_workout_session", return_value={"id": session_id, "exercises": []}
+        ) as lookup:
+            result = index.handler(
+                self.event("GET", f"/api/session?session_id={session_id}"), None
+            )
+        self.assertEqual(result["statusCode"], 200)
+        lookup.assert_called_once_with(USER_ID, session_id)
+
+    def test_session_deeplink_returns_404_for_a_session_that_is_not_the_callers(self):
+        with self.auth(), patch.object(index, "get_workout_session", return_value=None):
+            result = index.handler(
+                self.event("GET", "/api/session?session_id=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"),
+                None,
+            )
+        # 404 rather than 403: the response must not confirm that the session exists.
+        self.assertEqual(result["statusCode"], 404)
+
+    def test_session_deeplink_without_an_id_is_a_bad_request(self):
+        with self.auth(), patch.object(index, "get_workout_session") as lookup:
+            result = index.handler(self.event("GET", "/api/session"), None)
+        self.assertEqual(result["statusCode"], 400)
+        lookup.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

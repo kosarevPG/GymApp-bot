@@ -8,6 +8,7 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts';
 import { API_BASE_URL, STANDALONE_API_BASE_URL, WORKOUT_STORAGE_KEY, ACTIVE_WORKOUT_KEY, sortGroups, SESSION_ID_KEY, ORDER_COUNTER_KEY, LAST_ACTIVE_KEY } from './constants';
+import { readSessionDeeplink, stripSessionParam } from './deeplink';
 import { SetDisplayRow } from './components/SetDisplayRow';
 import { calcEffectiveWeight, weightInputLabel, WEIGHT_TYPE_OPTIONS, USER_BODY_WEIGHT_DEFAULT } from './exerciseConfig';
 import type { Exercise, WorkoutSet, HistoryItem, ExerciseSessionData, SetType } from './types';
@@ -148,6 +149,13 @@ const api = {
       ) as HistoryItem[];
     }
     return { history, note: raw.note || '' };
+  },
+
+  // Owner check lives on the backend: it answers 404 both for a session that
+  // does not exist and for one that belongs to somebody else.
+  getSession: async (sessionId: string) => {
+    const data = await api.request(`session?session_id=${encodeURIComponent(sessionId)}`);
+    return data && data.id ? data : null;
   },
 
   getGlobalHistory: async () => {
@@ -479,11 +487,13 @@ const useSession = () => {
 
 // --- UI COMPONENTS ---
 
-const Card = ({ children, className = '', onClick }: any) => (
-  <div onClick={onClick} className={`bg-zinc-900 border border-zinc-800 rounded-2xl ${className}`}>
+// forwardRef so the history list can scroll a deep-linked session into view.
+const Card = React.forwardRef<HTMLDivElement, any>(({ children, className = '', onClick }, ref) => (
+  <div ref={ref} onClick={onClick} className={`bg-zinc-900 border border-zinc-800 rounded-2xl ${className}`}>
     {children}
   </div>
-);
+));
+Card.displayName = 'Card';
 
 const Button = ({ children, variant = 'primary', className = '', onClick, icon: Icon, ...props }: any) => {
   const variants: any = {
@@ -1125,7 +1135,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
   );
 };
 
-const HistoryScreen = ({ onBack, allExercises = [], bodyWeight = USER_BODY_WEIGHT_DEFAULT, notify, haptic }: any) => {
+const HistoryScreen = ({ onBack, allExercises = [], bodyWeight = USER_BODY_WEIGHT_DEFAULT, notify, haptic, focusSessionId = null }: any) => {
   const [history, setHistory] = useState<GlobalWorkoutSession[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [editTarget, setEditTarget] = useState<any>(null);
@@ -1135,8 +1145,36 @@ const HistoryScreen = ({ onBack, allExercises = [], bodyWeight = USER_BODY_WEIGH
   const [deleteDay, setDeleteDay] = useState<{ date: string; sessionId: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const [focusState, setFocusState] = useState<'idle' | 'searching' | 'missing'>('idle');
+  const focusRef = useRef<HTMLDivElement | null>(null);
+
   const refresh = () => api.getGlobalHistory().then(data => setHistory(data));
   useEffect(() => { refresh(); }, []);
+
+  // Deep link from HealthOS. The backend is asked first — that call, not the
+  // presence of the id in the local list, is what establishes ownership.
+  useEffect(() => {
+    if (!focusSessionId) return;
+    let cancelled = false;
+    setFocusState('searching');
+    void api.getSession(focusSessionId).then((session: any) => {
+      if (cancelled) return;
+      if (!session) { setFocusState('missing'); return; }
+      setFocusState('idle');
+      setExpandedId(session.id);
+    });
+    return () => { cancelled = true; };
+  }, [focusSessionId]);
+
+  // Scroll only once the card for that session actually exists in the list.
+  useEffect(() => {
+    if (!focusSessionId || expandedId !== focusSessionId || !history.length) return;
+    const timer = window.setTimeout(
+      () => focusRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+      0,
+    );
+    return () => window.clearTimeout(timer);
+  }, [focusSessionId, expandedId, history.length]);
 
   const openEdit = (s: any, ex: any) => {
     const exercise = allExercises.find((e: Exercise) => e.id === ex.exerciseId);
@@ -1193,8 +1231,15 @@ const HistoryScreen = ({ onBack, allExercises = [], bodyWeight = USER_BODY_WEIGH
         <h1 className="text-xl font-bold">История</h1>
       </div>
       <div className="p-4 space-y-4 pb-20">
+        {focusState !== 'idle' && (
+          <div className="p-4 rounded-xl bg-zinc-800/60 border border-zinc-700 text-zinc-300 text-sm">
+            {focusState === 'searching'
+              ? 'Открываю тренировку по ссылке…'
+              : 'Тренировка по ссылке не найдена.'}
+          </div>
+        )}
         {history.map(w => (
-          <Card key={w.id} className="overflow-hidden">
+          <Card key={w.id} className="overflow-hidden" ref={w.id === focusSessionId ? focusRef : undefined}>
             <div onClick={() => setExpandedId(expandedId === w.id ? null : w.id)} className="p-4 flex items-center justify-between cursor-pointer active:bg-zinc-800/50">
               <div>
                 <div className="flex items-center gap-2 text-zinc-400 text-sm"><Calendar className="w-3 h-3" />{w.date} {w.muscleGroups.join(' • ')}</div>
@@ -1282,8 +1327,26 @@ const HistoryScreen = ({ onBack, allExercises = [], bodyWeight = USER_BODY_WEIGH
 
 const MUSCLE_ORDER = ['Спина', 'Ноги', 'Грудь', 'Плечи', 'Трицепс', 'Бицепс', 'Пресс', 'Кардио'];
 
+/**
+ * workload-trend-v1 payload from GET /api/analytics — see docs/WORKLOAD_TREND_V1.md.
+ * Replaced the ACWR readout: it describes the change in volume and makes no
+ * claim about risk, so it is rendered as plain text with no colour coding.
+ */
+type WorkloadTrend = {
+  version: string;
+  status: 'ok' | 'insufficient';
+  reason: string | null;
+  recentVolumeKg: number;
+  baselineVolumeKg: number;
+  baselineWeeklyVolumeKg: number;
+  deltaPct: number | null;
+  recentSessions: number;
+  baselineSessions: number;
+  text: string;
+};
+
 const AnalyticsScreen = ({ onBack }: any) => {
-  const [data, setData] = useState<{ volume?: number; acwr?: { acute: number; chronic: number; ratio: number; status: string; trainingDays?: number }; muscleVolume?: Record<string, number>; muscleSets?: Record<string, number> } | null>(null);
+  const [data, setData] = useState<{ volume?: number; workloadTrend?: WorkloadTrend; muscleVolume?: Record<string, number>; muscleSets?: Record<string, number> } | null>(null);
   const [period, setPeriod] = useState(14);
   const [loading, setLoading] = useState(true);
 
@@ -1316,16 +1379,13 @@ const AnalyticsScreen = ({ onBack }: any) => {
         <h1 className="text-xl font-bold">Аналитика</h1>
       </div>
       <div className="p-4 space-y-6 pb-20">
-        {data?.acwr?.status === 'danger' && (
-          <div className="p-4 rounded-xl bg-red-900/40 border border-red-700 text-red-200 text-sm font-medium flex items-center gap-2">
-            <Activity className="w-5 h-5 flex-shrink-0" />
-            ACWR {data.acwr.ratio} — риск перетренированности. Снизьте нагрузку.
-          </div>
-        )}
-        {data?.acwr?.status === 'building' && (
-          <div className="p-4 rounded-xl bg-zinc-800/60 border border-zinc-700 text-zinc-300 text-sm flex items-center gap-2">
-            <Activity className="w-5 h-5 flex-shrink-0 text-blue-400" />
-            Накапливаю базу: {data.acwr.trainingDays ?? 0} из 8 тренировок за 28 дней. Оценка нагрузки (ACWR) появится позже.
+        {/* Neutral by construction: one surface colour for every outcome. A
+            red/amber/green scale here would reintroduce the ACWR threshold
+            through styling. */}
+        {data?.workloadTrend && (
+          <div className="p-4 rounded-xl bg-zinc-800/60 border border-zinc-700 text-zinc-300 text-sm flex items-start gap-2">
+            <Activity className="w-5 h-5 flex-shrink-0 text-zinc-400" />
+            <span>{data.workloadTrend.text}</span>
           </div>
         )}
         <div className="flex gap-2">
@@ -1372,11 +1432,18 @@ const AnalyticsScreen = ({ onBack }: any) => {
             <Card className="p-4">
               <h2 className="text-sm font-bold text-zinc-400 uppercase mb-3">Объём нагрузки</h2>
               <div className="text-2xl font-bold text-zinc-50">{(data?.volume ?? 0).toLocaleString('ru')} кг</div>
-              {data?.acwr && (
-                <div className="mt-2 text-sm text-zinc-400">
-                  {data.acwr.status === 'building'
-                    ? <>ACWR: н/д — мало данных (неделя за 7 дн: {data.acwr.acute?.toLocaleString('ru')} кг)</>
-                    : <>ACWR: {data.acwr.ratio} (острая: {data.acwr.acute?.toLocaleString('ru')}, хроническая: {data.acwr.chronic?.toLocaleString('ru')})</>}
+              {data?.workloadTrend && (
+                <div className="mt-2 space-y-0.5 text-sm text-zinc-400">
+                  <div>
+                    Последние 7 дней: {data.workloadTrend.recentVolumeKg.toLocaleString('ru')} кг
+                    {' · '}{data.workloadTrend.recentSessions} трен.
+                  </div>
+                  <div>
+                    Дни 8–35, в среднем за неделю: {data.workloadTrend.status === 'ok'
+                      ? `${data.workloadTrend.baselineWeeklyVolumeKg.toLocaleString('ru')} кг`
+                      : 'недостаточно данных'}
+                    {' · '}{data.workloadTrend.baselineSessions} трен.
+                  </div>
                 </div>
               )}
             </Card>
@@ -1513,6 +1580,14 @@ const App = () => {
   const [isQueueOpen, setIsQueueOpen] = useState(false);
   const [queueItems, setQueueItems] = useState<QueuedItem[]>([]);
 
+  // Deep link arrives either as ?session=<uuid> (standalone) or as Telegram's
+  // start_param. It is read once at mount but only acted on after auth — an
+  // unauthenticated visitor lands on the sign-in screen, not on a session.
+  const [deeplinkSession, setDeeplinkSession] = useState<string | null>(() => readSessionDeeplink(
+    window.location.search,
+    (window as any).Telegram?.WebApp?.initDataUnsafe?.start_param,
+  ));
+
   const [workoutActive, setWorkoutActive] = useState(() => !!localStorage.getItem(ACTIVE_WORKOUT_KEY));
   const [isFinishConfirmOpen, setIsFinishConfirmOpen] = useState(false);
   const [importReport, setImportReport] = useState('');
@@ -1558,6 +1633,15 @@ const App = () => {
     setLoginPassword('');
     setAuthState('authenticated');
   };
+
+  useEffect(() => {
+    if (!deeplinkSession || !isAuthenticated) return;
+    setScreen('history');
+    // Drop the param so a later refresh does not reopen the same session.
+    try {
+      window.history.replaceState({}, '', stripSessionParam(window.location.href));
+    } catch { /* history API unavailable — the link still worked */ }
+  }, [deeplinkSession, isAuthenticated]);
 
   // Тренировка могла стартовать неявно (из экрана подходов) — освежаем флаг
   // при каждом возврате на главную.
@@ -1760,7 +1844,7 @@ const App = () => {
     <div className="bg-zinc-950 min-h-screen text-zinc-50 font-sans selection:bg-blue-500/30 pb-safe">
       {screen === 'home' && <HomeScreen groups={groups} workoutActive={workoutActive} onStartWorkout={startWorkout} onFinishWorkout={() => setIsFinishConfirmOpen(true)} onSearch={(q: string) => { setSearchQuery(q); if (q) setScreen('exercises'); }} onSelectGroup={(g: string) => { setSelectedGroup(g); setScreen('exercises'); }} onAllExercises={() => { setSelectedGroup(null); setScreen('exercises'); }} onHistory={() => setScreen('history')} onAnalytics={() => setScreen('analytics')} onSettings={() => { setBodyWeightInput(String(bodyWeight)); setIsSettingsOpen(true); }} />}
       {screen === 'analytics' && <AnalyticsScreen onBack={() => setScreen('home')} />}
-      {screen === 'history' && <HistoryScreen onBack={() => setScreen('home')} allExercises={allExercises} bodyWeight={bodyWeight} notify={notify} haptic={haptic} />}
+      {screen === 'history' && <HistoryScreen onBack={() => { setDeeplinkSession(null); setScreen('home'); }} allExercises={allExercises} bodyWeight={bodyWeight} notify={notify} haptic={haptic} focusSessionId={deeplinkSession} />}
       {screen === 'exercises' && <ExercisesListScreen exercises={filteredExercises} title={selectedGroup || (searchQuery ? `Поиск: ${searchQuery}` : 'Все упражнения')} searchQuery={searchQuery} onSearch={(q: string) => setSearchQuery(q)} onBack={() => { setSearchQuery(''); setSelectedGroup(null); setScreen('home'); }} onSelectExercise={(ex: Exercise) => { haptic('light'); setCurrentExercise(ex); setScreen('workout'); }} onAddExercise={() => setIsCreateModalOpen(true)} onEditExercise={(ex: Exercise) => setExerciseToEdit(ex)} />}
       {screen === 'workout' && currentExercise && <WorkoutScreen initialExercise={currentExercise} allExercises={allExercises} sessionId={sessionId} incrementOrder={incrementOrder} ensureOrderAtLeast={ensureOrderAtLeast} bodyWeight={bodyWeight} haptic={haptic} notify={notify} onBack={() => setScreen('exercises')} />}
       {pendingCount > 0 && (
