@@ -167,10 +167,17 @@ A stale read there yields a *false* DRIFT, which is worse than a SKIP: it blocks
 a correct merge and teaches everyone to ignore the job. The API returned the
 fresh blob immediately in the same test.
 
+The API caches too, but bounded and honestly declared (`s-maxage=60`). A
+mismatch on the first read is therefore re-checked once past that window before
+it is believed — without that, a merge trips its own check. This was observed:
+a reported DRIFT resolved to `OK` after the window elapsed, with no change to
+either repo.
+
 Availability is never a failure: the script exits 0 with a `SKIP` notice when
 the API is unreachable, rate-limits, or the file is absent (which is normal while
 one side's change has not merged yet), and retries once on a transient 5xx. It
-exits non-zero only when both files are read and genuinely differ.
+exits non-zero only when both files are read, re-read past the cache window, and
+still genuinely differ.
 
 ```bash
 node scripts/check-contract-drift.mjs
