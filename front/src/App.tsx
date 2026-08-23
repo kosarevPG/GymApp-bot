@@ -21,6 +21,18 @@ import {
   removeFromQueue,
   type QueuedItem,
 } from './offlineSync';
+import {
+  getStandaloneAccessToken,
+  getStandaloneSession,
+  getTelegramInitData,
+  isTelegramMode,
+  requireStandaloneSignIn,
+  signInStandalone,
+  signOutStandalone,
+  STANDALONE_AUTH_REQUIRED_EVENT,
+  supabaseAuth,
+} from './auth';
+import { AuthRequiredError, createAuthenticatedFetch } from './authenticatedFetch';
 
 // --- TYPES ---
 
@@ -40,7 +52,11 @@ interface GlobalWorkoutSession {
 
 // --- HELPERS ---
 
-const getTelegramInitData = () => String((window as any).Telegram?.WebApp?.initData || '');
+const authenticatedFetch = createAuthenticatedFetch({
+  getTelegramInitData,
+  getStandaloneAccessToken,
+  onStandaloneAuthRequired: requireStandaloneSignIn,
+});
 
 const cacheExercises = (data: any) => {
   try { localStorage.setItem('gym_exercises_cache', JSON.stringify(data)); } catch (_) {}
@@ -84,12 +100,11 @@ const api = {
     try {
       if (!API_BASE_URL) throw new Error('VITE_API_BASE_URL is not configured');
       const url = endpoint.startsWith('http') ? endpoint : `${API_BASE_URL}?url=/api/${endpoint}`;
-      const res = await fetch(url, {
+      const res = await authenticatedFetch(url, {
         ...options,
         signal: options.signal || controller.signal,
         headers: { 
           'Content-Type': 'application/json', 
-          'X-Telegram-Init-Data': getTelegramInitData(),
           ...options.headers 
         }
       });
@@ -207,8 +222,7 @@ const api = {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 10_000);
     try {
-      const res = await fetch(`${API_BASE_URL}?url=/api/ping`, {
-        headers: { 'X-Telegram-Init-Data': getTelegramInitData() },
+      const res = await authenticatedFetch(`${API_BASE_URL}?url=/api/ping`, {
         signal: controller.signal,
       });
       if (res.ok) return 'ok';
@@ -222,7 +236,7 @@ const api = {
   },
 
   syncOfflineQueue: async () => {
-    if (syncInFlight || !navigator.onLine || !getTelegramInitData() || !API_BASE_URL) return;
+    if (syncInFlight || !navigator.onLine || !API_BASE_URL) return;
     syncInFlight = true;
     try {
       for (const item of getQueue()) {
@@ -230,9 +244,9 @@ const api = {
         const controller = new AbortController();
         const timeout = window.setTimeout(() => controller.abort(), 12_000);
         try {
-          const res = await fetch(`${API_BASE_URL}?url=/api/${endpoint}`, {
+          const res = await authenticatedFetch(`${API_BASE_URL}?url=/api/${endpoint}`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': getTelegramInitData() },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(item.data),
             signal: controller.signal,
           });
@@ -248,6 +262,7 @@ const api = {
             if (res.status >= 500) break;
           }
         } catch (error) {
+          if (error instanceof AuthRequiredError) break;
           markAttempt(item.id, error instanceof Error ? error.message : 'network');
           break;
         } finally {
@@ -279,9 +294,9 @@ const api = {
     const timeout = window.setTimeout(() => controller.abort(), 60_000);
     try {
       if (!API_BASE_URL) return { error: 'Бэкенд не настроен' };
-      const res = await fetch(`${API_BASE_URL}?url=/api/upload_image`, {
+      const res = await authenticatedFetch(`${API_BASE_URL}?url=/api/upload_image`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': getTelegramInitData() },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content_type: parsed[1], data_base64: parsed[2] }),
         signal: controller.signal,
       });
@@ -465,7 +480,7 @@ const Card = ({ children, className = '', onClick }: any) => (
   </div>
 );
 
-const Button = ({ children, variant = 'primary', className = '', onClick, icon: Icon }: any) => {
+const Button = ({ children, variant = 'primary', className = '', onClick, icon: Icon, ...props }: any) => {
   const variants: any = {
     primary: "bg-blue-600 text-white shadow-lg shadow-blue-900/20 hover:bg-blue-500",
     secondary: "bg-zinc-800 text-zinc-50 hover:bg-zinc-700",
@@ -474,7 +489,7 @@ const Button = ({ children, variant = 'primary', className = '', onClick, icon: 
     success: "bg-green-500/10 text-green-500"
   };
   return (
-    <button onClick={onClick} className={`flex items-center justify-center font-medium rounded-xl transition-all active:scale-95 disabled:opacity-50 ${variants[variant]} ${className}`}>
+    <button {...props} onClick={onClick} className={`flex items-center justify-center font-medium rounded-xl transition-all active:scale-95 disabled:opacity-50 ${variants[variant]} ${className}`}>
       {Icon && <Icon className="w-5 h-5 mr-2" />}
       {children}
     </button>
@@ -1478,8 +1493,15 @@ const App = () => {
   const [newName, setNewName] = useState('');
   const [newGroup, setNewGroup] = useState('');
   const [pendingCount, setPendingCount] = useState(getPendingCount());
-
-  const hasTelegramSession = Boolean(getTelegramInitData());
+  const telegramMode = isTelegramMode();
+  const [authState, setAuthState] = useState<'loading' | 'authenticated' | 'anonymous'>(
+    telegramMode ? 'authenticated' : 'loading'
+  );
+  const [loginEmail, setLoginEmail] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [loginError, setLoginError] = useState('');
+  const isAuthenticated = authState === 'authenticated';
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [bodyWeightInput, setBodyWeightInput] = useState('');
@@ -1491,6 +1513,46 @@ const App = () => {
   const [importReport, setImportReport] = useState('');
   const [dataBusy, setDataBusy] = useState(false);
   const importInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (telegramMode) {
+      setAuthState('authenticated');
+      return;
+    }
+
+    let active = true;
+    void getStandaloneSession().then((session) => {
+      if (active) setAuthState(session ? 'authenticated' : 'anonymous');
+    });
+    const subscription = supabaseAuth?.auth.onAuthStateChange((_event, session) => {
+      if (active) setAuthState(session ? 'authenticated' : 'anonymous');
+    }).data.subscription;
+    const requireSignIn = () => {
+      setAuthState('anonymous');
+      void signOutStandalone();
+    };
+    window.addEventListener(STANDALONE_AUTH_REQUIRED_EVENT, requireSignIn);
+    return () => {
+      active = false;
+      subscription?.unsubscribe();
+      window.removeEventListener(STANDALONE_AUTH_REQUIRED_EVENT, requireSignIn);
+    };
+  }, [telegramMode]);
+
+  const handleStandaloneLogin = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (loginBusy || !loginEmail.trim() || !loginPassword) return;
+    setLoginBusy(true);
+    setLoginError('');
+    const error = await signInStandalone(loginEmail.trim(), loginPassword);
+    setLoginBusy(false);
+    if (error) {
+      setLoginError(error);
+      return;
+    }
+    setLoginPassword('');
+    setAuthState('authenticated');
+  };
 
   // Тренировка могла стартовать неявно (из экрана подходов) — освежаем флаг
   // при каждом возврате на главную.
@@ -1599,6 +1661,7 @@ const App = () => {
   }, []);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     const cleanupNetwork = initNetworkListeners();
     const updatePendingCount = () => { setPendingCount(getPendingCount()); setQueueItems(getQueue()); };
     window.addEventListener(QUEUE_CHANGED_EVENT, updatePendingCount);
@@ -1607,10 +1670,10 @@ const App = () => {
       cleanupNetwork();
       window.removeEventListener(QUEUE_CHANGED_EVENT, updatePendingCount);
     };
-  }, []);
+  }, [isAuthenticated]);
 
   useEffect(() => { 
-    if (hasTelegramSession) {
+    if (isAuthenticated) {
       const applyInit = (data: any) => {
         if (data && data.groups) {
           setGroups(sortGroups(data.groups));
@@ -1623,7 +1686,7 @@ const App = () => {
       }); 
       void api.syncOfflineQueue();
     }
-  }, [hasTelegramSession]);
+  }, [isAuthenticated]);
 
   const debouncedSearchQuery = useDebounce(searchQuery, 300);
   const filteredExercises = useMemo(() => {
@@ -1669,13 +1732,21 @@ const App = () => {
     } else { notify('error'); }
   };
 
-  if (!hasTelegramSession) {
+  if (!isAuthenticated) {
     return (
       <div className="bg-zinc-950 min-h-screen flex items-center justify-center p-4">
-        <div className="bg-zinc-900 p-6 rounded-2xl w-full max-w-sm space-y-4">
-          <h2 className="text-xl font-bold text-zinc-50 text-center">Открой GymApp в Telegram</h2>
-          <p className="text-sm text-zinc-400 text-center">Для безопасного входа приложению нужны подписанные данные Telegram Mini App.</p>
-        </div>
+        {authState === 'loading' ? (
+          <div className="text-sm text-zinc-400">Проверяем сессию HealthOS…</div>
+        ) : (
+          <form onSubmit={handleStandaloneLogin} className="bg-zinc-900 p-6 rounded-2xl w-full max-w-sm space-y-4">
+            <h2 className="text-xl font-bold text-zinc-50 text-center">Войти через HealthOS</h2>
+            <p className="text-sm text-zinc-400 text-center">Используй тот же Supabase Auth аккаунт, что и в HealthOS. Очередь тренировок останется на телефоне.</p>
+            <Input type="email" autoComplete="email" value={loginEmail} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setLoginEmail(e.target.value)} placeholder="Email" />
+            <Input type="password" autoComplete="current-password" value={loginPassword} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setLoginPassword(e.target.value)} placeholder="Пароль" />
+            {loginError && <p className="text-sm text-red-400">{loginError}</p>}
+            <Button type="submit" className="w-full h-12" disabled={loginBusy}>{loginBusy ? 'Входим…' : 'Войти'}</Button>
+          </form>
+        )}
       </div>
     );
   }
@@ -1716,6 +1787,7 @@ const App = () => {
             <p className="text-xs text-zinc-500 mt-1">Используется для гравитрона, брусьев и упражнений со своим весом.</p>
           </div>
           <Button className="w-full h-12" onClick={() => { const v = parseFloat(bodyWeightInput.replace(',', '.')); if (v >= 30 && v <= 250) { updateBodyWeight(v); notify('success'); setIsSettingsOpen(false); } else { notify('error'); } }}>Сохранить</Button>
+          {!telegramMode && <Button variant="secondary" className="w-full h-12" onClick={() => { void signOutStandalone(); setIsSettingsOpen(false); }}>Выйти из HealthOS</Button>}
           <div className="border-t border-zinc-800 pt-4 space-y-3">
             <div className="text-sm font-medium text-zinc-400">Данные</div>
             <Button variant="secondary" className="w-full h-12" onClick={handleExport}>{dataBusy ? 'Готовлю…' : 'Экспорт (упражнения + тренировки)'}</Button>

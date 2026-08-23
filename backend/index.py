@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
 from object_storage import UploadError, upload_image
+from request_auth import authenticate_request
 from supabase_store import (
     ConflictError,
     create_exercise,
@@ -28,7 +29,7 @@ from supabase_store import (
     update_exercise,
     update_set,
 )
-from telegram_auth import AuthenticationError, authenticate_init_data
+from telegram_auth import AuthenticationError
 
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,7 @@ CORS_HEADERS = {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, X-Telegram-Init-Data",
+    "Access-Control-Allow-Headers": "Content-Type, X-Telegram-Init-Data, Authorization",
     "Access-Control-Max-Age": "86400",
 }
 
@@ -201,7 +202,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 return response({"error": "Method not allowed"}, 405)
             return _telegram_webhook(_body(event), headers)
 
-        authenticated = authenticate_init_data(headers)
+        authenticated = authenticate_request(headers)
         user_id = authenticated.user_id
 
         if endpoint == "ping" and method == "GET":

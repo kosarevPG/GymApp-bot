@@ -5,8 +5,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import index
+from request_auth import AuthenticatedRequestUser
 from supabase_store import ConflictError
-from telegram_auth import AuthenticatedUser, AuthenticationError
+from telegram_auth import AuthenticationError
 
 
 USER_ID = "11111111-1111-4111-8111-111111111111"
@@ -25,8 +26,8 @@ class HandlerTests(unittest.TestCase):
     def auth(self):
         return patch.object(
             index,
-            "authenticate_init_data",
-            return_value=AuthenticatedUser("123", USER_ID),
+            "authenticate_request",
+            return_value=AuthenticatedRequestUser(USER_ID, "telegram"),
         )
 
     def test_options_does_not_require_auth(self):
@@ -36,8 +37,8 @@ class HandlerTests(unittest.TestCase):
     def test_auth_is_fail_closed(self):
         with patch.object(
             index,
-            "authenticate_init_data",
-            side_effect=AuthenticationError("Telegram initData is required"),
+            "authenticate_request",
+            side_effect=AuthenticationError("Supabase access token is required"),
         ):
             result = index.handler(self.event("GET", "/api/init", init_data=""), None)
         self.assertEqual(result["statusCode"], 401)
@@ -55,16 +56,16 @@ class HandlerTests(unittest.TestCase):
 
             with patch.object(
                 index,
-                "authenticate_init_data",
-                side_effect=AuthenticationError("Telegram initData is required"),
+                "authenticate_request",
+                side_effect=AuthenticationError("Authentication is required"),
             ):
                 api_result = index.handler(self.event("GET", "/api/init", init_data=""), None)
             self.assertEqual(api_result["statusCode"], 401)
 
             with patch.object(
                 index,
-                "authenticate_init_data",
-                side_effect=AuthenticationError("Telegram initData is required"),
+                "authenticate_request",
+                side_effect=AuthenticationError("Authentication is required"),
             ):
                 api_root_result = index.handler(self.event("GET", "/api", init_data=""), None)
             self.assertEqual(api_root_result["statusCode"], 401)
