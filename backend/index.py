@@ -5,13 +5,16 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import mimetypes
 import os
+from pathlib import Path
 from typing import Any, Dict
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
 from object_storage import UploadError, upload_image
-from sheets_store import (
+from supabase_store import (
+    ConflictError,
     create_exercise,
     delete_set,
     delete_workout,
@@ -25,16 +28,19 @@ from sheets_store import (
     update_exercise,
     update_set,
 )
+from telegram_auth import AuthenticationError, authenticate_init_data
 
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+STATIC_ROOT = Path(__file__).with_name("static")
+
 CORS_HEADERS = {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Auth-Token",
+    "Access-Control-Allow-Headers": "Content-Type, X-Telegram-Init-Data",
     "Access-Control-Max-Age": "86400",
 }
 
@@ -64,17 +70,21 @@ def _headers(event: Dict[str, Any]) -> Dict[str, str]:
     return {str(key).lower(): str(value) for key, value in raw.items()}
 
 
-def _route(event: Dict[str, Any]) -> tuple[str, Dict[str, str]]:
+def _route(event: Dict[str, Any]) -> tuple[str, Dict[str, str], str, bool]:
     event_query = event.get("queryStringParameters") or {}
     if not isinstance(event_query, dict):
         event_query = {}
 
     routed_url = str(event_query.get("url") or "").strip()
     if not routed_url:
-        routed_url = str(event.get("url") or event.get("path") or "/api/ping")
+        # Yandex's public function gateway omits both fields for a bare GET to
+        # the function URL. Treat that request as the static application root;
+        # API calls always provide their explicit route through ?url=/api/....
+        routed_url = str(event.get("url") or event.get("path") or "/")
     parsed = urlparse(routed_url if "://" in routed_url else f"https://local{routed_url}")
     path = parsed.path or "/api/ping"
-    endpoint = path.split("/api/", 1)[-1].strip("/") if "/api/" in path else path.strip("/")
+    is_api = path == "/api" or path.startswith("/api/")
+    endpoint = path.removeprefix("/api/").strip("/") if is_api else path.strip("/")
     endpoint = endpoint or "ping"
 
     params = {
@@ -84,7 +94,34 @@ def _route(event: Dict[str, Any]) -> tuple[str, Dict[str, str]]:
     for key, value in event_query.items():
         if key != "url" and value is not None:
             params[str(key)] = str(value[-1] if isinstance(value, list) else value)
-    return endpoint, params
+    return endpoint, params, path, is_api
+
+
+def _static_response(path: str) -> Dict[str, Any]:
+    relative = path.lstrip("/") or "index.html"
+    candidate = (STATIC_ROOT / relative).resolve()
+    static_root = STATIC_ROOT.resolve()
+    if static_root not in candidate.parents and candidate != static_root:
+        return response({"error": "Route not found"}, 404)
+    if not candidate.is_file():
+        candidate = STATIC_ROOT / "index.html"
+    if not candidate.is_file():
+        return response({"error": "Static frontend is not deployed"}, 404)
+
+    content_type = mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
+    content = candidate.read_bytes()
+    headers = {
+        "Content-Type": f"{content_type}; charset=utf-8" if content_type.startswith("text/") or content_type in {"application/javascript", "application/json"} else content_type,
+        "Cache-Control": "no-cache" if candidate.name == "index.html" else "public, max-age=31536000, immutable",
+    }
+    if content_type.startswith("text/") or content_type in {"application/javascript", "application/json", "image/svg+xml"}:
+        return {"statusCode": 200, "headers": headers, "body": content.decode("utf-8")}
+    return {
+        "statusCode": 200,
+        "headers": headers,
+        "body": base64.b64encode(content).decode("ascii"),
+        "isBase64Encoded": True,
+    }
 
 
 def _body(event: Dict[str, Any]) -> Dict[str, Any]:
@@ -98,16 +135,6 @@ def _body(event: Dict[str, Any]) -> Dict[str, Any]:
     if not body:
         return {}
     return json.loads(body)
-
-
-def _authorized(headers: Dict[str, str]) -> bool:
-    expected = os.getenv("AUTH_TOKEN", "").strip()
-    if not expected:
-        return True
-    actual = (headers.get("x-auth-token") or headers.get("authorization") or "").strip()
-    if actual.lower().startswith("bearer "):
-        actual = actual[7:].strip()
-    return actual == expected
 
 
 def _telegram_request(method: str, payload: Dict[str, Any]) -> None:
@@ -127,7 +154,9 @@ def _telegram_request(method: str, payload: Dict[str, Any]) -> None:
 def _telegram_webhook(data: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
     expected_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
     actual_secret = headers.get("x-telegram-bot-api-secret-token", "")
-    if expected_secret and actual_secret != expected_secret:
+    if not expected_secret:
+        return response({"error": "Telegram webhook secret is not configured"}, 503)
+    if not actual_secret or actual_secret != expected_secret:
         return response({"error": "Forbidden"}, 403)
 
     message = data.get("message") or {}
@@ -162,61 +191,66 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     if method == "OPTIONS":
         return {"statusCode": 204, "headers": CORS_HEADERS, "body": ""}
 
-    endpoint, params = _route(event)
+    endpoint, params, path, is_api = _route(event)
     headers = _headers(event)
     try:
+        if method == "GET" and not is_api:
+            return _static_response(path)
         if endpoint == "telegram":
             if method != "POST":
                 return response({"error": "Method not allowed"}, 405)
             return _telegram_webhook(_body(event), headers)
 
-        if not _authorized(headers):
-            return response({"error": "Forbidden"}, 403)
+        authenticated = authenticate_init_data(headers)
+        user_id = authenticated.user_id
 
         if endpoint == "ping" and method == "GET":
-            return response({"status": "ok", "storage": "google-sheets"})
+            return response({"status": "ok", "storage": "supabase"})
         if endpoint == "init" and method == "GET":
             refresh = str(params.get("refresh", "")).strip().lower() in {"1", "true", "yes"}
-            return response(get_init(force=refresh))
+            return response(get_init(user_id, force=refresh))
         if endpoint == "history" and method == "GET":
             exercise_id = params.get("exercise_id", "")
             if not exercise_id:
                 return response({"error": "exercise_id is required"}, 400)
-            return response(get_exercise_history(exercise_id))
+            return response(get_exercise_history(user_id, exercise_id))
         if endpoint == "global_history" and method == "GET":
-            return response(get_global_history())
+            return response(get_global_history(user_id))
         if endpoint == "analytics" and method == "GET":
-            return response(get_analytics(int(params.get("period", "14"))))
+            return response(get_analytics(user_id, int(params.get("period", "14"))))
         if endpoint == "save_set" and method == "POST":
-            result = save_set(_body(event))
+            result = save_set(user_id, _body(event))
             return response(result, 200 if result.get("status") == "success" else 400)
         if endpoint == "update_set" and method == "POST":
-            return response({"status": "success" if update_set(_body(event)) else "error"})
+            return response({"status": "success" if update_set(user_id, _body(event)) else "error"})
         if endpoint == "delete_set" and method == "POST":
-            return response({"status": "success" if delete_set(_body(event)) else "error"})
+            return response({"status": "success" if delete_set(user_id, _body(event)) else "error"})
         if endpoint == "delete_workout" and method == "POST":
-            date_text = str(_body(event).get("date", "")).strip()
-            if not date_text:
-                return response({"error": "date is required"}, 400)
-            deleted = delete_workout(date_text)
+            data = _body(event)
+            date_text = str(data.get("date", "")).strip()
+            session_id = str(data.get("session_id", "")).strip()
+            if not date_text and not session_id:
+                return response({"error": "session_id or date is required"}, 400)
+            deleted = delete_workout(user_id, date_text, session_id=session_id)
             return response({"status": "success" if deleted else "error", "deleted": deleted})
         if endpoint == "export" and method == "GET":
-            return response(export_data())
+            return response(export_data(user_id))
         if endpoint == "import" and method == "POST":
-            return response(import_data(_body(event)))
+            result = import_data(user_id, _body(event))
+            return response(result, 200 if result.get("status") != "error" else 400)
         if endpoint == "create_exercise" and method == "POST":
             data = _body(event)
             name = str(data.get("name", "")).strip()
             group = str(data.get("group", "")).strip()
             if not name or not group:
                 return response({"error": "name and group are required"}, 400)
-            return response(create_exercise(name, group))
+            return response(create_exercise(user_id, name, group))
         if endpoint == "update_exercise" and method == "POST":
             data = _body(event)
             exercise_id = str(data.get("id", "")).strip()
             if not exercise_id:
                 return response({"error": "id is required"}, 400)
-            ok = update_exercise(exercise_id, data.get("updates") or {})
+            ok = update_exercise(user_id, exercise_id, data.get("updates") or {})
             return response({"status": "success" if ok else "error"})
         if endpoint == "confirm_baseline" and method == "POST":
             return response({"status": "ok"})
@@ -232,6 +266,12 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 return response({"error": str(error)}, 400)
             return response({"status": "success", "url": url})
         return response({"error": f"Route not found: {endpoint}"}, 404)
+    except AuthenticationError as error:
+        logger.warning("Authentication rejected: %s", error)
+        return response({"error": str(error)}, error.status)
+    except ConflictError as error:
+        logger.warning("Ambiguous workout deletion rejected: %s", error)
+        return response({"error": str(error), "code": "ambiguous_workout_date"}, 409)
     except Exception as error:
         logger.exception("Request failed: %s", error)
         return response({"error": "Internal server error"}, 500)

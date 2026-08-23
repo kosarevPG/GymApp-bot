@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts';
-import { API_BASE_URL, AUTH_TOKEN_KEY, WORKOUT_STORAGE_KEY, ACTIVE_WORKOUT_KEY, sortGroups, SESSION_ID_KEY, ORDER_COUNTER_KEY, LAST_ACTIVE_KEY } from './constants';
+import { API_BASE_URL, WORKOUT_STORAGE_KEY, ACTIVE_WORKOUT_KEY, sortGroups, SESSION_ID_KEY, ORDER_COUNTER_KEY, LAST_ACTIVE_KEY } from './constants';
 import { SetDisplayRow } from './components/SetDisplayRow';
 import { calcEffectiveWeight, weightInputLabel, WEIGHT_TYPE_OPTIONS, USER_BODY_WEIGHT_DEFAULT } from './exerciseConfig';
 import type { Exercise, WorkoutSet, HistoryItem, ExerciseSessionData, SetType } from './types';
@@ -40,7 +40,7 @@ interface GlobalWorkoutSession {
 
 // --- HELPERS ---
 
-const getToken = () => localStorage.getItem(AUTH_TOKEN_KEY) || '';
+const getTelegramInitData = () => String((window as any).Telegram?.WebApp?.initData || '');
 
 const cacheExercises = (data: any) => {
   try { localStorage.setItem('gym_exercises_cache', JSON.stringify(data)); } catch (_) {}
@@ -89,7 +89,7 @@ const api = {
         signal: options.signal || controller.signal,
         headers: { 
           'Content-Type': 'application/json', 
-          'X-Auth-Token': getToken(),
+          'X-Telegram-Init-Data': getTelegramInitData(),
           ...options.headers 
         }
       });
@@ -123,7 +123,9 @@ const api = {
     let history: HistoryItem[] = raw.history || [];
     const first = history[0] as { sets?: unknown[] } | undefined;
     if (history.length > 0 && first && 'sets' in first && Array.isArray(first.sets)) {
-      history = history.flatMap((d: { date: string; sets?: Record<string, unknown>[] }) => (d.sets || []).map((s) => ({ ...s, date: d.date }))) as HistoryItem[];
+      history = history.flatMap((d: { session_id?: string; date: string; sets?: Record<string, unknown>[] }) =>
+        (d.sets || []).map((s) => ({ ...s, date: d.date, session_id: d.session_id }))
+      ) as HistoryItem[];
     }
     return { history, note: raw.note || '' };
   },
@@ -176,8 +178,8 @@ const api = {
     return !!res && res.status === 'success';
   },
 
-  deleteWorkout: async (date: string): Promise<{ status?: string; deleted?: number } | null> => {
-    return await api.request('delete_workout', { method: 'POST', body: JSON.stringify({ date }) });
+  deleteWorkout: async (date: string, sessionId?: string): Promise<{ status?: string; deleted?: number } | null> => {
+    return await api.request('delete_workout', { method: 'POST', body: JSON.stringify({ date, session_id: sessionId }) });
   },
 
   exportData: async () => {
@@ -200,13 +202,13 @@ const api = {
     }
   },
 
-  validateToken: async (token: string): Promise<'ok' | 'invalid' | 'offline'> => {
+  validateSession: async (): Promise<'ok' | 'invalid' | 'offline'> => {
     if (!API_BASE_URL) return 'offline';
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 10_000);
     try {
       const res = await fetch(`${API_BASE_URL}?url=/api/ping`, {
-        headers: { 'X-Auth-Token': token },
+        headers: { 'X-Telegram-Init-Data': getTelegramInitData() },
         signal: controller.signal,
       });
       if (res.ok) return 'ok';
@@ -220,7 +222,7 @@ const api = {
   },
 
   syncOfflineQueue: async () => {
-    if (syncInFlight || !navigator.onLine || !getToken() || !API_BASE_URL) return;
+    if (syncInFlight || !navigator.onLine || !getTelegramInitData() || !API_BASE_URL) return;
     syncInFlight = true;
     try {
       for (const item of getQueue()) {
@@ -230,7 +232,7 @@ const api = {
         try {
           const res = await fetch(`${API_BASE_URL}?url=/api/${endpoint}`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Auth-Token': getToken() },
+            headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': getTelegramInitData() },
             body: JSON.stringify(item.data),
             signal: controller.signal,
           });
@@ -279,7 +281,7 @@ const api = {
       if (!API_BASE_URL) return { error: 'Бэкенд не настроен' };
       const res = await fetch(`${API_BASE_URL}?url=/api/upload_image`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Auth-Token': getToken() },
+        headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': getTelegramInitData() },
         body: JSON.stringify({ content_type: parsed[1], data_base64: parsed[2] }),
         signal: controller.signal,
       });
@@ -554,13 +556,14 @@ const NoteWidget = ({ initialValue, onChange }: any) => {
 
 const HistoryListModal = ({ isOpen, onClose, history, exerciseName }: any) => {
   const groupedHistory = useMemo(() => {
-    const groups: Record<string, HistoryItem[]> = {};
+    const groups: Record<string, { date: string; items: HistoryItem[] }> = {};
     history.forEach((item: HistoryItem) => {
-      if (!groups[item.date]) groups[item.date] = [];
-      groups[item.date].push(item);
+      const key = item.session_id || `legacy:${item.date}`;
+      if (!groups[key]) groups[key] = { date: item.date, items: [] };
+      groups[key].items.push(item);
     });
-    Object.keys(groups).forEach(date => {
-      groups[date].sort((a, b) => (a.order || 0) - (b.order || 0));
+    Object.values(groups).forEach(group => {
+      group.items.sort((a, b) => (a.order || 0) - (b.order || 0));
     });
     return groups;
   }, [history]);
@@ -568,13 +571,13 @@ const HistoryListModal = ({ isOpen, onClose, history, exerciseName }: any) => {
   return (
     <Modal isOpen={isOpen} onClose={onClose} title={`История: ${exerciseName}`}>
       <div className="space-y-6">
-        {Object.entries(groupedHistory).map(([date, items]) => (
-          <div key={date}>
+        {Object.entries(groupedHistory).map(([sessionId, group]) => (
+          <div key={sessionId}>
             <div className="flex items-center gap-2 mb-2 sticky top-0 bg-zinc-900 py-1 z-10">
-              <Calendar className="w-4 h-4 text-zinc-500" /><span className="text-sm font-bold text-zinc-400 uppercase tracking-wider">{date}</span>
+              <Calendar className="w-4 h-4 text-zinc-500" /><span className="text-sm font-bold text-zinc-400 uppercase tracking-wider">{group.date}</span>
             </div>
             <div className="bg-zinc-800/30 border border-zinc-800 rounded-xl overflow-hidden">
-              {items.map((item, idx) => (
+              {group.items.map((item, idx) => (
                 <div key={idx} className="p-3 border-b border-zinc-800 last:border-0">
                   <SetDisplayRow
                     weight={item.weight}
@@ -889,10 +892,12 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
       let initialSets: WorkoutSet[] = [];
       // Шаблон берём с прошлой тренировки. Сегодняшние подходы уже в журнале:
       // подставить их как незавершённые — значит записать вторые копии.
-      const templateDate = history.map(h => h.date).find(date => date && date !== todayInLogFormat());
-      if (templateDate) {
+      const templateItem = history.find(h => h.date && h.date !== todayInLogFormat());
+      if (templateItem) {
         const lastDateItems = history
-          .filter(h => h.date === templateDate)
+          .filter(h => templateItem.session_id
+            ? h.session_id === templateItem.session_id
+            : h.date === templateItem.date)
           .sort((a, b) => (a.order || 0) - (b.order || 0));
         initialSets = lastDateItems.map(h => ({
           id: crypto.randomUUID(), 
@@ -1107,7 +1112,7 @@ const HistoryScreen = ({ onBack, allExercises = [], bodyWeight = USER_BODY_WEIGH
   const [editW, setEditW] = useState('');
   const [editR, setEditR] = useState('');
   const [editRest, setEditRest] = useState('');
-  const [deleteDay, setDeleteDay] = useState<string | null>(null);
+  const [deleteDay, setDeleteDay] = useState<{ date: string; sessionId: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
   const refresh = () => api.getGlobalHistory().then(data => setHistory(data));
@@ -1155,7 +1160,7 @@ const HistoryScreen = ({ onBack, allExercises = [], bodyWeight = USER_BODY_WEIGH
   const deleteDayConfirmed = async () => {
     if (!deleteDay || busy) return;
     setBusy(true);
-    const res = await api.deleteWorkout(deleteDay);
+    const res = await api.deleteWorkout(deleteDay.date, deleteDay.sessionId);
     setBusy(false);
     if (res && res.status === 'success') { haptic?.('medium'); notify?.('success'); setDeleteDay(null); refresh(); }
     else { notify?.('error'); }
@@ -1176,7 +1181,7 @@ const HistoryScreen = ({ onBack, allExercises = [], bodyWeight = USER_BODY_WEIGH
               </div>
               <div className="flex items-center gap-1">
                 {expandedId === w.id && (
-                  <button onClick={(e) => { e.stopPropagation(); setDeleteDay(w.date); }} className="p-2 text-zinc-600 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>
+                  <button onClick={(e) => { e.stopPropagation(); setDeleteDay({ date: w.date, sessionId: w.id }); }} className="p-2 text-zinc-600 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>
                 )}
                 <ChevronDown className={`w-5 h-5 text-zinc-500 transition-transform ${expandedId === w.id ? 'rotate-180' : ''}`} />
               </div>
@@ -1246,7 +1251,7 @@ const HistoryScreen = ({ onBack, allExercises = [], bodyWeight = USER_BODY_WEIGH
       </Modal>
       <Modal isOpen={!!deleteDay} onClose={() => setDeleteDay(null)} title="Удалить тренировку?">
         <div className="space-y-4">
-          <p className="text-sm text-zinc-400">Все подходы за {deleteDay} будут удалены из таблицы. Действие необратимо.</p>
+          <p className="text-sm text-zinc-400">Все подходы выбранной тренировки за {deleteDay?.date} будут удалены. Действие необратимо.</p>
           <Button variant="danger" className="w-full h-12" onClick={deleteDayConfirmed}>{busy ? 'Удаляю…' : 'Да, удалить'}</Button>
           <Button variant="secondary" className="w-full h-12" onClick={() => setDeleteDay(null)}>Отмена</Button>
         </div>
@@ -1474,11 +1479,7 @@ const App = () => {
   const [newGroup, setNewGroup] = useState('');
   const [pendingCount, setPendingCount] = useState(getPendingCount());
 
-  // Состояние для авторизации
-  const [isAuthenticated, setIsAuthenticated] = useState(!!localStorage.getItem(AUTH_TOKEN_KEY));
-  const [authInput, setAuthInput] = useState('');
-  const [authError, setAuthError] = useState('');
-  const [authChecking, setAuthChecking] = useState(false);
+  const hasTelegramSession = Boolean(getTelegramInitData());
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [bodyWeightInput, setBodyWeightInput] = useState('');
@@ -1568,23 +1569,6 @@ const App = () => {
     }
   };
 
-  const handleLogin = async () => {
-    const token = authInput.trim();
-    if (!token || authChecking) return;
-    setAuthChecking(true);
-    setAuthError('');
-    const status = await api.validateToken(token);
-    if (status === 'invalid') {
-      setAuthError('Неверный токен — проверь и попробуй ещё раз.');
-      setAuthChecking(false);
-      return;
-    }
-    // 'offline' пропускаем: приложение offline-first, проверим при синке.
-    localStorage.setItem(AUTH_TOKEN_KEY, token);
-    setAuthChecking(false);
-    setIsAuthenticated(true);
-  };
-
   useEffect(() => {
     if (allExercises.length === 0) return;
     const saved = localStorage.getItem(WORKOUT_STORAGE_KEY);
@@ -1626,7 +1610,7 @@ const App = () => {
   }, []);
 
   useEffect(() => { 
-    if (isAuthenticated) {
+    if (hasTelegramSession) {
       const applyInit = (data: any) => {
         if (data && data.groups) {
           setGroups(sortGroups(data.groups));
@@ -1639,7 +1623,7 @@ const App = () => {
       }); 
       void api.syncOfflineQueue();
     }
-  }, [isAuthenticated]);
+  }, [hasTelegramSession]);
 
   const debouncedSearchQuery = useDebounce(searchQuery, 300);
   const filteredExercises = useMemo(() => {
@@ -1685,15 +1669,12 @@ const App = () => {
     } else { notify('error'); }
   };
 
-  // ЭКРАН ВХОДА
-  if (!isAuthenticated) {
+  if (!hasTelegramSession) {
     return (
       <div className="bg-zinc-950 min-h-screen flex items-center justify-center p-4">
         <div className="bg-zinc-900 p-6 rounded-2xl w-full max-w-sm space-y-4">
-          <h2 className="text-xl font-bold text-zinc-50 text-center">Вход в gymtracker</h2>
-          <Input type="password" placeholder="Секретный токен" value={authInput} onChange={(e: React.ChangeEvent<HTMLInputElement>) => { setAuthInput(e.target.value); setAuthError(''); }} />
-          {authError && <div className="text-sm text-red-400 text-center">{authError}</div>}
-          <Button className="w-full h-12" onClick={handleLogin}>{authChecking ? 'Проверяю…' : 'Войти'}</Button>
+          <h2 className="text-xl font-bold text-zinc-50 text-center">Открой GymApp в Telegram</h2>
+          <p className="text-sm text-zinc-400 text-center">Для безопасного входа приложению нужны подписанные данные Telegram Mini App.</p>
         </div>
       </div>
     );
@@ -1742,9 +1723,6 @@ const App = () => {
             <input ref={importInputRef} type="file" accept=".json,application/json" className="hidden" onChange={handleImportFile} />
             {importReport && <p className="text-xs text-zinc-400">{importReport}</p>}
             <p className="text-xs text-zinc-500">Экспорт делает полный слепок таблицы. Импорт добавляет недостающее и не создаёт дубли.</p>
-          </div>
-          <div className="border-t border-zinc-800 pt-4">
-            <Button variant="secondary" className="w-full h-12 text-red-400" onClick={() => { localStorage.removeItem(AUTH_TOKEN_KEY); setIsSettingsOpen(false); setAuthInput(''); setIsAuthenticated(false); }}>Сменить токен (выйти)</Button>
           </div>
         </div>
       </Modal>
