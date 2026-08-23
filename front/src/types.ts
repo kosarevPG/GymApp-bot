@@ -10,6 +10,13 @@ export interface Exercise {
   weightType?: string;
   baseWeight?: number;
   weightMultiplier?: number;
+  /* Release B progression targets. Null/undefined means "not configured" —
+     the card then offers a setup button instead of a recommendation. */
+  repRangeLow?: number | null;
+  repRangeHigh?: number | null;
+  inputWeightStep?: number | null;
+  targetWorkingSets?: number | null;
+  rirTargetMax?: number | null;
 }
 
 export interface WorkoutSet {

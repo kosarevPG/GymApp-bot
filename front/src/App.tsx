@@ -9,6 +9,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts';
 import { API_BASE_URL, STANDALONE_API_BASE_URL, WORKOUT_STORAGE_KEY, ACTIVE_WORKOUT_KEY, sortGroups, SESSION_ID_KEY, ORDER_COUNTER_KEY, LAST_ACTIVE_KEY } from './constants';
 import { readSessionDeeplink, stripSessionParam } from './deeplink';
+import { buildProgressionAdvice, suggestTargets } from './progression';
+import type { ExerciseTargets } from './progression';
 import { SetDisplayRow } from './components/SetDisplayRow';
 import { calcEffectiveWeight, weightInputLabel, WEIGHT_TYPE_OPTIONS, USER_BODY_WEIGHT_DEFAULT } from './exerciseConfig';
 import type { Exercise, WorkoutSet, HistoryItem, ExerciseSessionData, SetType } from './types';
@@ -631,7 +633,7 @@ const HistoryListModal = ({ isOpen, onClose, history, exerciseName }: any) => {
 const SET_TYPE_CYCLE: SetType[] = ['warmup', 'working', 'drop', 'failure'];
 const SET_TYPE_LABELS: Record<SetType, string> = { warmup: 'W', working: 'R', drop: 'D', failure: 'F' };
 
-const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, isActive = false, onUpdate, onDelete, onComplete }: { set: WorkoutSet; exercise?: Exercise; bodyWeight?: number; isActive?: boolean; onUpdate: (sid: string, field: string, value: string | number) => void; onDelete: (sid: string) => void; onComplete: (sid: string) => void }) => {
+const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, isActive = false, highlightRir = false, onUpdate, onDelete, onComplete }: { set: WorkoutSet; exercise?: Exercise; bodyWeight?: number; isActive?: boolean; highlightRir?: boolean; onUpdate: (sid: string, field: string, value: string | number) => void; onDelete: (sid: string) => void; onComplete: (sid: string) => void }) => {
   const effectiveWeight = calcEffectiveWeight(exercise, parseFloat(set.weight || '0'), bodyWeight);
   const showTotal = set.weight !== '' && effectiveWeight !== parseFloat(set.weight || '0');
   const oneRM = set.weight && set.reps ? Math.round(effectiveWeight * (1 + parseInt(set.reps) / 30)) : 0;
@@ -707,7 +709,12 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, isActive
         <button onClick={() => onDelete(set.id)} className="w-10 h-12 flex items-center justify-center text-zinc-600 hover:text-red-500"><Trash2 className="w-5 h-5" /></button>
       </div>
       {isActive && !set.completed && (
-      <div className="flex flex-wrap gap-2 mt-2 ml-14">
+      <div className={`flex flex-wrap gap-2 mt-2 ml-14 ${highlightRir ? "rounded-lg ring-1 ring-zinc-600/70 bg-zinc-800/30" : ""}`}>
+        {highlightRir && !set.completed && (
+          /* Optional by design: the set is already saved without it. This is a
+             nudge on the last target working set, not a required field. */
+          <div className="mb-1 text-[10px] text-zinc-500">RIR — по желанию, повторов в запасе</div>
+        )}
         {([0, 1, 2, 3] as const).map(rirVal => (
           <button
             key={rirVal}
@@ -732,8 +739,157 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, isActive
   );
 };
 
-const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, onAddSet, onUpdateSet, onDeleteSet, onCompleteSet, onNoteChange, onAddSuperset }: any) => {
+
+/** Reads targets off the exercise record. Absent stays absent — never zero. */
+const targetsOf = (exercise: Exercise | undefined): ExerciseTargets => ({
+  repRangeLow: exercise?.repRangeLow ?? null,
+  repRangeHigh: exercise?.repRangeHigh ?? null,
+  inputWeightStep: exercise?.inputWeightStep ?? null,
+  targetWorkingSets: exercise?.targetWorkingSets ?? null,
+  rirTargetMax: exercise?.rirTargetMax ?? null,
+});
+
+/**
+ * Which set should carry the optional RIR nudge: the last of the target working
+ * sets. Warm-ups are skipped when they are marked; production has every row as
+ * `working` because the Sheets backfill had no such column, so the fallback is
+ * the last `target_working_sets` rows.
+ */
+function isLastTargetWorkingSet(
+  sets: WorkoutSet[],
+  index: number,
+  targetWorkingSets: number | null | undefined,
+): boolean {
+  const rows = Array.isArray(sets) ? sets : [];
+  const workingIdx = rows
+    .map((set, i) => ({ set, i }))
+    .filter(({ set }) => (set.setType || 'working') === 'working')
+    .map(({ i }) => i);
+  if (!workingIdx.length) return false;
+  const want = Number(targetWorkingSets);
+  const considered = Number.isFinite(want) && want > 0 ? workingIdx.slice(-want) : workingIdx;
+  return considered[considered.length - 1] === index;
+}
+
+/**
+ * Previous workout -> today's target -> the rule's suggestion.
+ *
+ * With no range configured this shows a short setup button rather than nothing,
+ * so an unconfigured exercise still says what is missing.
+ */
+const ProgressionBlock = ({ exercise, history, bodyWeight, onConfigure }: any) => {
+  const advice = useMemo(
+    () => buildProgressionAdvice(exercise, targetsOf(exercise), history, bodyWeight),
+    [exercise, history, bodyWeight],
+  );
+
+  if (advice.outcome === 'setup') {
+    return (
+      <div className="mb-3 flex items-center justify-between gap-3 rounded-xl bg-zinc-800/40 px-3 py-2">
+        <span className="text-xs text-zinc-400">Диапазон повторов не задан</span>
+        <button onClick={onConfigure} className="shrink-0 rounded-lg bg-zinc-700 px-2.5 py-1 text-xs font-medium text-zinc-100">
+          Настроить
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-3 rounded-xl bg-zinc-800/40 px-3 py-2 space-y-0.5">
+      {advice.previous && (
+        <div className="text-[11px] text-zinc-500">Прошлый раз: {advice.previous}</div>
+      )}
+      <div className="text-[11px] text-zinc-500">Цель: {advice.target}</div>
+      <div className="text-xs text-zinc-200">{advice.suggestion}</div>
+      {advice.rirMissing && (
+        <div className="text-[10px] text-zinc-500">RIR не заполнен — решение по повторам.</div>
+      )}
+      <button onClick={onConfigure} className="pt-0.5 text-[10px] text-zinc-500 underline underline-offset-2">
+        Изменить цель
+      </button>
+    </div>
+  );
+};
+
+/* Quick setup straight from the card. Suggestions are prefilled on request and
+   never written on their own — the user confirms before anything is saved. */
+const TargetQuickSetup = ({ isOpen, onClose, exercise, history, onSave }: any) => {
+  const suggested = useMemo(() => suggestTargets(exercise, history), [exercise, history]);
+  const [low, setLow] = useState('');
+  const [high, setHigh] = useState('');
+  const [step, setStep] = useState('');
+  const [sets, setSets] = useState('');
+  const [rir, setRir] = useState('');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setError('');
+    setLow(exercise?.repRangeLow != null ? String(exercise.repRangeLow) : '');
+    setHigh(exercise?.repRangeHigh != null ? String(exercise.repRangeHigh) : '');
+    setStep(exercise?.inputWeightStep != null ? String(exercise.inputWeightStep) : '');
+    setSets(exercise?.targetWorkingSets != null ? String(exercise.targetWorkingSets) : '');
+    setRir(exercise?.rirTargetMax != null ? String(exercise.rirTargetMax) : '');
+  }, [isOpen, exercise]);
+
+  const fillSuggested = () => {
+    if (suggested.repRangeLow != null) setLow(String(suggested.repRangeLow));
+    if (suggested.repRangeHigh != null) setHigh(String(suggested.repRangeHigh));
+    if (suggested.inputWeightStep != null) setStep(String(suggested.inputWeightStep));
+    if (suggested.targetWorkingSets != null) setSets(String(suggested.targetWorkingSets));
+  };
+
+  const save = () => {
+    const n = (v: string) => (v.trim() === '' ? null : Number(v.replace(',', '.')));
+    const lo = n(low);
+    const hi = n(high);
+    if ((lo === null) !== (hi === null)) { setError('Диапазон задаётся целиком: и низ, и верх.'); return; }
+    if (lo !== null && hi !== null && lo > hi) { setError('Низ диапазона больше верха.'); return; }
+    const st = n(step);
+    if (st !== null && !(st > 0)) { setError('Шаг веса должен быть больше нуля.'); return; }
+    onSave({
+      repRangeLow: lo, repRangeHigh: hi, inputWeightStep: st,
+      targetWorkingSets: n(sets), rirTargetMax: n(rir),
+    });
+    onClose();
+  };
+
+  const field = (label: string, value: string, setter: (v: string) => void, hint = '') => (
+    <label className="block text-[11px] text-zinc-500">
+      {label}
+      <Input value={value} inputMode="decimal" onChange={(e: React.ChangeEvent<HTMLInputElement>) => setter(e.target.value)} className="mt-1 w-full" />
+      {hint ? <span className="mt-0.5 block text-[10px] text-zinc-600">{hint}</span> : null}
+    </label>
+  );
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="Цель упражнения">
+      <div className="space-y-3">
+        <div className="grid grid-cols-2 gap-3">
+          {field('Повторы, низ', low, setLow)}
+          {field('Повторы, верх', high, setHigh)}
+        </div>
+        {field('Шаг веса (' + weightInputLabel(exercise) + ')', step, setStep,
+          'В тех же единицах, что вводишь в подходе, а не в итоговых кг.')}
+        <div className="grid grid-cols-2 gap-3">
+          {field('Рабочих подходов', sets, setSets)}
+          {field('RIR не больше', rir, setRir, 'Пусто — RIR не используется.')}
+        </div>
+        {suggested.basedOnSets > 0 && (
+          <button onClick={fillSuggested} className="w-full rounded-lg border border-dashed border-zinc-700 py-2 text-xs text-zinc-400">
+            Подставить по истории ({suggested.basedOnSets} подх.) — запишется только после сохранения
+          </button>
+        )}
+        {error && <div className="text-xs text-red-400">{error}</div>}
+        <Button onClick={save} className="h-12 w-full">Сохранить</Button>
+      </div>
+    </Modal>
+  );
+};
+
+const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, onAddSet, onUpdateSet, onDeleteSet, onCompleteSet, onNoteChange, onAddSuperset, onSaveTargets }: any) => {
   const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [showTargets, setShowTargets] = useState(false);
   const personalRecord = useMemo(() => {
     if (!exerciseData.history.length) return 0;
     return Math.max(...exerciseData.history.map((h: HistoryItem) => h.weight));
@@ -752,6 +908,19 @@ const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, onAd
         </div>
         <button onClick={() => setShowHistoryModal(true)} className="p-2 bg-zinc-800/50 rounded-lg text-zinc-400 hover:text-blue-500"><Calendar className="w-5 h-5" /></button>
       </div>
+      <ProgressionBlock
+        exercise={exerciseData.exercise}
+        history={exerciseData.history}
+        bodyWeight={bodyWeight}
+        onConfigure={() => setShowTargets(true)}
+      />
+      <TargetQuickSetup
+        isOpen={showTargets}
+        onClose={() => setShowTargets(false)}
+        exercise={exerciseData.exercise}
+        history={exerciseData.history}
+        onSave={(targets: any) => onSaveTargets?.(exerciseData.exercise.id, targets)}
+      />
       <NoteWidget initialValue={exerciseData.note} onChange={onNoteChange} />
       <HistoryListModal isOpen={showHistoryModal} onClose={() => setShowHistoryModal(false)} history={exerciseData.history} exerciseName={exerciseData.exercise.name} />
       <div className="grid grid-cols-[auto_auto_1fr_1fr_1fr_auto] gap-2 mb-2 px-1">
@@ -763,8 +932,18 @@ const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, onAd
         <div className="w-8" />
       </div>
       <div className="space-y-1">
-        {exerciseData.sets.map((set: WorkoutSet) => (
-          <SetRow key={set.id} set={set} exercise={exerciseData.exercise} bodyWeight={bodyWeight} isActive={set.id === exerciseData.sets.find((s: WorkoutSet) => !s.completed)?.id} onUpdate={onUpdateSet} onDelete={onDeleteSet} onComplete={onCompleteSet} />
+        {exerciseData.sets.map((set: WorkoutSet, index: number) => (
+          <SetRow
+            key={set.id}
+            set={set}
+            exercise={exerciseData.exercise}
+            bodyWeight={bodyWeight}
+            isActive={set.id === exerciseData.sets.find((s: WorkoutSet) => !s.completed)?.id}
+            highlightRir={isLastTargetWorkingSet(exerciseData.sets, index, exerciseData.exercise?.targetWorkingSets)}
+            onUpdate={onUpdateSet}
+            onDelete={onDeleteSet}
+            onComplete={onCompleteSet}
+          />
         ))}
       </div>
       <div className="flex gap-2 mt-4">
@@ -878,7 +1057,27 @@ const readSavedWorkout = () => {
 const todayInLogFormat = () =>
   new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Moscow' }).replace(/-/g, '.');
 
-const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incrementOrder, ensureOrderAtLeast, bodyWeight = USER_BODY_WEIGHT_DEFAULT, haptic, notify }: any) => {
+const WorkoutScreen = ({ initialExercise, allExercises, onBack, onExerciseUpdated, sessionId, incrementOrder, ensureOrderAtLeast, bodyWeight = USER_BODY_WEIGHT_DEFAULT, haptic, notify }: any) => {
+  /* Targets are written only from an explicit save in the quick-setup sheet.
+     Nothing derives them from history on its own. */
+  const saveTargets = async (exerciseId: string, targets: any) => {
+    const res = await api.request('update_exercise', {
+      method: 'POST',
+      body: JSON.stringify({ id: exerciseId, updates: targets }),
+    });
+    if (!res || res.status !== 'success') {
+      notify?.('error');
+      return;
+    }
+    notify?.('success');
+    // Reflect it in what is on screen: the catalogue upstream and this
+    // session's copy of the exercise, which was captured when the card opened.
+    onExerciseUpdated?.(exerciseId, targets);
+    setSessionData(prev => (prev[exerciseId]
+      ? { ...prev, [exerciseId]: { ...prev[exerciseId], exercise: { ...prev[exerciseId].exercise, ...targets } } }
+      : prev));
+  };
+
   const timer = useTimer();
   const savedWorkoutRef = useRef<any>(null);
   if (savedWorkoutRef.current === null) {
@@ -1091,7 +1290,8 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
         {activeExercises.map(exId => {
           const data = sessionData[exId];
           if (!data) return <div key={exId} className="h-40 bg-zinc-900 rounded-2xl animate-pulse" />;
-          return <WorkoutCard key={exId} exerciseData={data} bodyWeight={bodyWeight} onAddSet={() => handleAddSet(exId)} onUpdateSet={(sid: string, f: string, v: string) => handleUpdateSet(exId, sid, f, v)} onDeleteSet={(sid: string) => handleDeleteSet(exId, sid)} onCompleteSet={(sid: string) => handleCompleteSet(exId, sid)} onNoteChange={(val: string) => setSessionData(p => ({...p, [exId]: {...p[exId], note: val}}))} onAddSuperset={() => setIsAddModalOpen(true)} />;
+          return <WorkoutCard
+                      onSaveTargets={saveTargets} key={exId} exerciseData={data} bodyWeight={bodyWeight} onAddSet={() => handleAddSet(exId)} onUpdateSet={(sid: string, f: string, v: string) => handleUpdateSet(exId, sid, f, v)} onDeleteSet={(sid: string) => handleDeleteSet(exId, sid)} onCompleteSet={(sid: string) => handleCompleteSet(exId, sid)} onNoteChange={(val: string) => setSessionData(p => ({...p, [exId]: {...p[exId], note: val}}))} onAddSuperset={() => setIsAddModalOpen(true)} />;
         })}
       </div>
       <div className="px-4 mt-8 mb-20"><Button variant="primary" onClick={onBack} className="w-full h-14 text-lg font-semibold shadow-xl shadow-blue-900/20">Завершить упражнение</Button></div>
@@ -1846,7 +2046,7 @@ const App = () => {
       {screen === 'analytics' && <AnalyticsScreen onBack={() => setScreen('home')} />}
       {screen === 'history' && <HistoryScreen onBack={() => { setDeeplinkSession(null); setScreen('home'); }} allExercises={allExercises} bodyWeight={bodyWeight} notify={notify} haptic={haptic} focusSessionId={deeplinkSession} />}
       {screen === 'exercises' && <ExercisesListScreen exercises={filteredExercises} title={selectedGroup || (searchQuery ? `Поиск: ${searchQuery}` : 'Все упражнения')} searchQuery={searchQuery} onSearch={(q: string) => setSearchQuery(q)} onBack={() => { setSearchQuery(''); setSelectedGroup(null); setScreen('home'); }} onSelectExercise={(ex: Exercise) => { haptic('light'); setCurrentExercise(ex); setScreen('workout'); }} onAddExercise={() => setIsCreateModalOpen(true)} onEditExercise={(ex: Exercise) => setExerciseToEdit(ex)} />}
-      {screen === 'workout' && currentExercise && <WorkoutScreen initialExercise={currentExercise} allExercises={allExercises} sessionId={sessionId} incrementOrder={incrementOrder} ensureOrderAtLeast={ensureOrderAtLeast} bodyWeight={bodyWeight} haptic={haptic} notify={notify} onBack={() => setScreen('exercises')} />}
+      {screen === 'workout' && currentExercise && <WorkoutScreen initialExercise={currentExercise} allExercises={allExercises} onExerciseUpdated={(id: string, updates: Partial<Exercise>) => setAllExercises(p => p.map(ex => ex.id === id ? { ...ex, ...updates } : ex))} sessionId={sessionId} incrementOrder={incrementOrder} ensureOrderAtLeast={ensureOrderAtLeast} bodyWeight={bodyWeight} haptic={haptic} notify={notify} onBack={() => setScreen('exercises')} />}
       {pendingCount > 0 && (
         <button
           onClick={() => { setQueueItems(getQueue()); setIsQueueOpen(true); void api.syncOfflineQueue(); }}
