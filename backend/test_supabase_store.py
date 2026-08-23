@@ -312,3 +312,177 @@ class SupabaseStoreTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AnalyticsWorkloadTrendTests(unittest.TestCase):
+    """get_analytics must emit workload-trend-v1 and nothing ACWR-shaped."""
+
+    REFERENCE = datetime(2026, 8, 22, 10, 0, tzinfo=ZoneInfo("Europe/Moscow"))
+
+    def setUp(self):
+        self.client = MemoryClient(max_page_size=500)
+        self.client.tables["gym_exercises"].append({
+            "id": EXERCISE_ID, "user_id": USER_ID, "source": "gymapp",
+            "source_key": "legacy-exercise", "name_ru": "Жим",
+            "muscle_group": "Грудь", "weight_type": "Machine",
+            "base_weight_kg": 0, "multiplier": 1, "tonnage_mode": "external_load",
+            "technique_note": "", "is_active": True, "source_payload": {},
+        })
+        self.store = SupabaseStore(self.client, now=lambda: self.REFERENCE)
+
+    def _add_session(self, workout_date, weight, reps=10):
+        session_id = f"session-{workout_date}"
+        self.client.tables["gym_workout_sessions"].append({
+            "id": session_id, "user_id": USER_ID, "workout_date": workout_date,
+            "source": "gymapp", "source_record_id": f"{workout_date}:1",
+        })
+        self.client.tables["gym_sets"].append({
+            "id": f"set-{workout_date}", "user_id": USER_ID,
+            "session_id": session_id, "exercise_id": EXERCISE_ID,
+            "position": 1, "reps": reps, "total_weight_kg": weight,
+            "input_weight_kg": weight, "rest_seconds": 90, "set_type": "working",
+            "include_in_tonnage": True, "source": "gymapp",
+            "source_record_id": f"{workout_date}:1:1",
+            "performed_at": f"{workout_date}T10:00:00+03:00",
+        })
+
+    def _full_history(self):
+        # Baseline window for 2026-08-22 is 2026-07-19..2026-08-15 (offsets 7..34).
+        for workout_date in ("2026-07-19", "2026-07-26", "2026-08-02", "2026-08-09"):
+            self._add_session(workout_date, 100)  # 100kg x 10 = 1000kg each
+        self._add_session("2026-08-18", 148)      # 148kg x 10 = 1480kg, recent window
+
+    def test_emits_workload_trend_and_drops_acwr(self):
+        self._full_history()
+        analytics = self.store.get_analytics(USER_ID, days=28)
+        self.assertNotIn("acwr", analytics)
+        trend = analytics["workloadTrend"]
+        self.assertEqual(trend["version"], "workload-trend-v1")
+        self.assertEqual(trend["status"], "ok")
+        self.assertEqual(trend["recentVolumeKg"], 1480)
+        self.assertEqual(trend["baselineVolumeKg"], 4000)
+        self.assertEqual(trend["baselineWeeklyVolumeKg"], 1000)
+        self.assertEqual(trend["deltaPct"], 48)
+        self.assertEqual(trend["recentSessions"], 1)
+        self.assertEqual(trend["baselineSessions"], 4)
+        self.assertEqual(
+            trend["text"],
+            "Объём последних 7 дней на 48% выше среднего за предыдущие четыре "
+            "недели (4 тренировки в базовом периоде).",
+        )
+
+    def test_text_carries_no_alarm_vocabulary(self):
+        self._full_history()
+        text = self.store.get_analytics(USER_ID, days=28)["workloadTrend"]["text"].lower()
+        for word in ("риск", "опасн", "оптимальн", "перетрен", "снизьте", "acwr"):
+            self.assertNotIn(word, text)
+
+    def test_short_history_reports_insufficient_instead_of_a_ratio(self):
+        # Only two weeks of history: the old formula divided by a nearly empty
+        # chronic window and produced an alarming ratio out of thin air.
+        self._add_session("2026-08-12", 100)
+        self._add_session("2026-08-18", 200)
+        trend = self.store.get_analytics(USER_ID, days=28)["workloadTrend"]
+        self.assertEqual(trend["status"], "insufficient")
+        self.assertEqual(trend["reason"], "short-history")
+        self.assertIsNone(trend["deltaPct"])
+        self.assertEqual(
+            trend["text"],
+            "Недостаточно данных для сравнения: нужна история за предыдущие "
+            "четыре недели.",
+        )
+
+    def test_two_sessions_on_one_day_are_summed(self):
+        self._full_history()
+        session_id = "session-2026-08-18-second"
+        self.client.tables["gym_workout_sessions"].append({
+            "id": session_id, "user_id": USER_ID, "workout_date": "2026-08-18",
+            "source": "gymapp", "source_record_id": "2026-08-18:2",
+        })
+        self.client.tables["gym_sets"].append({
+            "id": "set-second", "user_id": USER_ID, "session_id": session_id,
+            "exercise_id": EXERCISE_ID, "position": 1, "reps": 10,
+            "total_weight_kg": 52, "input_weight_kg": 52, "rest_seconds": 90,
+            "set_type": "working", "include_in_tonnage": True, "source": "gymapp",
+            "source_record_id": "2026-08-18:2:1",
+            "performed_at": "2026-08-18T18:00:00+03:00",
+        })
+        trend = self.store.get_analytics(USER_ID, days=28)["workloadTrend"]
+        self.assertEqual(trend["recentVolumeKg"], 2000)
+        self.assertEqual(trend["recentSessions"], 2)
+        self.assertEqual(trend["deltaPct"], 100)
+
+
+OTHER_USER_ID = "99999999-9999-4999-8999-999999999999"
+
+
+class WorkoutSessionLookupTests(unittest.TestCase):
+    """?session=<uuid> deep link: the owner filter is the access control."""
+
+    SESSION_ID = "e96b22f8-695a-40b0-916a-57f3a33db4f1"
+    FOREIGN_SESSION_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+
+    def setUp(self):
+        self.client = MemoryClient(max_page_size=500)
+        self.client.tables["gym_exercises"].append({
+            "id": EXERCISE_ID, "user_id": USER_ID, "source": "gymapp",
+            "source_key": "legacy-exercise", "name_ru": "Жим",
+            "muscle_group": "Грудь", "weight_type": "Machine",
+            "base_weight_kg": 0, "multiplier": 1, "tonnage_mode": "external_load",
+            "technique_note": "", "is_active": True, "source_payload": {},
+        })
+        self._session(self.SESSION_ID, USER_ID, "2026-08-22")
+        self._session(self.FOREIGN_SESSION_ID, OTHER_USER_ID, "2026-08-22")
+        self.store = SupabaseStore(
+            self.client,
+            now=lambda: datetime(2026, 8, 22, 10, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        )
+
+    def _session(self, session_id, user_id, workout_date, with_sets=True):
+        self.client.tables["gym_workout_sessions"].append({
+            "id": session_id, "user_id": user_id, "workout_date": workout_date,
+            "source": "gymapp", "source_record_id": f"{workout_date}:{session_id[:4]}",
+        })
+        if with_sets:
+            self.client.tables["gym_sets"].append({
+                "id": f"set-{session_id}", "user_id": user_id, "session_id": session_id,
+                "exercise_id": EXERCISE_ID, "position": 1, "reps": 10,
+                "total_weight_kg": 40, "input_weight_kg": 20, "rest_seconds": 90,
+                "set_type": "working", "include_in_tonnage": True, "source": "gymapp",
+                "source_record_id": f"{session_id}:1",
+                "performed_at": f"{workout_date}T10:00:00+03:00",
+            })
+
+    def test_owner_gets_their_session(self):
+        found = self.store.get_workout_session(USER_ID, self.SESSION_ID)
+        self.assertIsNotNone(found)
+        self.assertEqual(found["id"], self.SESSION_ID)
+        self.assertEqual(found["exercises"][0]["name"], "Жим")
+
+    def test_another_users_session_is_indistinguishable_from_missing(self):
+        foreign = self.store.get_workout_session(USER_ID, self.FOREIGN_SESSION_ID)
+        absent = self.store.get_workout_session(USER_ID, "11111111-2222-4333-8444-555555555555")
+        self.assertIsNone(foreign)
+        self.assertIsNone(absent)
+
+    def test_owner_filter_is_sent_to_the_backend(self):
+        self.client.select_calls.clear()
+        self.store.get_workout_session(USER_ID, self.SESSION_ID)
+        self.assertTrue(
+            any(table == "gym_workout_sessions" for table, _, _ in self.client.select_calls),
+            "the session lookup must hit gym_workout_sessions",
+        )
+
+    def test_malformed_ids_are_rejected_before_any_query(self):
+        self.client.select_calls.clear()
+        for bad in ("", "   ", "not-a-uuid", "../etc/passwd", "'; drop table gym_sets; --", None):
+            self.assertIsNone(self.store.get_workout_session(USER_ID, bad))
+        self.assertEqual(self.client.select_calls, [], "must not query on malformed input")
+
+    def test_owned_session_without_sets_is_still_returned(self):
+        empty_id = "cccccccc-dddd-4eee-8fff-000000000000"
+        self._session(empty_id, USER_ID, "2026-08-20", with_sets=False)
+        found = self.store.get_workout_session(USER_ID, empty_id)
+        self.assertIsNotNone(found)
+        self.assertEqual(found["id"], empty_id)
+        self.assertEqual(found["exercises"], [])

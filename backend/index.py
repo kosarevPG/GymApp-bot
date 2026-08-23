@@ -25,6 +25,7 @@ from supabase_store import (
     get_exercise_history,
     get_global_history,
     get_init,
+    get_workout_session,
     import_data,
     save_set,
     update_exercise,
@@ -229,6 +230,16 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             return response(get_exercise_history(user_id, exercise_id))
         if endpoint == "global_history" and method == "GET":
             return response(get_global_history(user_id))
+        if endpoint == "session" and method == "GET":
+            session_id = params.get("session_id", "")
+            if not session_id:
+                return response({"error": "session_id is required"}, 400)
+            found = get_workout_session(user_id, session_id)
+            # 404 for "not yours" as well as "not there": the deep link must not
+            # confirm that somebody else's session exists.
+            if not found:
+                return response({"error": "Not found"}, 404)
+            return response(found)
         if endpoint == "analytics" and method == "GET":
             return response(get_analytics(user_id, int(params.get("period", "14"))))
         if endpoint == "save_set" and method == "POST":

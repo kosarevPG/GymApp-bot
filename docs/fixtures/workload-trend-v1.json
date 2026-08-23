@@ -1,0 +1,275 @@
+{
+  "contract": "workload-trend-v1",
+  "note": "Byte-identical copy of this file lives in both repos. Its sha256 is asserted by the tests on both sides; if you edit it, update the hash in docs/WORKLOAD_TREND_V1.md and in both test files.",
+  "cases": [
+    {
+      "name": "recent above baseline",
+      "referenceDate": "2026-08-23",
+      "sessions": [
+        { "date": "2026-07-20", "volumeKg": 1000 },
+        { "date": "2026-07-27", "volumeKg": 1000 },
+        { "date": "2026-08-03", "volumeKg": 1000 },
+        { "date": "2026-08-10", "volumeKg": 1000 },
+        { "date": "2026-08-18", "volumeKg": 740 },
+        { "date": "2026-08-21", "volumeKg": 740 }
+      ],
+      "expected": {
+        "version": "workload-trend-v1",
+        "status": "ok",
+        "reason": null,
+        "recentVolumeKg": 1480,
+        "baselineVolumeKg": 4000,
+        "baselineWeeklyVolumeKg": 1000,
+        "deltaPct": 48,
+        "recentSessions": 2,
+        "baselineSessions": 4
+      },
+      "expectedText": "Объём последних 7 дней на 48% выше среднего за предыдущие четыре недели (4 тренировки в базовом периоде)."
+    },
+    {
+      "name": "recent below baseline",
+      "referenceDate": "2026-08-23",
+      "sessions": [
+        { "date": "2026-07-20", "volumeKg": 1000 },
+        { "date": "2026-07-27", "volumeKg": 1000 },
+        { "date": "2026-08-03", "volumeKg": 1000 },
+        { "date": "2026-08-10", "volumeKg": 1000 },
+        { "date": "2026-08-19", "volumeKg": 650 }
+      ],
+      "expected": {
+        "version": "workload-trend-v1",
+        "status": "ok",
+        "reason": null,
+        "recentVolumeKg": 650,
+        "baselineVolumeKg": 4000,
+        "baselineWeeklyVolumeKg": 1000,
+        "deltaPct": -35,
+        "recentSessions": 1,
+        "baselineSessions": 4
+      },
+      "expectedText": "Объём последних 7 дней на 35% ниже среднего за предыдущие четыре недели (4 тренировки в базовом периоде)."
+    },
+    {
+      "name": "recent equals baseline",
+      "referenceDate": "2026-08-23",
+      "sessions": [
+        { "date": "2026-07-20", "volumeKg": 1000 },
+        { "date": "2026-07-27", "volumeKg": 1000 },
+        { "date": "2026-08-03", "volumeKg": 1000 },
+        { "date": "2026-08-10", "volumeKg": 1000 },
+        { "date": "2026-08-19", "volumeKg": 1000 }
+      ],
+      "expected": {
+        "version": "workload-trend-v1",
+        "status": "ok",
+        "reason": null,
+        "recentVolumeKg": 1000,
+        "baselineVolumeKg": 4000,
+        "baselineWeeklyVolumeKg": 1000,
+        "deltaPct": 0,
+        "recentSessions": 1,
+        "baselineSessions": 4
+      },
+      "expectedText": "Объём последних 7 дней совпадает со средним за предыдущие четыре недели (4 тренировки в базовом периоде)."
+    },
+    {
+      "name": "window boundaries: day 7 is recent, day 8 and day 35 are baseline, day 36 is ignored",
+      "referenceDate": "2026-08-23",
+      "sessions": [
+        { "date": "2026-07-19", "volumeKg": 999999 },
+        { "date": "2026-07-20", "volumeKg": 400 },
+        { "date": "2026-08-16", "volumeKg": 400 },
+        { "date": "2026-08-17", "volumeKg": 300 },
+        { "date": "2026-08-23", "volumeKg": 200 }
+      ],
+      "expected": {
+        "version": "workload-trend-v1",
+        "status": "ok",
+        "reason": null,
+        "recentVolumeKg": 500,
+        "baselineVolumeKg": 800,
+        "baselineWeeklyVolumeKg": 200,
+        "deltaPct": 150,
+        "recentSessions": 2,
+        "baselineSessions": 2
+      },
+      "expectedText": "Объём последних 7 дней на 150% выше среднего за предыдущие четыре недели (2 тренировки в базовом периоде)."
+    },
+    {
+      "name": "two sessions on the same day are summed, not deduplicated",
+      "referenceDate": "2026-08-23",
+      "sessions": [
+        { "date": "2026-07-20", "volumeKg": 1000 },
+        { "date": "2026-07-27", "volumeKg": 1000 },
+        { "date": "2026-08-03", "volumeKg": 1000 },
+        { "date": "2026-08-10", "volumeKg": 1000 },
+        { "date": "2026-08-19", "volumeKg": 600 },
+        { "date": "2026-08-19", "volumeKg": 900 }
+      ],
+      "expected": {
+        "version": "workload-trend-v1",
+        "status": "ok",
+        "reason": null,
+        "recentVolumeKg": 1500,
+        "baselineVolumeKg": 4000,
+        "baselineWeeklyVolumeKg": 1000,
+        "deltaPct": 50,
+        "recentSessions": 2,
+        "baselineSessions": 4
+      },
+      "expectedText": "Объём последних 7 дней на 50% выше среднего за предыдущие четыре недели (4 тренировки в базовом периоде)."
+    },
+    {
+      "name": "rounding: exactly -0.5 goes away from zero to -1",
+      "referenceDate": "2026-08-23",
+      "sessions": [
+        { "date": "2026-07-20", "volumeKg": 200 },
+        { "date": "2026-07-27", "volumeKg": 200 },
+        { "date": "2026-08-03", "volumeKg": 200 },
+        { "date": "2026-08-10", "volumeKg": 200 },
+        { "date": "2026-08-18", "volumeKg": 199 }
+      ],
+      "expected": {
+        "version": "workload-trend-v1",
+        "status": "ok",
+        "reason": null,
+        "recentVolumeKg": 199,
+        "baselineVolumeKg": 800,
+        "baselineWeeklyVolumeKg": 200,
+        "deltaPct": -1,
+        "recentSessions": 1,
+        "baselineSessions": 4
+      },
+      "expectedText": "Объём последних 7 дней на 1% ниже среднего за предыдущие четыре недели (4 тренировки в базовом периоде)."
+    },
+    {
+      "name": "rounding: exactly +0.5 goes away from zero to +1",
+      "referenceDate": "2026-08-23",
+      "sessions": [
+        { "date": "2026-07-20", "volumeKg": 200 },
+        { "date": "2026-07-27", "volumeKg": 200 },
+        { "date": "2026-08-03", "volumeKg": 200 },
+        { "date": "2026-08-10", "volumeKg": 200 },
+        { "date": "2026-08-18", "volumeKg": 201 }
+      ],
+      "expected": {
+        "version": "workload-trend-v1",
+        "status": "ok",
+        "reason": null,
+        "recentVolumeKg": 201,
+        "baselineVolumeKg": 800,
+        "baselineWeeklyVolumeKg": 200,
+        "deltaPct": 1,
+        "recentSessions": 1,
+        "baselineSessions": 4
+      },
+      "expectedText": "Объём последних 7 дней на 1% выше среднего за предыдущие четыре недели (4 тренировки в базовом периоде)."
+    },
+    {
+      "name": "insufficient: history starts inside the baseline window",
+      "referenceDate": "2026-08-23",
+      "sessions": [
+        { "date": "2026-08-01", "volumeKg": 1000 },
+        { "date": "2026-08-08", "volumeKg": 1000 },
+        { "date": "2026-08-19", "volumeKg": 1200 }
+      ],
+      "expected": {
+        "version": "workload-trend-v1",
+        "status": "insufficient",
+        "reason": "short-history",
+        "recentVolumeKg": 1200,
+        "baselineVolumeKg": 2000,
+        "baselineWeeklyVolumeKg": 500,
+        "deltaPct": null,
+        "recentSessions": 1,
+        "baselineSessions": 2
+      },
+      "expectedText": "Недостаточно данных для сравнения: нужна история за предыдущие четыре недели."
+    },
+    {
+      "name": "insufficient: no sessions at all",
+      "referenceDate": "2026-08-23",
+      "sessions": [],
+      "expected": {
+        "version": "workload-trend-v1",
+        "status": "insufficient",
+        "reason": "short-history",
+        "recentVolumeKg": 0,
+        "baselineVolumeKg": 0,
+        "baselineWeeklyVolumeKg": 0,
+        "deltaPct": null,
+        "recentSessions": 0,
+        "baselineSessions": 0
+      },
+      "expectedText": "Недостаточно данных для сравнения: нужна история за предыдущие четыре недели."
+    },
+    {
+      "name": "insufficient: long history but the baseline window itself is empty",
+      "referenceDate": "2026-08-23",
+      "sessions": [
+        { "date": "2026-06-01", "volumeKg": 5000 },
+        { "date": "2026-06-08", "volumeKg": 5000 },
+        { "date": "2026-08-18", "volumeKg": 800 }
+      ],
+      "expected": {
+        "version": "workload-trend-v1",
+        "status": "insufficient",
+        "reason": "no-baseline-volume",
+        "recentVolumeKg": 800,
+        "baselineVolumeKg": 0,
+        "baselineWeeklyVolumeKg": 0,
+        "deltaPct": null,
+        "recentSessions": 1,
+        "baselineSessions": 0
+      },
+      "expectedText": "Недостаточно данных для сравнения: нужна история за предыдущие четыре недели."
+    },
+    {
+      "name": "zero-volume and malformed rows are ignored, not counted as sessions",
+      "referenceDate": "2026-08-23",
+      "sessions": [
+        { "date": "2026-07-20", "volumeKg": 1000 },
+        { "date": "2026-07-27", "volumeKg": 1000 },
+        { "date": "2026-08-03", "volumeKg": 1000 },
+        { "date": "2026-08-10", "volumeKg": 1000 },
+        { "date": "2026-08-12", "volumeKg": 0 },
+        { "date": "", "volumeKg": 500 },
+        { "date": "2026-08-18", "volumeKg": 1200 },
+        { "date": "2026-08-19", "volumeKg": 0 }
+      ],
+      "expected": {
+        "version": "workload-trend-v1",
+        "status": "ok",
+        "reason": null,
+        "recentVolumeKg": 1200,
+        "baselineVolumeKg": 4000,
+        "baselineWeeklyVolumeKg": 1000,
+        "deltaPct": 20,
+        "recentSessions": 1,
+        "baselineSessions": 4
+      },
+      "expectedText": "Объём последних 7 дней на 20% выше среднего за предыдущие четыре недели (4 тренировки в базовом периоде)."
+    },
+    {
+      "name": "one baseline session only — still reported, with n visible",
+      "referenceDate": "2026-08-23",
+      "sessions": [
+        { "date": "2026-07-01", "volumeKg": 900 },
+        { "date": "2026-08-05", "volumeKg": 1000 },
+        { "date": "2026-08-18", "volumeKg": 1250 }
+      ],
+      "expected": {
+        "version": "workload-trend-v1",
+        "status": "ok",
+        "reason": null,
+        "recentVolumeKg": 1250,
+        "baselineVolumeKg": 1000,
+        "baselineWeeklyVolumeKg": 250,
+        "deltaPct": 400,
+        "recentSessions": 1,
+        "baselineSessions": 1
+      },
+      "expectedText": "Объём последних 7 дней на 400% выше среднего за предыдущие четыре недели (1 тренировка в базовом периоде)."
+    }
+  ]
+}

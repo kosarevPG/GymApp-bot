@@ -17,6 +17,12 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
+from workload_trend import (
+    compute_workload_trend,
+    format_workload_trend,
+    sets_to_trend_sessions,
+)
+
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 LIVE_NAMESPACE = uuid.UUID("7bd184da-f675-4d11-b7c9-cc795ab7975c")
@@ -62,6 +68,11 @@ def _valid_client_request_id(value: Any) -> str:
 
 def _api_date(value: Any) -> str:
     return str(value or "").split("T", 1)[0].replace("-", ".")
+
+
+def _iso_date(value: Any) -> str:
+    """YYYY-MM-DD, the shape workload-trend-v1 expects (``_api_date`` dots it)."""
+    return str(value or "").split("T", 1)[0]
 
 
 def _aware_datetime(value: Any, field: str) -> datetime:
@@ -596,6 +607,35 @@ class SupabaseStore:
             })
         return result
 
+    def get_workout_session(self, user_id: str, session_id: str) -> Optional[Dict[str, Any]]:
+        """One session in global-history shape, or None when it is not this user's.
+
+        Backs the ``?session=<uuid>`` deep link from HealthOS. The client never
+        chooses the owner: the lookup is filtered by the server-resolved
+        ``user_id``, so a session belonging to somebody else is indistinguishable
+        from one that does not exist, and the caller answers 404 for both.
+        """
+        session_id = str(session_id or "").strip()
+        if not session_id:
+            return None
+        try:
+            session_id = str(uuid.UUID(session_id))
+        except (ValueError, AttributeError):
+            return None
+        owned = self._select(
+            "gym_workout_sessions",
+            columns="id",
+            filters={"user_id": user_id, "id": session_id},
+            limit=1,
+        )
+        if not owned:
+            return None
+        for item in self.get_global_history(user_id):
+            if str(item.get("id")) == session_id:
+                return item
+        # Owned, but it carries no sets — real, and legitimately empty.
+        return {"id": session_id, "date": "", "muscleGroups": [], "duration": "", "exercises": []}
+
     def get_analytics(self, user_id: str, days: int = 14) -> Dict[str, Any]:
         sessions, _, sets, exercises = self._data(user_id)
         exercise_by_id = {row["id"]: row for row in exercises}
@@ -619,15 +659,24 @@ class SupabaseStore:
             muscle = str(exercise_by_id.get(row.get("exercise_id"), {}).get("muscle_group") or "Другое")
             muscle_volume[muscle] = muscle_volume.get(muscle, 0) + load
             muscle_sets[muscle] = muscle_sets.get(muscle, 0) + 1
-        acute = sum(_to_float(row.get("total_weight_kg")) * _to_int(row.get("reps")) for row in working if recent(row, 7))
-        chronic = sum(_to_float(row.get("total_weight_kg")) * _to_int(row.get("reps")) for row in working if recent(row, 28)) / 4
-        training_days = len({session_by_id[row["session_id"]].get("workout_date") for row in working if recent(row, 28)})
-        ratio = acute / chronic if chronic else 0
-        status = "building" if training_days < 8 else "under" if ratio < 0.8 else "danger" if ratio > 1.5 else "optimal"
+        # workload-trend-v1 replaces the ACWR readout that used to live here.
+        # See docs/WORKLOAD_TREND_V1.md: the old chronic window included the
+        # acute one, and the ratio was rendered as a risk judgement neither the
+        # metric nor tonnage-across-exercises can support.
+        trend_sessions = sets_to_trend_sessions(
+            working,
+            {
+                str(row["id"]): _iso_date(row.get("workout_date"))
+                for row in sessions
+                if row.get("id")
+            },
+            lambda row: _to_float(row.get("total_weight_kg")) * _to_int(row.get("reps")),
+        )
+        trend = compute_workload_trend(trend_sessions, now.date().isoformat())
         return {
             "proposals": [], "baseline": {},
             "volume": round(sum(muscle_volume.values()), 1),
-            "acwr": {"acute": round(acute, 1), "chronic": round(chronic, 1), "ratio": round(ratio, 2), "status": status, "trainingDays": training_days},
+            "workloadTrend": {**trend, "text": format_workload_trend(trend)},
             "muscleVolume": {key: round(value, 1) for key, value in muscle_volume.items()},
             "muscleSets": muscle_sets,
         }
@@ -717,4 +766,5 @@ def import_data(user_id: str, data: Dict[str, Any]): return _store().import_data
 def create_exercise(user_id: str, name: str, group: str): return _store().create_exercise(user_id, name, group)
 def update_exercise(user_id: str, exercise_id: str, updates: Dict[str, Any]): return _store().update_exercise(user_id, exercise_id, updates)
 def get_global_history(user_id: str, limit_rows: int = 3000): return _store().get_global_history(user_id, limit_rows)
+def get_workout_session(user_id: str, session_id: str): return _store().get_workout_session(user_id, session_id)
 def get_analytics(user_id: str, days: int = 14): return _store().get_analytics(user_id, days)
