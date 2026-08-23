@@ -7,6 +7,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict
 from urllib.parse import parse_qs, urlparse
@@ -116,7 +117,18 @@ def _static_response(path: str) -> Dict[str, Any]:
         "Cache-Control": "no-cache" if candidate.name == "index.html" else "public, max-age=31536000, immutable",
     }
     if content_type.startswith("text/") or content_type in {"application/javascript", "application/json", "image/svg+xml"}:
-        return {"statusCode": 200, "headers": headers, "body": content.decode("utf-8")}
+        text = content.decode("utf-8")
+        if candidate.name == "index.html":
+            # Yandex's public function URL cannot serve /assets/... as a path:
+            # it treats the first path component as another function ID. Route
+            # local HTML assets through the same explicit query router as API
+            # requests so the installed Telegram UI never renders blank.
+            text = re.sub(
+                r'((?:src|href)=["\'])(?:\./|/)(?!/)',
+                r'\1?url=/',
+                text,
+            )
+        return {"statusCode": 200, "headers": headers, "body": text}
     return {
         "statusCode": 200,
         "headers": headers,
