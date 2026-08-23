@@ -89,3 +89,19 @@ After the new frontend passes acceptance testing, either:
 
 Keep the old Telegram button and Render service unchanged until v2 has been
 tested during a real workout.
+
+## Verification against production is read-only
+
+Production smoke runs `GET` only. Do **not** create, update or delete rows
+against production to prove a write path works — exercise those against a local
+or staging store instead.
+
+This is not a style preference. A Release A smoke created a throwaway session
+and deleted it again; the counts returned to baseline at the time, but a session
+was later lost through the same `delete_workout` shape and, with PITR disabled
+and no backup of `gym_*`, could not be recovered. The current authoritative
+counts are in [docs/PRODUCTION_BASELINE.md](docs/PRODUCTION_BASELINE.md).
+
+Any release that touches the database backs up every table it can reach, not
+only the ones named in the ticket.
+

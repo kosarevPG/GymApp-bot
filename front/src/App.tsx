@@ -3,13 +3,17 @@ import {
   Search, ChevronRight, Plus, X, Info, 
   Check, Trash2, StickyNote, ChevronDown, Dumbbell, Calendar, 
   ChevronLeft, Settings, ArrowLeft, Camera, Pencil, Trophy,
-  History as HistoryIcon, Activity, Link as LinkIcon
+  History as HistoryIcon, Activity, Link as LinkIcon, Target
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts';
 import { API_BASE_URL, STANDALONE_API_BASE_URL, WORKOUT_STORAGE_KEY, ACTIVE_WORKOUT_KEY, sortGroups, SESSION_ID_KEY, ORDER_COUNTER_KEY, LAST_ACTIVE_KEY } from './constants';
 import { readSessionDeeplink, stripSessionParam } from './deeplink';
 import { buildProgressionAdvice, suggestTargets } from './progression';
+import {
+  WIZARD_SINCE, buildWizardRows, initialDraft, pendingChanges, validateDraft,
+} from './progressionWizard';
+import type { WizardRow } from './progressionWizard';
 import type { ExerciseTargets } from './progression';
 import { SetDisplayRow } from './components/SetDisplayRow';
 import { calcEffectiveWeight, weightInputLabel, WEIGHT_TYPE_OPTIONS, USER_BODY_WEIGHT_DEFAULT } from './exerciseConfig';
@@ -40,7 +44,7 @@ import { AuthRequiredError, createAuthenticatedFetch } from './authenticatedFetc
 
 // --- TYPES ---
 
-type Screen = 'home' | 'exercises' | 'workout' | 'history' | 'analytics';
+type Screen = 'home' | 'exercises' | 'workout' | 'history' | 'analytics' | 'progression';
 
 interface GlobalWorkoutSession {
   id: string;
@@ -956,7 +960,212 @@ const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, onAd
 
 // --- SCREENS ---
 
-const HomeScreen = ({ groups, workoutActive, onStartWorkout, onFinishWorkout, onSearch, onSelectGroup, onAllExercises, onHistory, onAnalytics, onSettings }: any) => (
+/**
+ * "Настроить прогрессию" — one list for every exercise trained since the
+ * cutoff, prefilled from history, confirmed in a single pass.
+ *
+ * Nothing is written until Save, and Save sends only the rows whose values
+ * actually differ from what is stored. After saving, the same screen shows a
+ * verification pass: exercise -> the values that were stored -> what the rule
+ * would suggest next time with them.
+ */
+const ProgressionWizardScreen = ({ onBack, allExercises, bodyWeight = USER_BODY_WEIGHT_DEFAULT, notify, onExerciseUpdated }: any) => {
+  const [history, setHistory] = useState<any[] | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, Record<string, string>>>({});
+  const [saving, setSaving] = useState(false);
+  const [review, setReview] = useState<any[] | null>(null);
+  const [failures, setFailures] = useState<string[]>([]);
+
+  useEffect(() => { api.getGlobalHistory().then((data: any) => setHistory(data || [])); }, []);
+
+  const rows: WizardRow[] = useMemo(
+    () => (history ? buildWizardRows(history, allExercises) : []),
+    [history, allExercises],
+  );
+
+  useEffect(() => {
+    if (!rows.length) return;
+    setDrafts((prev) => {
+      const next = { ...prev };
+      for (const row of rows) if (!next[row.exerciseId]) next[row.exerciseId] = initialDraft(row);
+      return next;
+    });
+  }, [rows]);
+
+  const setField = (exerciseId: string, field: string, value: string) =>
+    setDrafts((prev) => ({ ...prev, [exerciseId]: { ...prev[exerciseId], [field]: value } }));
+
+  const changes = useMemo(() => pendingChanges(rows, drafts), [rows, drafts]);
+
+  const saveAll = async () => {
+    if (!changes.length || saving) return;
+    setSaving(true);
+    const failed: string[] = [];
+    const stored: any[] = [];
+    for (const change of changes) {
+      const res = await api.request('update_exercise', {
+        method: 'POST',
+        body: JSON.stringify({ id: change.exerciseId, updates: change.targets }),
+      });
+      if (res && res.status === 'success') {
+        onExerciseUpdated?.(change.exerciseId, change.targets);
+        stored.push(change);
+      } else {
+        failed.push(change.name);
+      }
+    }
+    setSaving(false);
+    setFailures(failed);
+    notify?.(failed.length ? 'error' : 'success');
+    if (stored.length) setReview(stored);
+  };
+
+  if (history === null) {
+    return (
+      <motion.div initial={{ x: 50, opacity: 0 }} animate={{ x: 0, opacity: 1 }} className="min-h-screen bg-zinc-950">
+        <div className="p-6 text-sm text-zinc-500">Читаю историю…</div>
+      </motion.div>
+    );
+  }
+
+  const header = (
+    <div className="sticky top-0 z-30 flex items-center gap-4 border-b border-zinc-800 bg-zinc-950/80 px-4 pb-4 pt-safe-4 backdrop-blur-md">
+      <button onClick={onBack} className="-ml-2 p-2 text-zinc-400 active:text-white"><ChevronLeft className="h-6 w-6" /></button>
+      <h1 className="text-xl font-bold">Настроить прогрессию</h1>
+    </div>
+  );
+
+  /* ── verification pass ── */
+  if (review) {
+    return (
+      <motion.div initial={{ x: 50, opacity: 0 }} animate={{ x: 0, opacity: 1 }} className="min-h-screen bg-zinc-950">
+        {header}
+        <div className="space-y-3 p-4 pb-24">
+          <div className="text-sm text-zinc-300">Сохранено: {review.length}</div>
+          {failures.length > 0 && (
+            <div className="rounded-xl border border-zinc-700 bg-zinc-800/60 p-3 text-xs text-zinc-300">
+              Не сохранились: {failures.join(', ')}. Значения в форме остались — можно повторить.
+            </div>
+          )}
+          {review.map((change: any) => {
+            const row = rows.find((r) => r.exerciseId === change.exerciseId);
+            const merged = { ...(row?.exercise || {}), ...change.targets };
+            const advice = buildProgressionAdvice(
+              merged, change.targets,
+              (history || []).flatMap((session: any) => {
+                const entry = (session.exercises || []).find((x: any) => String(x?.exerciseId) === change.exerciseId);
+                return entry ? (entry.sets || []).map((set: any) => ({ ...set, date: session.date, session_id: session.id })) : [];
+              }),
+              bodyWeight,
+            );
+            const t = change.targets;
+            return (
+              <Card key={change.exerciseId} className="p-4">
+                <div className="text-sm font-semibold text-zinc-100">{change.name}</div>
+                <div className="mt-1 text-[11px] text-zinc-500">
+                  {t.repRangeLow != null ? `${t.repRangeLow}–${t.repRangeHigh} повт.` : 'диапазон снят'}
+                  {t.targetWorkingSets != null ? ` · ${t.targetWorkingSets} подх.` : ''}
+                  {t.inputWeightStep != null ? ` · шаг ${t.inputWeightStep}` : ''}
+                  {t.rirTargetMax != null ? ` · RIR ≤ ${t.rirTargetMax}` : ''}
+                </div>
+                <div className="mt-2 rounded-lg bg-zinc-800/40 px-3 py-2">
+                  <div className="text-[10px] uppercase tracking-wide text-zinc-600">Пример следующей рекомендации</div>
+                  {advice.previous && <div className="mt-1 text-[11px] text-zinc-500">Прошлый раз: {advice.previous}</div>}
+                  {advice.target && <div className="text-[11px] text-zinc-500">Цель: {advice.target}</div>}
+                  <div className="mt-0.5 text-xs text-zinc-200">{advice.suggestion}</div>
+                  {advice.rirMissing && <div className="text-[10px] text-zinc-500">RIR не заполнен — решение по повторам.</div>}
+                </div>
+              </Card>
+            );
+          })}
+          <Button onClick={onBack} className="h-12 w-full">Готово</Button>
+        </div>
+      </motion.div>
+    );
+  }
+
+  /* ── the editable list ── */
+  const cell = (row: WizardRow, field: string, placeholder: string) => (
+    <input
+      value={drafts[row.exerciseId]?.[field] ?? ''}
+      onChange={(e) => setField(row.exerciseId, field, e.target.value)}
+      placeholder={placeholder}
+      inputMode="decimal"
+      className="w-full rounded-lg bg-zinc-800 px-2 py-1.5 text-center text-sm text-zinc-100 outline-none focus:ring-1 focus:ring-blue-600"
+    />
+  );
+
+  return (
+    <motion.div initial={{ x: 50, opacity: 0 }} animate={{ x: 0, opacity: 1 }} className="min-h-screen bg-zinc-950">
+      {header}
+      <div className="space-y-3 p-4 pb-32">
+        <div className="text-xs text-zinc-500">
+          Упражнения, которые ты делал с {WIZARD_SINCE.split('-').reverse().join('.')}. Значения подставлены
+          по твоей истории — это предложение, оно нигде не сохранено. Поправь и нажми внизу.
+        </div>
+
+        {rows.length === 0 && (
+          <div className="rounded-xl bg-zinc-900 p-4 text-sm text-zinc-400">
+            С {WIZARD_SINCE} тренировок не найдено — настраивать нечего.
+          </div>
+        )}
+
+        {rows.map((row) => {
+          const verdict = validateDraft(row, drafts[row.exerciseId] || {});
+          return (
+            <Card key={row.exerciseId} className="p-4">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <div className="text-sm font-semibold text-zinc-100">{row.name}</div>
+                  <div className="text-[10px] text-zinc-500">
+                    {row.sessionCount} трен. · {row.setCount} подх. с {WIZARD_SINCE.slice(5).replace('-', '.')}
+                    {row.alreadyConfigured ? ' · уже настроено' : ''}
+                  </div>
+                </div>
+              </div>
+
+              {row.recent.length > 0 && (
+                <div className="mt-2 space-y-0.5">
+                  {row.recent.map((line, i) => (
+                    <div key={i} className="text-[11px] text-zinc-500">{line}</div>
+                  ))}
+                </div>
+              )}
+
+              <div className="mt-3 grid grid-cols-4 gap-2">
+                <label className="text-[10px] uppercase text-zinc-600">Повт. от{cell(row, 'repRangeLow', '—')}</label>
+                <label className="text-[10px] uppercase text-zinc-600">до{cell(row, 'repRangeHigh', '—')}</label>
+                <label className="text-[10px] uppercase text-zinc-600">Подх.{cell(row, 'targetWorkingSets', '—')}</label>
+                <label className="text-[10px] uppercase text-zinc-600">RIR ≤{cell(row, 'rirTargetMax', '—')}</label>
+              </div>
+              <label className="mt-2 block text-[10px] uppercase text-zinc-600">
+                Шаг веса ({weightInputLabel(row.exercise)})
+                {cell(row, 'inputWeightStep', '—')}
+              </label>
+
+              {verdict.error && <div className="mt-2 text-[11px] text-red-400">{verdict.error}</div>}
+              {!verdict.error && verdict.unchanged && (
+                <div className="mt-2 text-[11px] text-zinc-600">Без изменений — не будет отправлено.</div>
+              )}
+            </Card>
+          );
+        })}
+      </div>
+
+      {rows.length > 0 && (
+        <div className="fixed inset-x-0 bottom-0 border-t border-zinc-800 bg-zinc-950/95 p-4 pb-safe-4 backdrop-blur">
+          <Button onClick={saveAll} disabled={saving || changes.length === 0} className="h-12 w-full">
+            {saving ? 'Сохраняю…' : changes.length ? `Сохранить (${changes.length})` : 'Нечего сохранять'}
+          </Button>
+        </div>
+      )}
+    </motion.div>
+  );
+};
+
+
+
+const HomeScreen = ({ groups, workoutActive, onStartWorkout, onFinishWorkout, onSearch, onSelectGroup, onAllExercises, onHistory, onAnalytics, onProgression, onSettings }: any) => (
   <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="px-4 pb-4 pt-safe-4 space-y-6">
     {workoutActive
       ? <Button variant="secondary" onClick={onFinishWorkout} className="w-full h-14 text-lg border border-red-900/50 text-red-400">Закончить тренировку</Button>
@@ -967,6 +1176,7 @@ const HomeScreen = ({ groups, workoutActive, onStartWorkout, onFinishWorkout, on
         <Input placeholder="Найти..." onChange={(e: React.ChangeEvent<HTMLInputElement>) => onSearch(e.target.value)} className="pl-12 bg-zinc-900 w-full" />
       </div>
       <button onClick={onHistory} className="p-3 bg-zinc-900 rounded-xl text-zinc-400 hover:text-blue-500"><HistoryIcon className="w-6 h-6" /></button>
+      <button onClick={onProgression} title="Настроить прогрессию" className="p-3 bg-zinc-900 rounded-xl text-zinc-400 hover:text-blue-500"><Target className="w-6 h-6" /></button>
       <button onClick={onAnalytics} className="p-3 bg-zinc-900 rounded-xl text-zinc-400 hover:text-blue-500"><Activity className="w-6 h-6" /></button>
       <button onClick={onSettings} className="p-3 bg-zinc-900 rounded-xl text-zinc-400 hover:text-blue-500"><Settings className="w-6 h-6" /></button>
     </div>
@@ -2042,8 +2252,9 @@ const App = () => {
 
   return (
     <div className="bg-zinc-950 min-h-screen text-zinc-50 font-sans selection:bg-blue-500/30 pb-safe">
-      {screen === 'home' && <HomeScreen groups={groups} workoutActive={workoutActive} onStartWorkout={startWorkout} onFinishWorkout={() => setIsFinishConfirmOpen(true)} onSearch={(q: string) => { setSearchQuery(q); if (q) setScreen('exercises'); }} onSelectGroup={(g: string) => { setSelectedGroup(g); setScreen('exercises'); }} onAllExercises={() => { setSelectedGroup(null); setScreen('exercises'); }} onHistory={() => setScreen('history')} onAnalytics={() => setScreen('analytics')} onSettings={() => { setBodyWeightInput(String(bodyWeight)); setIsSettingsOpen(true); }} />}
+      {screen === 'home' && <HomeScreen groups={groups} workoutActive={workoutActive} onStartWorkout={startWorkout} onFinishWorkout={() => setIsFinishConfirmOpen(true)} onSearch={(q: string) => { setSearchQuery(q); if (q) setScreen('exercises'); }} onSelectGroup={(g: string) => { setSelectedGroup(g); setScreen('exercises'); }} onAllExercises={() => { setSelectedGroup(null); setScreen('exercises'); }} onHistory={() => setScreen('history')} onAnalytics={() => setScreen('analytics')} onProgression={() => setScreen('progression')} onSettings={() => { setBodyWeightInput(String(bodyWeight)); setIsSettingsOpen(true); }} />}
       {screen === 'analytics' && <AnalyticsScreen onBack={() => setScreen('home')} />}
+      {screen === 'progression' && <ProgressionWizardScreen onBack={() => setScreen('home')} allExercises={allExercises} bodyWeight={bodyWeight} notify={notify} onExerciseUpdated={(id: string, updates: Partial<Exercise>) => setAllExercises(p => p.map(ex => ex.id === id ? { ...ex, ...updates } : ex))} />}
       {screen === 'history' && <HistoryScreen onBack={() => { setDeeplinkSession(null); setScreen('home'); }} allExercises={allExercises} bodyWeight={bodyWeight} notify={notify} haptic={haptic} focusSessionId={deeplinkSession} />}
       {screen === 'exercises' && <ExercisesListScreen exercises={filteredExercises} title={selectedGroup || (searchQuery ? `Поиск: ${searchQuery}` : 'Все упражнения')} searchQuery={searchQuery} onSearch={(q: string) => setSearchQuery(q)} onBack={() => { setSearchQuery(''); setSelectedGroup(null); setScreen('home'); }} onSelectExercise={(ex: Exercise) => { haptic('light'); setCurrentExercise(ex); setScreen('workout'); }} onAddExercise={() => setIsCreateModalOpen(true)} onEditExercise={(ex: Exercise) => setExerciseToEdit(ex)} />}
       {screen === 'workout' && currentExercise && <WorkoutScreen initialExercise={currentExercise} allExercises={allExercises} onExerciseUpdated={(id: string, updates: Partial<Exercise>) => setAllExercises(p => p.map(ex => ex.id === id ? { ...ex, ...updates } : ex))} sessionId={sessionId} incrementOrder={incrementOrder} ensureOrderAtLeast={ensureOrderAtLeast} bodyWeight={bodyWeight} haptic={haptic} notify={notify} onBack={() => setScreen('exercises')} />}
