@@ -102,9 +102,12 @@ const initNetworkListeners = () => {
 // --- API SERVICE ---
 
 const api = {
-  request: async (endpoint: string, options: RequestInit = {}) => {
+  // Бюджет по умолчанию рассчитан на короткие запросы. Обзорные эндпоинты
+  // читают всю историю несколькими страницами и на холодной функции в него
+  // не укладываются — им бюджет задаётся явно, ближе к её лимиту в 30 с.
+  request: async (endpoint: string, options: RequestInit = {}, timeoutMs = 12_000) => {
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 12_000);
+    const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
       if (!getApiBaseUrl()) throw new Error('API base URL is not configured');
       const url = endpoint.startsWith('http') ? endpoint : getApiUrl(endpoint);
@@ -161,7 +164,7 @@ const api = {
   },
 
   getGlobalHistory: async () => {
-    const data = await api.request('global_history');
+    const data = await api.request('global_history', {}, 28_000);
     if (data) {
       try { localStorage.setItem(GLOBAL_HISTORY_CACHE_KEY, JSON.stringify(data)); } catch (_) {}
       return data;
@@ -172,7 +175,7 @@ const api = {
   getAnalytics: async (period: number = 14) => {
     const params = new URLSearchParams();
     params.set('period', period.toString());
-    const data = await api.request(`analytics?${params.toString()}`);
+    const data = await api.request(`analytics?${params.toString()}`, {}, 28_000);
     return data || null;
   },
   

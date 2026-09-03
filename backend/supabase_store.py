@@ -26,6 +26,9 @@ from workload_trend import (
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 LIVE_NAMESPACE = uuid.UUID("7bd184da-f675-4d11-b7c9-cc795ab7975c")
+# Чтение останавливается только на пустой странице. Обрывать его на неполной
+# нельзя: сервер вправе вернуть меньше запрошенного (у хостинга свой предел
+# строк на ответ), и короткая страница не означает, что данные кончились.
 READ_PAGE_SIZE = 500
 EXERCISE_SELECT = (
     "id,user_id,source,source_key,name_ru,name_en,muscle_group,description,"
