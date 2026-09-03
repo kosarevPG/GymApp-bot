@@ -12,7 +12,7 @@ import { readSessionDeeplink, stripSessionParam } from './deeplink';
 import { lastSessionWorkingSets } from './progression';
 import { buildTrainerSummary, formatTrainerSummaryText, isoDaysAgo } from './trainerSummary';
 import { SetDisplayRow } from './components/SetDisplayRow';
-import { calcEffectiveWeight, weightInputLabel, WEIGHT_TYPE_OPTIONS, USER_BODY_WEIGHT_DEFAULT } from './exerciseConfig';
+import { calcEffectiveWeight, weightInputLabel, WEIGHT_TYPE_OPTIONS, USER_BODY_WEIGHT_DEFAULT, describeLoad, DEFAULT_PLATES, PLATE_CHOICES } from './exerciseConfig';
 import type { Exercise, WorkoutSet, HistoryItem, ExerciseSessionData, SetType } from './types';
 import {
   QUEUE_CHANGED_EVENT,
@@ -487,7 +487,27 @@ const useSession = () => {
     setBodyWeight(v);
     localStorage.setItem(bodyWeightKey, String(v));
   };
-  return { sessionId, incrementOrder, ensureOrderAtLeast, bodyWeight, updateBodyWeight, resetSession };
+
+  // Набор блинов зависит от зала, поэтому хранится у пользователя, а не в коде.
+  const platesKey = 'gym_plates';
+  const [plates, setPlates] = useState<number[]>(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(platesKey) || 'null');
+      const clean = Array.isArray(raw)
+        ? raw.filter((v) => typeof v === 'number' && Number.isFinite(v) && v > 0)
+        : [];
+      if (clean.length > 0) return clean.sort((a, b) => b - a);
+    } catch { /* пустой или битый ключ — берём набор по умолчанию */ }
+    return DEFAULT_PLATES;
+  });
+  const updatePlates = (next: number[]) => {
+    const clean = Array.from(new Set(next)).filter((v) => v > 0).sort((a, b) => b - a);
+    const value = clean.length > 0 ? clean : DEFAULT_PLATES;
+    setPlates(value);
+    localStorage.setItem(platesKey, JSON.stringify(value));
+  };
+
+  return { sessionId, incrementOrder, ensureOrderAtLeast, bodyWeight, updateBodyWeight, plates, updatePlates, resetSession };
 };
 
 // --- UI COMPONENTS ---
@@ -636,13 +656,18 @@ const HistoryListModal = ({ isOpen, onClose, history, exerciseName }: any) => {
 const SET_TYPE_CYCLE: SetType[] = ['warmup', 'working', 'drop', 'failure'];
 const SET_TYPE_LABELS: Record<SetType, string> = { warmup: 'W', working: 'R', drop: 'D', failure: 'F' };
 
-const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, isActive = false, onUpdate, onDelete, onComplete }: { set: WorkoutSet; exercise?: Exercise; bodyWeight?: number; isActive?: boolean; onUpdate: (sid: string, field: string, value: string | number) => void; onDelete: (sid: string) => void; onComplete: (sid: string) => void }) => {
+const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates = DEFAULT_PLATES, isActive = false, onUpdate, onDelete, onComplete }: { set: WorkoutSet; exercise?: Exercise; bodyWeight?: number; plates?: number[]; isActive?: boolean; onUpdate: (sid: string, field: string, value: string | number) => void; onDelete: (sid: string) => void; onComplete: (sid: string) => void }) => {
   const effectiveWeight = calcEffectiveWeight(exercise, parseFloat(set.weight || '0'), bodyWeight);
   const showTotal = set.weight !== '' && effectiveWeight !== parseFloat(set.weight || '0');
   const oneRM = set.weight && set.reps ? Math.round(effectiveWeight * (1 + parseInt(set.reps) / 30)) : 0;
   const delta = set.prevWeight ? (effectiveWeight - set.prevWeight) : 0;
   const deltaText = delta > 0 ? `+${delta}` : delta < 0 ? `${delta}` : '0';
   const deltaColor = delta > 0 ? 'text-green-500' : delta < 0 ? 'text-red-500' : 'text-zinc-500';
+  // Что означает введённое число и сколько блинов вешать — считаем только для
+  // подхода, который сейчас делают: у остальных строк это лишний шум.
+  const loadPlan = isActive && !set.completed
+    ? describeLoad(exercise, parseFloat(set.weight || '0'), bodyWeight, plates)
+    : null;
 
   return (
     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`mb-3 ${set.completed ? 'opacity-60 grayscale' : ''}`}>
@@ -712,7 +737,25 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, isActive
         <button onClick={() => onDelete(set.id)} className="w-10 h-12 flex items-center justify-center text-zinc-600 hover:text-red-500"><Trash2 className="w-5 h-5" /></button>
       </div>
       {isActive && !set.completed && (
-      <div className="flex flex-wrap gap-2 mt-2 ml-14">
+      <div className="mt-2 ml-14 space-y-2">
+        {loadPlan && (
+          <div className="rounded-lg border border-zinc-800 bg-zinc-800/40 px-3 py-2">
+            <div className="text-xs font-medium text-zinc-100">{loadPlan.summary}</div>
+            {loadPlan.plates && (
+              <div className="mt-1.5 flex flex-wrap items-center gap-1 text-xs">
+                <span className="mr-0.5 text-zinc-500">{loadPlan.plates.perSide ? 'На сторону:' : 'Повесить:'}</span>
+                {loadPlan.plates.items.map((plate, index) => (
+                  <span key={index} className="rounded bg-zinc-600 px-2 py-0.5 font-semibold text-white tabular-nums">{plate}</span>
+                ))}
+                {loadPlan.plates.items.length === 0 && <span className="text-zinc-500">без блинов</span>}
+                {loadPlan.plates.remainder > 0 && (
+                  <span className="text-amber-400">не хватает {loadPlan.plates.remainder}</span>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+        <div className="flex flex-wrap gap-2">
         {([0, 1, 2, 3] as const).map(rirVal => (
           <button
             key={rirVal}
@@ -731,6 +774,7 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, isActive
           onChange={e => onUpdate(set.id, 'rpe', e.target.value)}
           className="w-12 h-7 bg-zinc-800 rounded text-center text-xs text-zinc-400 focus:text-zinc-100 focus:ring-1 focus:ring-blue-500 outline-none"
         />
+        </div>
       </div>
       )}
     </motion.div>
@@ -764,7 +808,7 @@ const LastTimeBlock = ({ exercise, history }: any) => {
   );
 };
 
-const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, onAddSet, onUpdateSet, onDeleteSet, onCompleteSet, onNoteChange, onAddSuperset }: any) => {
+const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates = DEFAULT_PLATES, onAddSet, onUpdateSet, onDeleteSet, onCompleteSet, onNoteChange, onAddSuperset }: any) => {
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const personalRecord = useMemo(() => {
     if (!exerciseData.history.length) return 0;
@@ -802,6 +846,7 @@ const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, onAd
             set={set}
             exercise={exerciseData.exercise}
             bodyWeight={bodyWeight}
+            plates={plates}
             isActive={set.id === exerciseData.sets.find((s: WorkoutSet) => !s.completed)?.id}
             onUpdate={onUpdateSet}
             onDelete={onDeleteSet}
@@ -1039,7 +1084,7 @@ const readSavedWorkout = () => {
 const todayInLogFormat = () =>
   new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Moscow' }).replace(/-/g, '.');
 
-const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incrementOrder, ensureOrderAtLeast, bodyWeight = USER_BODY_WEIGHT_DEFAULT, haptic, notify }: any) => {
+const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incrementOrder, ensureOrderAtLeast, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates = DEFAULT_PLATES, haptic, notify }: any) => {
 
   const timer = useTimer();
   const savedWorkoutRef = useRef<any>(null);
@@ -1253,7 +1298,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
         {activeExercises.map(exId => {
           const data = sessionData[exId];
           if (!data) return <div key={exId} className="h-40 bg-zinc-900 rounded-2xl animate-pulse" />;
-          return <WorkoutCard key={exId} exerciseData={data} bodyWeight={bodyWeight} onAddSet={() => handleAddSet(exId)} onUpdateSet={(sid: string, f: string, v: string) => handleUpdateSet(exId, sid, f, v)} onDeleteSet={(sid: string) => handleDeleteSet(exId, sid)} onCompleteSet={(sid: string) => handleCompleteSet(exId, sid)} onNoteChange={(val: string) => setSessionData(p => ({...p, [exId]: {...p[exId], note: val}}))} onAddSuperset={() => setIsAddModalOpen(true)} />;
+          return <WorkoutCard key={exId} exerciseData={data} bodyWeight={bodyWeight} plates={plates} onAddSet={() => handleAddSet(exId)} onUpdateSet={(sid: string, f: string, v: string) => handleUpdateSet(exId, sid, f, v)} onDeleteSet={(sid: string) => handleDeleteSet(exId, sid)} onCompleteSet={(sid: string) => handleCompleteSet(exId, sid)} onNoteChange={(val: string) => setSessionData(p => ({...p, [exId]: {...p[exId], note: val}}))} onAddSuperset={() => setIsAddModalOpen(true)} />;
         })}
       </div>
       <div className="px-4 mt-8 mb-20"><Button variant="primary" onClick={onBack} className="w-full h-14 text-lg font-semibold shadow-xl shadow-blue-900/20">Завершить упражнение</Button></div>
@@ -1715,7 +1760,7 @@ const EditExerciseModal = ({ isOpen, onClose, exercise, groups, onSave }: any) =
 
 const App = () => {
   const { haptic, notify } = useHaptics();
-  const { sessionId, incrementOrder, ensureOrderAtLeast, bodyWeight, updateBodyWeight, resetSession } = useSession();
+  const { sessionId, incrementOrder, ensureOrderAtLeast, bodyWeight, updateBodyWeight, plates, updatePlates, resetSession } = useSession();
   const [screen, setScreen] = useState<Screen>('home');
   const [groups, setGroups] = useState<string[]>([]);
   const [allExercises, setAllExercises] = useState<Exercise[]>([]);
@@ -1739,6 +1784,7 @@ const App = () => {
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [bodyWeightInput, setBodyWeightInput] = useState('');
+  const [platesDraft, setPlatesDraft] = useState<number[]>(DEFAULT_PLATES);
   const [isQueueOpen, setIsQueueOpen] = useState(false);
   const [queueItems, setQueueItems] = useState<QueuedItem[]>([]);
 
@@ -2004,12 +2050,12 @@ const App = () => {
 
   return (
     <div className="bg-zinc-950 min-h-screen text-zinc-50 font-sans selection:bg-blue-500/30 pb-safe">
-      {screen === 'home' && <HomeScreen groups={groups} workoutActive={workoutActive} onStartWorkout={startWorkout} onFinishWorkout={() => setIsFinishConfirmOpen(true)} onSearch={(q: string) => { setSearchQuery(q); if (q) setScreen('exercises'); }} onSelectGroup={(g: string) => { setSelectedGroup(g); setScreen('exercises'); }} onAllExercises={() => { setSelectedGroup(null); setScreen('exercises'); }} onHistory={() => setScreen('history')} onAnalytics={() => setScreen('analytics')} onSummary={() => setScreen('summary')} onSettings={() => { setBodyWeightInput(String(bodyWeight)); setIsSettingsOpen(true); }} />}
+      {screen === 'home' && <HomeScreen groups={groups} workoutActive={workoutActive} onStartWorkout={startWorkout} onFinishWorkout={() => setIsFinishConfirmOpen(true)} onSearch={(q: string) => { setSearchQuery(q); if (q) setScreen('exercises'); }} onSelectGroup={(g: string) => { setSelectedGroup(g); setScreen('exercises'); }} onAllExercises={() => { setSelectedGroup(null); setScreen('exercises'); }} onHistory={() => setScreen('history')} onAnalytics={() => setScreen('analytics')} onSummary={() => setScreen('summary')} onSettings={() => { setBodyWeightInput(String(bodyWeight)); setPlatesDraft(plates); setIsSettingsOpen(true); }} />}
       {screen === 'analytics' && <AnalyticsScreen onBack={() => setScreen('home')} />}
       {screen === 'summary' && <TrainerSummaryScreen onBack={() => setScreen('home')} notify={notify} />}
       {screen === 'history' && <HistoryScreen onBack={() => { setDeeplinkSession(null); setScreen('home'); }} allExercises={allExercises} bodyWeight={bodyWeight} notify={notify} haptic={haptic} focusSessionId={deeplinkSession} />}
       {screen === 'exercises' && <ExercisesListScreen exercises={filteredExercises} title={selectedGroup || (searchQuery ? `Поиск: ${searchQuery}` : 'Все упражнения')} searchQuery={searchQuery} onSearch={(q: string) => setSearchQuery(q)} onBack={() => { setSearchQuery(''); setSelectedGroup(null); setScreen('home'); }} onSelectExercise={(ex: Exercise) => { haptic('light'); setCurrentExercise(ex); setScreen('workout'); }} onAddExercise={() => setIsCreateModalOpen(true)} onEditExercise={(ex: Exercise) => setExerciseToEdit(ex)} />}
-      {screen === 'workout' && currentExercise && <WorkoutScreen initialExercise={currentExercise} allExercises={allExercises} onExerciseUpdated={(id: string, updates: Partial<Exercise>) => setAllExercises(p => p.map(ex => ex.id === id ? { ...ex, ...updates } : ex))} sessionId={sessionId} incrementOrder={incrementOrder} ensureOrderAtLeast={ensureOrderAtLeast} bodyWeight={bodyWeight} haptic={haptic} notify={notify} onBack={() => setScreen('exercises')} />}
+      {screen === 'workout' && currentExercise && <WorkoutScreen initialExercise={currentExercise} allExercises={allExercises} onExerciseUpdated={(id: string, updates: Partial<Exercise>) => setAllExercises(p => p.map(ex => ex.id === id ? { ...ex, ...updates } : ex))} sessionId={sessionId} incrementOrder={incrementOrder} ensureOrderAtLeast={ensureOrderAtLeast} bodyWeight={bodyWeight} plates={plates} haptic={haptic} notify={notify} onBack={() => setScreen('exercises')} />}
       {pendingCount > 0 && (
         <button
           onClick={() => { setQueueItems(getQueue()); setIsQueueOpen(true); void api.syncOfflineQueue(); }}
@@ -2038,7 +2084,25 @@ const App = () => {
             <Input type="number" inputMode="decimal" value={bodyWeightInput} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setBodyWeightInput(e.target.value)} />
             <p className="text-xs text-zinc-500 mt-1">Используется для гравитрона, брусьев и упражнений со своим весом.</p>
           </div>
-          <Button className="w-full h-12" onClick={() => { const v = parseFloat(bodyWeightInput.replace(',', '.')); if (v >= 30 && v <= 250) { updateBodyWeight(v); notify('success'); setIsSettingsOpen(false); } else { notify('error'); } }}>Сохранить</Button>
+          <div>
+            <label className="text-sm text-zinc-400 mb-1 block">Блины в зале, кг</label>
+            <div className="flex flex-wrap gap-2">
+              {PLATE_CHOICES.map(plate => {
+                const on = platesDraft.includes(plate);
+                return (
+                  <button
+                    key={plate}
+                    onClick={() => setPlatesDraft(on ? platesDraft.filter(v => v !== plate) : [...platesDraft, plate])}
+                    className={`px-3 py-2 rounded-xl text-sm border tabular-nums ${on ? 'bg-blue-600 border-blue-600 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-400'}`}
+                  >
+                    {plate}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-xs text-zinc-500 mt-1">По ним считается подсказка «на сторону» для штанги и блинов.</p>
+          </div>
+          <Button className="w-full h-12" onClick={() => { const v = parseFloat(bodyWeightInput.replace(',', '.')); if (v >= 30 && v <= 250) { updateBodyWeight(v); updatePlates(platesDraft); notify('success'); setIsSettingsOpen(false); } else { notify('error'); } }}>Сохранить</Button>
           {!telegramMode && <Button variant="secondary" className="w-full h-12" onClick={() => { void signOutStandalone(); setIsSettingsOpen(false); }}>Выйти из HealthOS</Button>}
           <div className="border-t border-zinc-800 pt-4 space-y-3">
             <div className="text-sm font-medium text-zinc-400">Данные</div>
