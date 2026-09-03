@@ -155,5 +155,34 @@ class HandlerTests(unittest.TestCase):
         lookup.assert_not_called()
 
 
+class StaticFallbackTests(unittest.TestCase):
+    """Корень функции вшит в старые кнопки Telegram: адрес запекается в
+    сообщение навсегда, поэтому 404 там означает мёртвую кнопку."""
+
+    def _get_root(self):
+        return index.handler({"httpMethod": "GET", "url": "/"}, None)
+
+    def test_missing_static_redirects_to_the_deployed_frontend(self):
+        with patch.dict("os.environ", {"FRONTEND_URL": "https://example.github.io/app/"}, clear=False):
+            with patch.object(index, "STATIC_ROOT", Path("/nonexistent-static-root")):
+                result = self._get_root()
+        self.assertEqual(result["statusCode"], 302)
+        self.assertEqual(result["headers"]["Location"], "https://example.github.io/app/")
+
+    def test_redirect_never_points_back_at_the_function_itself(self):
+        loop = "https://functions.yandexcloud.net/abcdefg"
+        with patch.dict("os.environ", {"FRONTEND_URL": loop}, clear=False):
+            with patch.object(index, "STATIC_ROOT", Path("/nonexistent-static-root")):
+                result = self._get_root()
+        self.assertEqual(result["statusCode"], 404)
+
+    def test_without_a_frontend_url_the_error_is_still_explicit(self):
+        with patch.dict("os.environ", {"FRONTEND_URL": ""}, clear=False):
+            with patch.object(index, "STATIC_ROOT", Path("/nonexistent-static-root")):
+                result = self._get_root()
+        self.assertEqual(result["statusCode"], 404)
+        self.assertIn("not deployed", result["body"])
+
+
 if __name__ == "__main__":
     unittest.main()

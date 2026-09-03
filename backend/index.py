@@ -109,6 +109,16 @@ def _static_response(path: str) -> Dict[str, Any]:
     if not candidate.is_file():
         candidate = STATIC_ROOT / "index.html"
     if not candidate.is_file():
+        # Ссылки на корень функции вшиты в старые сообщения Telegram навсегда:
+        # адрес запекается в кнопку при отправке. Пока статика здесь не
+        # развёрнута, уводим такие переходы на рабочий фронт, а не в 404.
+        fallback = os.getenv("FRONTEND_URL", "").strip()
+        if fallback.startswith("https://") and "functions.yandexcloud.net" not in fallback:
+            return {
+                "statusCode": 302,
+                "headers": {**CORS_HEADERS, "Location": fallback, "Cache-Control": "no-cache"},
+                "body": "",
+            }
         return response({"error": "Static frontend is not deployed"}, 404)
 
     content_type = mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
