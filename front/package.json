@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "node --test tests/offlineSync.test.mjs tests/authenticatedFetch.test.mjs tests/deeplink.test.mjs tests/progression.test.mjs tests/trainerSummary.test.mjs",
+    "test": "node --test tests/exerciseConfig.test.mjs tests/offlineSync.test.mjs tests/authenticatedFetch.test.mjs tests/deeplink.test.mjs tests/progression.test.mjs tests/trainerSummary.test.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "deploy": "npm run build && gh-pages -d dist"
