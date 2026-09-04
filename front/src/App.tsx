@@ -9,7 +9,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts';
 import { API_BASE_URL, STANDALONE_API_BASE_URL, WORKOUT_STORAGE_KEY, ACTIVE_WORKOUT_KEY, sortGroups, SESSION_ID_KEY, ORDER_COUNTER_KEY, LAST_ACTIVE_KEY } from './constants';
 import { readSessionDeeplink, stripSessionParam } from './deeplink';
-import { lastSessionWorkingSets } from './progression';
+import { lastSessionWorkingSets, formatLastSessionSets } from './progression';
 import { buildTrainerSummary, formatTrainerSummaryText, isoDaysAgo } from './trainerSummary';
 import { SetDisplayRow } from './components/SetDisplayRow';
 import { calcEffectiveWeight, weightInputLabel, WEIGHT_TYPE_OPTIONS, USER_BODY_WEIGHT_DEFAULT, describeLoad, DEFAULT_PLATES, PLATE_CHOICES } from './exerciseConfig';
@@ -793,10 +793,8 @@ const LastTimeBlock = ({ exercise, history }: any) => {
   const line = useMemo(() => {
     const sets = lastSessionWorkingSets(history, exercise?.targetWorkingSets ?? null);
     if (!sets.length) return null;
-    const weight = sets[0].input_weight ?? sets[0].weight;
-    const reps = sets.map((set: any) => set.reps).join('/');
     const date = String(sets[0].date || '').slice(5).replace('-', '.');
-    return `${date} · ${weight} × ${reps}`;
+    return `${date} · ${formatLastSessionSets(sets)}`;
   }, [exercise, history]);
 
   if (!line) return null;

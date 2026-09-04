@@ -27,7 +27,7 @@ const progCompiled = ts.transpileModule(progSource, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 },
 }).outputText;
 const {
-  buildProgressionAdvice, lastSessionWorkingSets, nextInputWeight,
+  buildProgressionAdvice, formatLastSessionSets, lastSessionWorkingSets, nextInputWeight,
   progressionDirection, roundToStep, suggestTargets,
 } = await import(`data:text/javascript;base64,${Buffer.from(progCompiled).toString('base64')}`);
 const { calcEffectiveWeight } = await import(cfgUrl);
@@ -264,4 +264,40 @@ test('junk input never throws', () => {
     assert.doesNotThrow(() => lastSessionWorkingSets(junk, junk));
   }
   assert.equal(buildProgressionAdvice(null, null, null).outcome, 'setup');
+});
+
+const setOf = (weight, reps) => ({ input_weight: weight, reps, date: '2026-02-28' });
+
+test('лесенка показывается парами, а не одним весом', () => {
+  const line = formatLastSessionSets([
+    setOf(0, 15), setOf(5, 15), setOf(10, 12), setOf(15, 12), setOf(20, 12), setOf(25, 9),
+  ]);
+  assert.equal(line, '0×15 · 5×15 · 10×12 · 15×12 · 20×12 · 25×9');
+});
+
+test('прямые подходы схлопываются в один вес', () => {
+  const line = formatLastSessionSets([setOf(20, 12), setOf(20, 12), setOf(20, 10)]);
+  assert.equal(line, '20×12/12/10');
+});
+
+test('схлопываются только подряд идущие одинаковые веса', () => {
+  const line = formatLastSessionSets([setOf(20, 12), setOf(25, 8), setOf(20, 10)]);
+  assert.equal(line, '20×12 · 25×8 · 20×10');
+});
+
+test('вес берётся из input_weight, а при его отсутствии из weight', () => {
+  const line = formatLastSessionSets([{ weight: 40, reps: 10 }, { input_weight: 0, weight: 20, reps: 15 }]);
+  assert.equal(line, '40×10 · 0×15');
+});
+
+test('пустой ввод даёт пустую строку и не бросает', () => {
+  assert.equal(formatLastSessionSets([]), '');
+  assert.equal(formatLastSessionSets(null), '');
+  assert.equal(formatLastSessionSets(undefined), '');
+  assert.equal(formatLastSessionSets([null, undefined]), '');
+});
+
+test('мусор в весах и повторах не роняет строку', () => {
+  const line = formatLastSessionSets([{ input_weight: 'ерунда', reps: null }, setOf(10, 5)]);
+  assert.equal(line, '0×0 · 10×5');
 });
