@@ -9,7 +9,7 @@
 # Прежняя версия этого скрипта собирала список только из переменных оболочки и
 # не знала про SUPABASE_* вовсе — то есть выкатывала прод без конфигурации
 # Supabase. На 2026-08-23 живая версия несла 11 переменных, из которых скрипт
-# передал бы 6: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_AUTH_API_KEY,
+# передал бы 6: SUPABASE_URL, SUPABASE_SECRET_KEY, SUPABASE_AUTH_API_KEY,
 # TELEGRAM_USER_MAP и TELEGRAM_INIT_DATA_MAX_AGE_SECONDS пропали бы, и функция
 # перестала бы работать сразу после деплоя.
 #
@@ -63,12 +63,10 @@ drop = {k.strip() for k in (os.environ.get("DROP_LIST") or "").split(",") if k.s
 # Ключи, которые бэкенд умеет читать. Переменная оболочки применяется, только
 # если она есть в окружении, — пустая строка это тоже осознанное значение.
 KNOWN = [
-    "SUPABASE_URL", "SUPABASE_SECRET_KEY", "SUPABASE_SERVICE_ROLE_KEY",
-    "SUPABASE_AUTH_API_KEY", "AUTH_TOKEN", "BOT_TOKEN",
-    "TELEGRAM_WEBHOOK_SECRET", "TELEGRAM_USER_MAP",
+    "SUPABASE_URL", "SUPABASE_SECRET_KEY", "SUPABASE_AUTH_API_KEY",
+    "BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET", "TELEGRAM_USER_MAP",
     "TELEGRAM_INIT_DATA_MAX_AGE_SECONDS", "FRONTEND_URL",
     "S3_BUCKET", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_ENDPOINT",
-    "SPREADSHEET_ID", "GOOGLE_CREDENTIALS_BASE64",
 ]
 
 final = dict(inherited)
