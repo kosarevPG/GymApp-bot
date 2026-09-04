@@ -32,3 +32,6 @@ Thumbs.db
 front/node_modules/
 front/dist/
 backend-deploy.zip
+
+# Supabase CLI: временные файлы привязки к проекту
+supabase/.temp/
