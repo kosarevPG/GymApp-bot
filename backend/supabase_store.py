@@ -11,7 +11,7 @@ import json
 import os
 import uuid
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -128,6 +128,7 @@ class SupabaseRestClient:
         query: Optional[Dict[str, str]] = None,
         body: Any = None,
         prefer: str = "",
+        with_headers: bool = False,
     ) -> Any:
         suffix = f"?{urlencode(query or {})}" if query else ""
         headers = {"apikey": self.secret_key, "Accept": "application/json"}
@@ -146,10 +147,61 @@ class SupabaseRestClient:
         try:
             with urlopen(request, timeout=20) as result:
                 raw = result.read().decode("utf-8")
+                # Заголовки читаем только по запросу: их нет у части заглушек,
+                # а обычным вызовам они и не нужны.
+                response_headers = dict(result.headers) if with_headers else {}
         except HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"Supabase Data API returned {error.code}: {detail}") from error
-        return json.loads(raw) if raw else []
+        payload = json.loads(raw) if raw else []
+        return (payload, response_headers) if with_headers else payload
+
+    @staticmethod
+    def _total_from_content_range(headers: Dict[str, str]) -> Optional[int]:
+        """PostgREST кладёт в Content-Range «0-499/1224»; без count=exact — «*»."""
+        tail = str(headers.get("Content-Range", "")).split("/")[-1].strip()
+        return int(tail) if tail.isdigit() else None
+
+    def select_page(
+        self,
+        table: str,
+        *,
+        columns: str = "*",
+        filters: Optional[Dict[str, Any]] = None,
+        order: str = "",
+        limit: Optional[int] = None,
+        offset: int = 0,
+    ) -> Tuple[List[Dict[str, Any]], Optional[int]]:
+        """Страница вместе с общим числом строк, если сервер его сообщил.
+
+        Знание общего числа строк избавляет от запроса за пустой страницей: обзорные
+        эндпоинты читают четыре таблицы, и такой запрос стоил четверти всех
+        обращений к Data API.
+        """
+        query = self._select_query(columns, filters, order, limit, offset)
+        rows, headers = self._request(
+            "GET", table, query=query, prefer="count=exact", with_headers=True
+        )
+        return rows, self._total_from_content_range(headers)
+
+    @staticmethod
+    def _select_query(
+        columns: str,
+        filters: Optional[Dict[str, Any]],
+        order: str,
+        limit: Optional[int],
+        offset: int,
+    ) -> Dict[str, str]:
+        query: Dict[str, str] = {"select": columns}
+        for key, value in (filters or {}).items():
+            query[key] = str(value) if str(value).startswith(("eq.", "gte.", "in.")) else f"eq.{value}"
+        if order:
+            query["order"] = order
+        if limit is not None:
+            query["limit"] = str(limit)
+        if offset:
+            query["offset"] = str(offset)
+        return query
 
     def select(
         self,
@@ -161,16 +213,9 @@ class SupabaseRestClient:
         limit: Optional[int] = None,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        query: Dict[str, str] = {"select": columns}
-        for key, value in (filters or {}).items():
-            query[key] = str(value) if str(value).startswith(("eq.", "gte.", "in.")) else f"eq.{value}"
-        if order:
-            query["order"] = order
-        if limit is not None:
-            query["limit"] = str(limit)
-        if offset:
-            query["offset"] = str(offset)
-        return self._request("GET", table, query=query)
+        return self._request(
+            "GET", table, query=self._select_query(columns, filters, order, limit, offset)
+        )
 
     def upsert(
         self, table: str, row: Dict[str, Any], *, on_conflict: str
@@ -219,20 +264,39 @@ class SupabaseStore:
         """Read every page; hosted Data API projects commonly cap pages at 1000."""
         rows: List[Dict[str, Any]] = []
         offset = 0
+        total: Optional[int] = None
+        # Клиент, умеющий сообщать общее число строк, экономит по запросу на
+        # таблицу. Старые заглушки в тестах его не имеют — для них остаётся
+        # прежний путь с остановкой на пустой странице.
+        read_page = getattr(self.client, "select_page", None)
         while limit is None or len(rows) < limit:
             requested = min(READ_PAGE_SIZE, limit - len(rows)) if limit is not None else READ_PAGE_SIZE
-            page = self.client.select(
-                table,
-                columns=columns,
-                filters=filters,
-                order=order,
-                limit=requested,
-                offset=offset,
-            )
+            if read_page is not None:
+                page, reported = read_page(
+                    table,
+                    columns=columns,
+                    filters=filters,
+                    order=order,
+                    limit=requested,
+                    offset=offset,
+                )
+                if reported is not None:
+                    total = reported
+            else:
+                page = self.client.select(
+                    table,
+                    columns=columns,
+                    filters=filters,
+                    order=order,
+                    limit=requested,
+                    offset=offset,
+                )
             if not page:
                 break
             rows.extend(page)
             offset += len(page)
+            if total is not None and offset >= total:
+                break
         return rows[:limit] if limit is not None else rows
 
     def _exercises(self, user_id: str, *, active_only: bool = False) -> List[Dict[str, Any]]:
