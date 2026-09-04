@@ -107,10 +107,8 @@ export const DEFAULT_PLATES = [25, 20, 15, 10, 5, 2.5, 1.25];
  */
 export const PLATE_CHOICES = [30, 25, 20, 15, 10, 5, 2.5, 1.25];
 
-/** Сколько блинов вешать и сколько не удалось набрать. */
+/** Блины на ОДНУ сторону и сколько из них не удалось набрать. */
 export interface PlateAdvice {
-  /** true — набор указан на одну сторону грифа или каретки. */
-  perSide: boolean;
   items: number[];
   remainder: number;
 }
@@ -189,9 +187,10 @@ export function describeLoad(
     };
   }
   if (type === 'barbell' || type === 'plate_loaded') {
-    // Две стороны есть, когда вводят вес на сторону (mult=2) либо когда
-    // есть гриф/каретка (base>0). Одиночный блин в руках — ни то, ни другое.
-    const twoSided = mult === 2 || base > 0;
+    // Штанга и блиновый тренажёр всегда грузятся с двух сторон: при mult=2
+    // вводят вес одной стороны, при mult=1 — все блины, и на сторону идёт
+    // половина. Снаряд, который держат целиком, к этим типам не относится:
+    // у него тип нагрузки «Блок/стек», и подсказка по блинам ему не нужна.
     const perSideTarget = mult === 2 ? inputWeight : inputWeight / 2;
     const baseName = type === 'barbell' ? 'Гриф' : 'База';
     let summary: string;
@@ -204,8 +203,7 @@ export function describeLoad(
         ? `${baseName} ${n(base)} + ${n(inputWeight)} блинами = ${n(total)} кг`
         : `${n(inputWeight)} кг блинами`;
     }
-    const split = splitIntoPlates(twoSided ? perSideTarget : inputWeight, available);
-    return { summary, total, plates: { perSide: twoSided, ...split } };
+    return { summary, total, plates: splitIntoPlates(perSideTarget, available) };
   }
   // Стек и всё, где введённое число уже итоговое: пояснять нечего.
   return null;

@@ -48,7 +48,6 @@ test('штанга с mult=2: число — это вес на сторону',
   const plan = describeLoad({ weightType: 'Barbell', baseWeight: 20, weightMultiplier: 2 }, 40);
   assert.equal(plan.total, 100);
   assert.equal(plan.summary, 'Гриф 20 + по 40 на сторону = 100 кг');
-  assert.equal(plan.plates.perSide, true);
   assert.deepEqual(plan.plates.items, [25, 15]);
 });
 
@@ -56,7 +55,6 @@ test('штанга с mult=1: число — это блины целиком, �
   const plan = describeLoad({ weightType: 'Barbell', baseWeight: 20, weightMultiplier: 1 }, 40);
   assert.equal(plan.total, 60);
   assert.equal(plan.summary, 'Гриф 20 + 40 блинами = 60 кг');
-  assert.equal(plan.plates.perSide, true);
   assert.deepEqual(plan.plates.items, [20]);
 });
 
@@ -73,18 +71,19 @@ test('каретка (Гакк): база прибавляется, блины �
   assert.deepEqual(plan.plates.items, [25, 5]);
 });
 
-test('одиночный блин в руках не делится на стороны', () => {
-  const plan = describeLoad({ weightType: 'Plate_Loaded', baseWeight: 0, weightMultiplier: 1 }, 15);
-  assert.equal(plan.total, 15);
-  assert.equal(plan.plates.perSide, false);
-  assert.deepEqual(plan.plates.items, [15]);
+test('блиновый тренажёр без каретки тоже делится пополам', () => {
+  // «Тяга с упором в грудь»: записывается общий вес, вешается поровну.
+  const plan = describeLoad({ weightType: 'Plate_Loaded', baseWeight: 0, weightMultiplier: 1 }, 30);
+  assert.equal(plan.total, 30);
+  assert.equal(plan.summary, '30 кг блинами');
+  assert.deepEqual(plan.plates.items, [15]);   // 30 всего → по 15, одним блином
+  assert.equal(plan.plates.remainder, 0);
 });
 
 test('тренажёр под блины с mult=2 считает вес на сторону', () => {
   const plan = describeLoad({ weightType: 'Plate_Loaded', baseWeight: 0, weightMultiplier: 2 }, 20);
   assert.equal(plan.total, 40);
   assert.equal(plan.summary, 'По 20 на сторону = 40 кг');
-  assert.equal(plan.plates.perSide, true);
 });
 
 test('гантели: число — вес одной, итог за пару', () => {

@@ -743,7 +743,7 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates =
             <div className="text-xs font-medium text-zinc-100">{loadPlan.summary}</div>
             {loadPlan.plates && (
               <div className="mt-1.5 flex flex-wrap items-center gap-1 text-xs">
-                <span className="mr-0.5 text-zinc-500">{loadPlan.plates.perSide ? 'На сторону:' : 'Повесить:'}</span>
+                <span className="mr-0.5 text-zinc-500">На сторону:</span>
                 {loadPlan.plates.items.map((plate, index) => (
                   <span key={index} className="rounded bg-zinc-600 px-2 py-0.5 font-semibold text-white tabular-nums">{plate}</span>
                 ))}
