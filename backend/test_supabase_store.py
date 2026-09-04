@@ -310,6 +310,74 @@ class SupabaseStoreTests(unittest.TestCase):
         self.assertGreater(len(set_reads), 500)
 
 
+class PaginationTests(unittest.TestCase):
+    """Обзорные эндпоинты читают четыре таблицы подряд, и каждый лишний запрос
+    к Data API стоит 0.6-1.5 с — столько, что клиент обрывал историю."""
+
+    class CountingClient:
+        """Отдаёт общее число строк, как настоящий PostgREST с count=exact."""
+
+        def __init__(self, total, page_cap=500):
+            self.total = total
+            self.page_cap = page_cap
+            self.calls = []
+
+        def select_page(self, table, *, columns="*", filters=None, order="", limit=None, offset=0):
+            self.calls.append(offset)
+            size = min(limit or self.page_cap, self.page_cap)
+            rows = [{"id": i} for i in range(offset, min(offset + size, self.total))]
+            return rows, self.total
+
+    class SilentClient:
+        """Общего числа строк не сообщает — остаётся остановка на пустой странице."""
+
+        def __init__(self, total, page_cap=500):
+            self.total = total
+            self.page_cap = page_cap
+            self.calls = []
+
+        def select(self, table, *, columns="*", filters=None, order="", limit=None, offset=0):
+            self.calls.append(offset)
+            size = min(limit or self.page_cap, self.page_cap)
+            return [{"id": i} for i in range(offset, min(offset + size, self.total))]
+
+    def _read(self, client):
+        store = SupabaseStore(client)
+        return store._select("gym_sets", filters={"user_id": USER_ID}), client.calls
+
+    def test_known_total_skips_the_request_for_an_empty_page(self):
+        rows, calls = self._read(self.CountingClient(1224))
+        self.assertEqual(len(rows), 1224)
+        self.assertEqual(len(calls), 3)  # 500 + 500 + 224, без запроса за пустотой
+
+    def test_a_single_page_costs_a_single_request(self):
+        rows, calls = self._read(self.CountingClient(53))
+        self.assertEqual(len(rows), 53)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_total_that_lands_on_a_page_boundary_still_stops(self):
+        rows, calls = self._read(self.CountingClient(1000))
+        self.assertEqual(len(rows), 1000)
+        self.assertEqual(len(calls), 2)
+
+    def test_without_a_reported_total_the_read_still_completes(self):
+        rows, calls = self._read(self.SilentClient(1224))
+        self.assertEqual(len(rows), 1224)
+        self.assertEqual(len(calls), 4)  # запасной путь: нужен ещё запрос за пустой страницей
+
+    def test_a_server_capping_pages_below_the_page_size_is_read_in_full(self):
+        # Ровно то, на чём ловится «оптимизация» по короткой странице.
+        rows, _ = self._read(self.CountingClient(1005, page_cap=2))
+        self.assertEqual(len(rows), 1005)
+
+    def test_content_range_parsing(self):
+        parse = SupabaseRestClient._total_from_content_range
+        self.assertEqual(parse({"Content-Range": "0-499/1224"}), 1224)
+        self.assertEqual(parse({"Content-Range": "*/0"}), 0)
+        self.assertIsNone(parse({"Content-Range": "0-499/*"}))
+        self.assertIsNone(parse({}))
+
+
 if __name__ == "__main__":
     unittest.main()
 
