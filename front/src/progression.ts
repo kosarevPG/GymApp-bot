@@ -290,3 +290,25 @@ export function suggestTargets(
     basedOnSets: pool.length,
   };
 }
+
+/**
+ * Строка «прошлый раз»: вес и повторы парами.
+ *
+ * Раньше показывался вес только первого подхода и повторы всех: лесенка
+ * 0/5/10/15/20/25 выглядела как «0 × 15/15/12/12/12/9», то есть будто все
+ * шесть подходов сделаны с пустым грифом. Подряд идущие одинаковые веса
+ * схлопываются, иначе прямые подходы превращались бы в «20×12 · 20×12 · 20×12».
+ */
+export function formatLastSessionSets(sets: HistoryItem[] | null | undefined): string {
+  const rows = Array.isArray(sets) ? sets.filter(Boolean) : [];
+  if (!rows.length) return '';
+  const groups: { weight: number; reps: number[] }[] = [];
+  for (const row of rows) {
+    const weight = num(row.input_weight) ?? num(row.weight) ?? 0;
+    const reps = num(row.reps) ?? 0;
+    const last = groups[groups.length - 1];
+    if (last && last.weight === weight) last.reps.push(reps);
+    else groups.push({ weight, reps: [reps] });
+  }
+  return groups.map((group) => `${group.weight}×${group.reps.join('/')}`).join(' · ');
+}
