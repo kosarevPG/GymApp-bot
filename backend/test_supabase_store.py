@@ -22,7 +22,7 @@ class MemoryClient:
         self.delete_calls = []
         self.tables = {
             "gym_exercises": [], "gym_workout_sessions": [],
-            "gym_set_groups": [], "gym_sets": [],
+            "gym_set_groups": [], "gym_sets": [], "gym_cardio_segments": [],
         }
 
     @staticmethod
@@ -80,6 +80,9 @@ class MemoryClient:
             ]
             self.tables["gym_set_groups"] = [
                 row for row in self.tables["gym_set_groups"] if row.get("session_id") not in session_ids
+            ]
+            self.tables["gym_cardio_segments"] = [
+                row for row in self.tables["gym_cardio_segments"] if row.get("session_id") not in session_ids
             ]
         return removed
 
@@ -232,6 +235,94 @@ class SupabaseStoreTests(unittest.TestCase):
         payload = self.client.tables["gym_sets"][0]["source_payload"]
         self.assertEqual(payload["client_group_id"], "group-session-morning")
         self.assertEqual(payload["load"]["type"], "Dumbbell")
+
+    def add_treadmill(self):
+        self.client.tables["gym_exercises"].append({
+            "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "user_id": USER_ID,
+            "source": "gymapp", "source_key": "treadmill", "name_ru": "Дорожка",
+            "muscle_group": "Кардио", "weight_type": "Other", "base_weight_kg": 0,
+            "multiplier": 1, "tonnage_mode": "excluded", "is_active": True,
+            "source_payload": {}, "measure": "cardio",
+        })
+
+    @staticmethod
+    def segment(request_id=REQUEST_2, order=1, minutes=10, speed=6, incline=5,
+                performed_at="2026-08-22T09:50:00+03:00"):
+        return {
+            "client_request_id": request_id, "exercise_id": "treadmill",
+            "session_id": "session-morning", "order": order, "performed_at": performed_at,
+            "duration_seconds": minutes * 60, "speed_kmh": speed, "incline_pct": incline,
+        }
+
+    def test_cardio_segment_is_saved_once_and_a_retry_applies_an_edit(self):
+        self.add_treadmill()
+        self.assertEqual(self.store.save_cardio(USER_ID, self.segment())["status"], "success")
+        again = self.store.save_cardio(USER_ID, self.segment(minutes=12))
+        self.assertTrue(again["deduplicated"])
+        self.assertTrue(again["updated"])
+        [row] = self.client.tables["gym_cardio_segments"]
+        self.assertEqual((row["duration_seconds"], row["speed_kmh"], row["incline_pct"]), (720, 6, 5))
+        self.assertEqual(self.client.tables["gym_sets"], [])
+
+    def test_cardio_rejects_impossible_values(self):
+        self.add_treadmill()
+        self.assertEqual(self.store.save_cardio(USER_ID, self.segment(minutes=0))["status"], "error")
+        self.assertEqual(self.store.save_cardio(USER_ID, self.segment(speed=90))["status"], "error")
+        self.assertEqual(self.client.tables["gym_cardio_segments"], [])
+
+    def test_cardio_history_reports_minutes_speed_and_incline(self):
+        self.add_treadmill()
+        self.store.save_cardio(USER_ID, self.segment())
+        self.store.save_cardio(USER_ID, self.segment(
+            request_id="44444444-4444-4444-8444-444444444444", order=3, minutes=5, speed=5, incline=None,
+            performed_at="2026-08-22T09:59:00+03:00",
+        ))
+        [session] = self.store.get_exercise_history(USER_ID, "treadmill")["history"]
+        self.assertEqual(session["sets"], [])
+        self.assertEqual(session["cardio"], [
+            {"id": REQUEST_2, "minutes": 10.0, "order": 1, "speed": 6.0, "incline": 5.0},
+            {"id": "44444444-4444-4444-8444-444444444444", "minutes": 5.0, "order": 3, "speed": 5.0},
+        ])
+
+    def test_global_history_puts_cardio_in_workout_order(self):
+        self.add_treadmill()
+        self.store.save_cardio(USER_ID, self.segment(order=1))
+        self.store.save_set(USER_ID, {**self.payload(), "order": 2})
+        [session] = self.store.get_global_history(USER_ID)
+        self.assertEqual([block["name"] for block in session["exercises"]], ["Дорожка", "Жим"])
+        self.assertEqual(session["exercises"][0]["cardio"][0]["minutes"], 10.0)
+        self.assertEqual(session["exercises"][0]["sets"], [])
+
+    def test_a_warm_up_keeps_the_session_when_the_last_set_goes(self):
+        self.add_treadmill()
+        self.store.save_cardio(USER_ID, self.segment())
+        self.store.save_set(USER_ID, {**self.payload(), "order": 2})
+        self.assertTrue(self.store.delete_set(USER_ID, {"client_request_id": REQUEST_1}))
+        self.assertEqual(len(self.client.tables["gym_workout_sessions"]), 1)
+        self.assertEqual(len(self.client.tables["gym_cardio_segments"]), 1)
+        self.assertTrue(self.store.delete_cardio(USER_ID, {"client_request_id": REQUEST_2}))
+        self.assertEqual(self.client.tables["gym_workout_sessions"], [])
+
+    def test_cardio_delete_from_the_queue_accepts_a_missing_row(self):
+        self.assertFalse(self.store.delete_cardio(USER_ID, {"client_request_id": REQUEST_2}))
+        self.assertTrue(self.store.delete_cardio(USER_ID, {"client_request_id": REQUEST_2, "missing_ok": True}))
+
+    def test_cardio_update_changes_only_what_it_carries(self):
+        self.add_treadmill()
+        self.store.save_cardio(USER_ID, self.segment())
+        self.assertTrue(self.store.update_cardio(USER_ID, {"client_request_id": REQUEST_2, "incline_pct": 8}))
+        [row] = self.client.tables["gym_cardio_segments"]
+        self.assertEqual((row["duration_seconds"], row["speed_kmh"], row["incline_pct"]), (600, 6, 8))
+        self.assertFalse(self.store.update_cardio(USER_ID, {"client_request_id": REQUEST_2, "duration_seconds": 0}))
+
+    def test_exercise_measure_round_trips_and_defaults_to_strength(self):
+        self.add_treadmill()
+        by_id = {row["id"]: row for row in self.store.get_init(USER_ID)["exercises"]}
+        self.assertEqual(by_id["treadmill"]["measure"], "cardio")
+        self.assertEqual(by_id["legacy-exercise"]["measure"], "strength")
+        self.assertTrue(self.store.update_exercise(USER_ID, "legacy-exercise", {"measure": "cardio"}))
+        with self.assertRaises(ValueError):
+            self.store.update_exercise(USER_ID, "legacy-exercise", {"measure": "yoga"})
 
     def test_missing_row_counts_as_deleted_only_for_the_queue(self):
         self.assertFalse(self.store.delete_set(USER_ID, {"client_request_id": REQUEST_1}))

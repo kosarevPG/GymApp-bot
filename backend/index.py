@@ -18,6 +18,7 @@ from request_auth import authenticate_request
 from supabase_store import (
     ConflictError,
     create_exercise,
+    delete_cardio,
     delete_set,
     delete_workout,
     export_data,
@@ -27,7 +28,9 @@ from supabase_store import (
     get_init,
     get_workout_session,
     import_data,
+    save_cardio,
     save_set,
+    update_cardio,
     update_exercise,
     update_set,
 )
@@ -259,6 +262,13 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             return response({"status": "success" if update_set(user_id, _body(event)) else "error"})
         if endpoint == "delete_set" and method == "POST":
             return response({"status": "success" if delete_set(user_id, _body(event)) else "error"})
+        if endpoint == "save_cardio" and method == "POST":
+            result = save_cardio(user_id, _body(event))
+            return response(result, 200 if result.get("status") == "success" else 400)
+        if endpoint == "update_cardio" and method == "POST":
+            return response({"status": "success" if update_cardio(user_id, _body(event)) else "error"})
+        if endpoint == "delete_cardio" and method == "POST":
+            return response({"status": "success" if delete_cardio(user_id, _body(event)) else "error"})
         if endpoint == "delete_workout" and method == "POST":
             data = _body(event)
             date_text = str(data.get("date", "")).strip()

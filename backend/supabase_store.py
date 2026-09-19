@@ -33,7 +33,7 @@ READ_PAGE_SIZE = 500
 EXERCISE_SELECT = (
     "id,user_id,source,source_key,name_ru,name_en,muscle_group,description,"
     "image_url,image_url_2,weight_type,base_weight_kg,multiplier,tonnage_mode,"
-    "technique_note,is_active,source_payload,"
+    "technique_note,is_active,source_payload,measure,"
     # Release B progression targets. All nullable: absent means "not configured",
     # and the app offers a setup button rather than inventing a range.
     "rep_range_low,rep_range_high,input_weight_step,target_working_sets,rir_target_max"
@@ -70,6 +70,9 @@ def _optional_int(value: Any) -> Optional[int]:
 def _stable_uuid(*parts: Any) -> str:
     return str(uuid.uuid5(LIVE_NAMESPACE, ":".join(str(part) for part in parts)))
 
+
+CARDIO_TABLE = "gym_cardio_segments"
+MAX_CARDIO_SECONDS = 6 * 3600
 
 WEIGHT_TYPES = {"Machine", "Plate_Loaded", "Dumbbell", "Barbell", "Bodyweight", "Assisted", "Other"}
 
@@ -366,6 +369,8 @@ class SupabaseStore:
             "imageUrl": str(record.get("image_url") or ""),
             "imageUrl2": str(record.get("image_url_2") or ""),
             "weightType": str(record.get("weight_type") or "Other"),
+            # strength = sets of reps and load; cardio = timed segments.
+            "measure": "cardio" if record.get("measure") == "cardio" else "strength",
             "baseWeight": _to_float(record.get("base_weight_kg")),
             "weightMultiplier": _to_float(record.get("multiplier"), 1.0),
             "secondaryMuscles": str(source_payload.get("secondary_muscles") or ""),
@@ -621,13 +626,151 @@ class SupabaseStore:
                     "gym_set_groups", {"group_type": "single"},
                     filters={"user_id": user_id, "id": group_id, "group_type": "superset"},
                 )
-        if not self._select(
-            "gym_sets", filters={"user_id": user_id, "session_id": existing["session_id"]}, limit=1
-        ):
-            self.client.delete(
-                "gym_workout_sessions", filters={"user_id": user_id, "id": existing["session_id"]}
-            )
+        self._drop_session_if_empty(user_id, existing["session_id"])
         return True
+
+    def _drop_session_if_empty(self, user_id: str, session_id: str) -> None:
+        """A session goes when its last set or cardio segment does, not before:
+        a warm-up on its own is still a workout."""
+        for table in ("gym_sets", CARDIO_TABLE):
+            if self._select(table, filters={"user_id": user_id, "session_id": session_id}, limit=1):
+                return
+        self.client.delete("gym_workout_sessions", filters={"user_id": user_id, "id": session_id})
+
+    @staticmethod
+    def _cardio_values(data: Dict[str, Any]) -> Dict[str, Any]:
+        """Editable columns of a cardio segment, for the keys the request carries."""
+        values: Dict[str, Any] = {}
+        if "duration_seconds" in data:
+            values["duration_seconds"] = _to_int(data.get("duration_seconds"))
+        if "speed_kmh" in data:
+            values["speed_kmh"] = _optional_float(data.get("speed_kmh"))
+        if "incline_pct" in data:
+            values["incline_pct"] = _optional_float(data.get("incline_pct"))
+        if "note" in data:
+            values["note"] = str(data.get("note") or "") or None
+        return values
+
+    @staticmethod
+    def _cardio_error(values: Dict[str, Any]) -> Optional[str]:
+        duration = values.get("duration_seconds")
+        if duration is not None and not 0 < duration <= MAX_CARDIO_SECONDS:
+            return "duration_seconds must be between 1 second and 6 hours"
+        speed = values.get("speed_kmh")
+        if speed is not None and not 0 <= speed <= 40:
+            return "speed_kmh must be between 0 and 40"
+        incline = values.get("incline_pct")
+        if incline is not None and not -15 <= incline <= 40:
+            return "incline_pct must be between -15 and 40"
+        return None
+
+    def _locate_cardio(self, user_id: str, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        try:
+            request_id = _valid_client_request_id(data.get("client_request_id"))
+        except ValueError:
+            return None
+        rows = self._select(
+            CARDIO_TABLE, filters={"user_id": user_id, "client_request_id": request_id}, limit=1
+        )
+        return rows[0] if rows else None
+
+    def save_cardio(self, user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """One segment of steady cardio. Idempotent by client_request_id, like
+        save_set: a retry carrying an edit applies it instead of dropping it."""
+        try:
+            request_id = _valid_client_request_id(data.get("client_request_id"))
+            performed_at = _aware_datetime(data.get("performed_at"), "performed_at")
+        except ValueError as error:
+            return {"status": "error", "error": str(error)}
+        if performed_at > self._now() + timedelta(minutes=5):
+            return {"status": "error", "error": "performed_at is in the future"}
+        values = self._cardio_values({"duration_seconds": data.get("duration_seconds"), **data})
+        error = self._cardio_error(values)
+        if error:
+            return {"status": "error", "error": error}
+        existing = self._locate_cardio(user_id, {"client_request_id": request_id})
+        if existing:
+            try:
+                stored_at = _aware_datetime(existing.get("performed_at"), "stored performed_at")
+            except ValueError as error:
+                return {"status": "error", "error": str(error)}
+            if stored_at != performed_at:
+                return {
+                    "status": "error",
+                    "error": "performed_at does not match the existing client_request_id",
+                }
+            result = {"status": "success", "request_id": request_id, "deduplicated": True}
+            changes = {k: v for k, v in values.items() if existing.get(k) != v}
+            if changes:
+                self.client.update(
+                    CARDIO_TABLE, changes, filters={"user_id": user_id, "id": existing["id"]}
+                )
+                result["updated"] = True
+            return result
+
+        exercise = self._resolve_exercise(user_id, str(data.get("exercise_id") or ""))
+        if not exercise:
+            return {"status": "error", "error": "Unknown exercise_id"}
+        position = _to_int(data.get("order"))
+        if position <= 0:
+            return {"status": "error", "error": "order must be greater than zero"}
+        try:
+            session = self._ensure_session(
+                user_id, str(data.get("session_id") or "").strip(), performed_at
+            )
+        except ValueError as error:
+            return {"status": "error", "error": str(error)}
+        row = {
+            "id": _stable_uuid(user_id, "cardio", request_id),
+            "user_id": user_id,
+            "session_id": session["id"],
+            "exercise_id": exercise["id"],
+            "performed_at": performed_at.isoformat(),
+            "position": position,
+            **values,
+            "source": "gymapp",
+            "client_request_id": request_id,
+            "source_payload": {},
+        }
+        self.client.upsert(CARDIO_TABLE, row, on_conflict="user_id,client_request_id")
+        return {"status": "success", "request_id": request_id}
+
+    def update_cardio(self, user_id: str, data: Dict[str, Any]) -> bool:
+        existing = self._locate_cardio(user_id, data)
+        if not existing:
+            return False
+        values = self._cardio_values(data)
+        if self._cardio_error(values):
+            return False
+        if not values:
+            return True
+        return bool(self.client.update(
+            CARDIO_TABLE, values, filters={"user_id": user_id, "id": existing["id"]}
+        ))
+
+    def delete_cardio(self, user_id: str, data: Dict[str, Any]) -> bool:
+        # Same contract as delete_set: the offline queue asks for missing_ok.
+        missing_ok = bool(data.get("missing_ok"))
+        existing = self._locate_cardio(user_id, data)
+        if not existing:
+            return missing_ok
+        if not self.client.delete(CARDIO_TABLE, filters={"user_id": user_id, "id": existing["id"]}):
+            return missing_ok
+        self._drop_session_if_empty(user_id, existing["session_id"])
+        return True
+
+    @staticmethod
+    def _cardio_to_api(row: Dict[str, Any]) -> Dict[str, Any]:
+        result: Dict[str, Any] = {
+            "id": str(row.get("client_request_id") or row.get("id") or ""),
+            "minutes": round(_to_float(row.get("duration_seconds")) / 60, 2),
+            "order": _to_int(row.get("position")),
+        }
+        if row.get("speed_kmh") is not None:
+            result["speed"] = _to_float(row["speed_kmh"])
+        if row.get("incline_pct") is not None:
+            result["incline"] = _to_float(row["incline_pct"])
+        return result
 
     def delete_workout(self, user_id: str, date_text: str, session_id: str = "") -> int:
         if session_id:
@@ -686,6 +829,11 @@ class SupabaseStore:
         session_by_id = {row["id"]: row for row in sessions}
         group_by_id = {row["id"]: row for row in groups}
         matching = [row for row in sets if row.get("exercise_id") == exercise["id"]]
+        cardio = [
+            row for row in self._select(
+                CARDIO_TABLE, filters={"user_id": user_id, "exercise_id": exercise["id"]}
+            )
+        ]
         matching.sort(key=lambda row: (str(row.get("performed_at") or ""), _to_int(row.get("position"))), reverse=True)
         grouped: Dict[str, Dict[str, Any]] = {}
         for row in matching:
@@ -695,11 +843,22 @@ class SupabaseStore:
             if date and session_id:
                 group = grouped.setdefault(
                     session_id,
-                    {"session_id": session_id, "date": date, "sets": [], "latest": ""},
+                    {"session_id": session_id, "date": date, "sets": [], "cardio": [], "latest": ""},
                 )
                 group["sets"].append(
                     self._set_to_api(row, group_by_id.get(row.get("set_group_id")))
                 )
+                group["latest"] = max(group["latest"], str(row.get("performed_at") or ""))
+        for row in cardio:
+            session = session_by_id.get(row.get("session_id"), {})
+            session_id = str(session.get("id") or row.get("session_id") or "")
+            date = _api_date(session.get("workout_date"))
+            if date and session_id:
+                group = grouped.setdefault(
+                    session_id,
+                    {"session_id": session_id, "date": date, "sets": [], "cardio": [], "latest": ""},
+                )
+                group["cardio"].append(self._cardio_to_api(row))
                 group["latest"] = max(group["latest"], str(row.get("performed_at") or ""))
         history = sorted(grouped.values(), key=lambda group: group["latest"], reverse=True)
         history = history[: max(1, min(limit, 100))]
@@ -709,6 +868,8 @@ class SupabaseStore:
                     "session_id": group["session_id"],
                     "date": group["date"],
                     "sets": sorted(group["sets"], key=lambda item: item["order"]),
+                    **({"cardio": sorted(group["cardio"], key=lambda item: item["order"])}
+                       if group["cardio"] else {}),
                 }
                 for group in history
             ],
@@ -723,10 +884,14 @@ class SupabaseStore:
         sets_by_session: Dict[str, List[Dict[str, Any]]] = {}
         for row in sets:
             sets_by_session.setdefault(row["session_id"], []).append(row)
+        cardio_by_session: Dict[str, List[Dict[str, Any]]] = {}
+        for row in self._select(CARDIO_TABLE, filters={"user_id": user_id}):
+            cardio_by_session.setdefault(row["session_id"], []).append(row)
         result: List[Dict[str, Any]] = []
         for session in sorted(sessions, key=lambda row: (str(row.get("workout_date")), str(row.get("started_at") or "")), reverse=True):
             session_sets = sets_by_session.get(session["id"], [])
-            if not session_sets:
+            session_cardio = cardio_by_session.get(session["id"], [])
+            if not session_sets and not session_cardio:
                 continue
             blocks: Dict[tuple, Dict[str, Any]] = {}
             muscles = set()
@@ -744,15 +909,29 @@ class SupabaseStore:
                 block["sets"].append(self._set_to_api(row, group))
                 if exercise.get("muscle_group"):
                     muscles.add(exercise["muscle_group"])
+            for row in session_cardio:
+                exercise = exercise_by_id.get(row["exercise_id"], {})
+                block = blocks.setdefault((row["exercise_id"], "cardio"), {
+                    "name": str(exercise.get("name_ru") or ""),
+                    "exerciseId": str(exercise.get("source_key") or exercise.get("id") or ""),
+                    "supersetId": None,
+                    "sets": [],
+                    "cardio": [],
+                })
+                block["cardio"].append(self._cardio_to_api(row))
             exercises_api = list(blocks.values())
             for block in exercises_api:
                 block["sets"].sort(key=lambda item: item["order"])
-            exercises_api.sort(key=lambda block: min(item["order"] for item in block["sets"]))
+                if "cardio" in block:
+                    block["cardio"].sort(key=lambda item: item["order"])
+            exercises_api.sort(key=lambda block: min(
+                item["order"] for item in block["sets"] + block.get("cardio", [])
+            ))
             result.append({
                 "id": session["id"],
                 "date": _api_date(session.get("workout_date")),
                 "muscleGroups": sorted(muscles, key=str.casefold),
-                "duration": f"{len(session_sets) * 2}м",
+                "duration": f"{len(session_sets) * 2 + round(sum(_to_float(r.get('duration_seconds')) for r in session_cardio) / 60)}м",
                 "exercises": exercises_api,
             })
         return result
@@ -858,6 +1037,10 @@ class SupabaseStore:
             "baseWeight": "base_weight_kg", "weightMultiplier": "multiplier",
         }
         values = {column: updates[key] for key, column in mapping.items() if key in updates}
+        if "measure" in updates:
+            if updates["measure"] not in ("strength", "cardio"):
+                raise ValueError("measure must be strength or cardio")
+            values["measure"] = updates["measure"]
 
         # Progression targets. Sent explicitly or not at all: a key that is
         # absent leaves the stored value alone, and an explicit null clears it.
@@ -933,6 +1116,9 @@ def get_exercise_history(user_id: str, exercise_id: str, limit: int = 50): retur
 def save_set(user_id: str, data: Dict[str, Any]): return _store().save_set(user_id, data)
 def update_set(user_id: str, data: Dict[str, Any]): return _store().update_set(user_id, data)
 def delete_set(user_id: str, data: Dict[str, Any]): return _store().delete_set(user_id, data)
+def save_cardio(user_id: str, data: Dict[str, Any]): return _store().save_cardio(user_id, data)
+def update_cardio(user_id: str, data: Dict[str, Any]): return _store().update_cardio(user_id, data)
+def delete_cardio(user_id: str, data: Dict[str, Any]): return _store().delete_cardio(user_id, data)
 def delete_workout(user_id: str, date_text: str, session_id: str = ""): return _store().delete_workout(user_id, date_text, session_id)
 def export_data(user_id: str): return _store().export_data(user_id)
 def import_data(user_id: str, data: Dict[str, Any]): return _store().import_data(user_id, data)
