@@ -564,20 +564,33 @@ class SupabaseStore:
         ))
 
     def delete_set(self, user_id: str, data: Dict[str, Any]) -> bool:
+        # The offline queue deletes sets that may never have reached the server
+        # and retries a delete whose answer was lost. For it a missing row is
+        # the desired end state; the history screen still gets False.
+        missing_ok = bool(data.get("missing_ok"))
         existing = self._locate_set(user_id, data)
         if not existing:
-            return False
+            return missing_ok
         deleted = bool(self.client.delete(
             "gym_sets", filters={"user_id": user_id, "id": existing["id"]}
         ))
         if not deleted:
-            return False
-        if existing.get("set_group_id") and not self._select(
-            "gym_sets", filters={"user_id": user_id, "set_group_id": existing["set_group_id"]}, limit=1
-        ):
-            self.client.delete(
-                "gym_set_groups", filters={"user_id": user_id, "id": existing["set_group_id"]}
+            return missing_ok
+        group_id = existing.get("set_group_id")
+        if group_id:
+            remaining = self._select(
+                "gym_sets", columns="exercise_id",
+                filters={"user_id": user_id, "set_group_id": group_id},
             )
+            if not remaining:
+                self.client.delete("gym_set_groups", filters={"user_id": user_id, "id": group_id})
+            elif len({row.get("exercise_id") for row in remaining}) == 1:
+                # A superset that lost all but one exercise is a single block
+                # again; save_set promotes it back if a second one returns.
+                self.client.update(
+                    "gym_set_groups", {"group_type": "single"},
+                    filters={"user_id": user_id, "id": group_id, "group_type": "superset"},
+                )
         if not self._select(
             "gym_sets", filters={"user_id": user_id, "session_id": existing["session_id"]}, limit=1
         ):

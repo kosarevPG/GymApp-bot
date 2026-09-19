@@ -37,6 +37,12 @@ in flight; answering "already saved" would drop it. The client aborts a queued
 request only after 35 s, longer than the function's 30 s execution timeout, so
 an abandoned request cannot land after its own retry.
 
+`delete_set` with `missing_ok: true` treats an absent row as deleted. The
+offline queue sends it: its deletes may target sets that never reached the
+server or repeat a delete whose answer was lost. Without the flag (history
+screen) an absent row is still an error. When a superset loses all but one
+exercise, its group becomes `single` again.
+
 `delete_workout` should receive `session_id`. The legacy date-only form is
 accepted only when that date resolves to exactly one owner session; ambiguity
 returns HTTP 409. Deleting a workout sends one owner-scoped session DELETE and

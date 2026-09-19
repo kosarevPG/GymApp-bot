@@ -194,6 +194,32 @@ class SupabaseStoreTests(unittest.TestCase):
         self.assertTrue(self.store.delete_set(USER_ID, {"client_request_id": REQUEST_1}))
         self.assertEqual(self.client.tables["gym_sets"], [])
 
+    def test_missing_row_counts_as_deleted_only_for_the_queue(self):
+        self.assertFalse(self.store.delete_set(USER_ID, {"client_request_id": REQUEST_1}))
+        self.assertTrue(self.store.delete_set(
+            USER_ID, {"client_request_id": REQUEST_1, "missing_ok": True}
+        ))
+
+    def test_superset_that_loses_an_exercise_is_single_again(self):
+        self.client.tables["gym_exercises"].append({
+            "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "user_id": USER_ID,
+            "source": "gymapp", "source_key": "legacy-row", "name_ru": "Тяга",
+            "muscle_group": "Спина", "weight_type": "Machine", "base_weight_kg": 0,
+            "multiplier": 1, "tonnage_mode": "external_load", "is_active": True,
+            "source_payload": {},
+        })
+        self.store.save_set(USER_ID, self.payload())
+        self.store.save_set(USER_ID, {
+            **self.payload(request_id=REQUEST_2), "exercise_id": "legacy-row", "order": 2,
+        })
+        [group] = self.client.tables["gym_set_groups"]
+        self.assertEqual(group["group_type"], "superset")
+
+        self.assertTrue(self.store.delete_set(USER_ID, {"client_request_id": REQUEST_2}))
+        [group] = self.client.tables["gym_set_groups"]
+        self.assertEqual(group["group_type"], "single")
+        self.assertEqual(len(self.client.tables["gym_sets"]), 1)
+
     def test_history_uses_technique_note_and_client_request_id(self):
         self.store.save_set(USER_ID, self.payload())
         result = self.store.get_exercise_history(USER_ID, "legacy-exercise")
