@@ -222,3 +222,74 @@ test('items stored before versioning are read as rev 0 and acknowledged', async 
   await offlineSync.syncQueue(async () => ({ ok: true }));
   assert.deepEqual(offlineSync.getQueue(), []);
 });
+
+
+test('deleting a set that never left the phone just drops it', () => {
+  installEnv();
+  offlineSync.addToQueue('saveSet', { client_request_id: SET_A, reps: 10 });
+  offlineSync.enqueueDelete({ client_request_id: SET_A });
+  assert.deepEqual(offlineSync.getQueue(), []);
+});
+
+
+test('a delete made while the save is in flight goes out after it', async () => {
+  installEnv();
+  offlineSync.addToQueue('saveSet', { client_request_id: SET_A, reps: 10 });
+  const sent = [];
+  const gate = deferred();
+  const run = offlineSync.syncQueue(async (item) => {
+    sent.push(item.type);
+    if (sent.length === 1) await gate.promise;
+    return { ok: true };
+  });
+
+  offlineSync.enqueueDelete({ client_request_id: SET_A });
+  gate.resolve();
+  await run;
+
+  // Ответ на save не снял удаление: строку, записанную этим save, убирает delete.
+  assert.deepEqual(sent, ['saveSet', 'deleteSet']);
+  assert.deepEqual(offlineSync.getQueue(), []);
+});
+
+
+test('a save that was sent without an answer is deleted on the server too', async () => {
+  installEnv();
+  offlineSync.addToQueue('saveSet', { client_request_id: SET_A, reps: 10 });
+  await offlineSync.syncQueue(async () => ({ ok: false, error: 'сервер не ответил за 35 с', stop: true }));
+  assert.equal(offlineSync.getQueue()[0].sent, true);
+
+  offlineSync.enqueueDelete({ client_request_id: SET_A });
+  const [item] = offlineSync.getQueue();
+  assert.equal(item.type, 'deleteSet');
+  assert.equal(item.attempts, 0);
+});
+
+
+test('the sent mark is stored before the request leaves', async () => {
+  installEnv();
+  offlineSync.addToQueue('saveSet', { client_request_id: SET_A, reps: 10 });
+  const gate = deferred();
+  const run = offlineSync.syncQueue(async () => { await gate.promise; return { ok: true }; });
+  // Приложение убили посреди запроса: после перезапуска это должно быть видно.
+  const stored = JSON.parse(localStorage.getItem('gym_offline_queue_v2'));
+  assert.equal(stored[0].sent, true);
+  gate.resolve();
+  await run;
+});
+
+
+test('a pending edit becomes a delete, a synced set gets a new delete, a deleted set ignores edits', () => {
+  installEnv();
+  offlineSync.upsertQueue('updateSet', { client_request_id: SET_A, reps: 12 });
+  offlineSync.enqueueDelete({ client_request_id: SET_A });
+  offlineSync.enqueueDelete({ client_request_id: SET_B });
+  offlineSync.upsertQueue('updateSet', { client_request_id: SET_B, reps: 9 });
+
+  const queue = offlineSync.getQueue();
+  assert.deepEqual(queue.map((item) => [item.id, item.type]), [
+    [SET_A, 'deleteSet'],
+    [SET_B, 'deleteSet'],
+  ]);
+  assert.equal(queue[1].data.reps, undefined);
+});

@@ -9,13 +9,16 @@
  * item bumps its rev, and a server answer acknowledges only the rev that was
  * sent: an edit made while the request was in flight stays in the queue and
  * goes out next instead of being dropped together with the acknowledged item.
+ *
+ * A deletion is queued the same way and goes out after whatever request for
+ * that set is already on the wire, so a late save cannot bring the row back.
  */
 
 const QUEUE_KEY = 'gym_offline_queue_v2';
 const LEGACY_QUEUE_KEY = 'gym_offline_queue';
 export const QUEUE_CHANGED_EVENT = 'gym-offline-queue-changed';
 
-export type QueueItemType = 'saveSet' | 'updateSet';
+export type QueueItemType = 'saveSet' | 'updateSet' | 'deleteSet';
 
 export interface QueuedItem {
   id: string;
@@ -26,6 +29,11 @@ export interface QueuedItem {
   lastError?: string;
   /** Сервер отклонил элемент по существу; сетевые сбои сюда не относятся. */
   rejected?: boolean;
+  /**
+   * Запрос уходил в сеть хотя бы раз. Пишется до отправки: если приложение
+   * убили посреди запроса, строка на сервере могла появиться без ответа.
+   */
+  sent?: boolean;
   /** Номер локальной версии данных; растёт при каждой правке элемента. */
   rev: number;
 }
@@ -135,6 +143,8 @@ export function upsertQueue(type: QueueItemType, data: Record<string, unknown>):
   const id = String(data.client_request_id || crypto.randomUUID());
   const queue = getQueue();
   const existing = queue.find((item) => item.id === id);
+  // Удалённый подход не правят: правка воскресила бы то, что удаление убирает.
+  if (existing?.type === 'deleteSet') return id;
   if (existing) {
     // Строка ещё не подтверждена сервером: обновляем данные на месте. Если это
     // был saveSet, тип сохраняем — строки в таблице может ещё не быть, update
@@ -161,6 +171,44 @@ export function upsertQueue(type: QueueItemType, data: Record<string, unknown>):
       client_request_id: id,
     },
     createdAt,
+    attempts: 0,
+    rev: 0,
+  });
+  persist(queue);
+  return id;
+}
+
+/**
+ * Ставит в очередь удаление подхода. Подход, который ни разу не уходил на
+ * сервер, просто исчезает из очереди. Иначе элемент становится удалением:
+ * оно уйдёт после запроса, который по этому подходу уже в пути, а ответ на
+ * тот запрос удаление не снимет. Бросает исключение, если localStorage
+ * запись не принял.
+ */
+export function enqueueDelete(data: Record<string, unknown>): string {
+  const id = String(data.client_request_id || '');
+  if (!id) throw new Error('client_request_id is required to delete a set');
+  const queue = getQueue();
+  const existing = queue.find((item) => item.id === id);
+  if (existing?.type === 'saveSet' && !existing.sent && inFlightId !== id) {
+    persist(queue.filter((item) => item.id !== id));
+    return id;
+  }
+  if (existing) {
+    existing.type = 'deleteSet';
+    existing.data = { ...existing.data, ...data, client_request_id: id };
+    existing.attempts = 0;
+    existing.lastError = undefined;
+    existing.rejected = false;
+    existing.rev += 1;
+    persist(queue);
+    return id;
+  }
+  queue.push({
+    id,
+    type: 'deleteSet',
+    data: { ...data, client_request_id: id },
+    createdAt: Date.now(),
     attempts: 0,
     rev: 0,
   });
@@ -218,7 +266,9 @@ function acknowledge(id: string, sentRev: number): boolean {
     persist(queue.filter((entry) => entry.id !== id));
     return false;
   }
-  item.type = 'updateSet';
+  // Сохранённая строка с более свежими данными — это правка. Удаление так и
+  // остаётся удалением.
+  if (item.type === 'saveSet') item.type = 'updateSet';
   item.attempts = 0;
   item.lastError = undefined;
   item.rejected = false;
@@ -231,8 +281,13 @@ async function runPass(send: (item: QueuedItem) => Promise<SendOutcome>): Promis
   for (const { id } of getQueue()) {
     // Данные читаем заново перед каждой отправкой: пока шёл предыдущий
     // запрос, элемент могли поправить или удалить.
-    const item = getQueue().find((entry) => entry.id === id);
+    const queue = getQueue();
+    const item = queue.find((entry) => entry.id === id);
     if (!item) continue;
+    if (!item.sent) {
+      item.sent = true;
+      persist(queue);
+    }
     setInFlight(id);
     let outcome: SendOutcome;
     try {
