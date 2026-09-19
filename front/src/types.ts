@@ -1,3 +1,5 @@
+import type { LoadRules } from './exerciseConfig';
+
 export type SetType = 'warmup' | 'working' | 'drop' | 'failure';
 
 export interface Exercise {
@@ -45,6 +47,8 @@ export interface HistoryItem {
   set_type?: string;
   rpe?: number;
   rir?: number;
+  /** Правила расчёта веса на момент подхода; у старых подходов нет. */
+  load?: LoadRules | null;
 }
 
 export interface ExerciseSessionData {

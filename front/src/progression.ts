@@ -13,7 +13,9 @@
  *  - it never invents targets. Suggested values may be shown, but only a
  *    person's confirmation writes them.
  */
-import { calcEffectiveWeight, toInputWeight, USER_BODY_WEIGHT_DEFAULT } from './exerciseConfig';
+import {
+  calcEffectiveWeight, formatSetSequence, loadProgress, setLoadLabel, toInputWeight, USER_BODY_WEIGHT_DEFAULT,
+} from './exerciseConfig';
 import type { Exercise, HistoryItem, SetType } from './types';
 
 export interface ExerciseTargets {
@@ -298,17 +300,36 @@ export function suggestTargets(
  * 0/5/10/15/20/25 выглядела как «0 × 15/15/12/12/12/9», то есть будто все
  * шесть подходов сделаны с пустым грифом. Подряд идущие одинаковые веса
  * схлопываются, иначе прямые подходы превращались бы в «20×12 · 20×12 · 20×12».
+ * Вес подписан так же, как в истории (`formatLoad`): «2×8 кг × 12/12».
  */
-export function formatLastSessionSets(sets: HistoryItem[] | null | undefined): string {
+export function formatLastSessionSets(
+  sets: HistoryItem[] | null | undefined,
+  exercise: Exercise | null | undefined = null,
+  bodyWeight: number = USER_BODY_WEIGHT_DEFAULT,
+): string {
   const rows = Array.isArray(sets) ? sets.filter(Boolean) : [];
-  if (!rows.length) return '';
-  const groups: { weight: number; reps: number[] }[] = [];
-  for (const row of rows) {
-    const weight = num(row.input_weight) ?? num(row.weight) ?? 0;
-    const reps = num(row.reps) ?? 0;
-    const last = groups[groups.length - 1];
-    if (last && last.weight === weight) last.reps.push(reps);
-    else groups.push({ weight, reps: [reps] });
+  return formatSetSequence(rows.map((row) => ({
+    label: setLoadLabel(row, exercise, bodyWeight),
+    reps: num(row.reps) ?? 0,
+  })));
+}
+
+/**
+ * Лучший рабочий подход за всю историю — для строки PR. Разминка не в счёт.
+ * «Лучший» сравнивается по `loadProgress`: у гравитрона это меньшая помощь,
+ * а не больший итог, который растёт вместе с весом тела.
+ */
+export function personalBest(
+  history: HistoryItem[] | null | undefined,
+  exercise: Exercise | null | undefined,
+  bodyWeight: number = USER_BODY_WEIGHT_DEFAULT,
+): { label: string; value: number } | null {
+  let best: { row: HistoryItem; value: number } | null = null;
+  for (const row of Array.isArray(history) ? history : []) {
+    if (!row || String(row.set_type ?? 'working').toLowerCase() === 'warmup') continue;
+    if (!((num(row.reps) ?? 0) > 0)) continue;
+    const value = loadProgress(row, exercise, bodyWeight);
+    if (!best || value > best.value) best = { row, value };
   }
-  return groups.map((group) => `${group.weight}×${group.reps.join('/')}`).join(' · ');
+  return best ? { label: setLoadLabel(best.row, exercise, bodyWeight), value: best.value } : null;
 }
