@@ -19,6 +19,8 @@ export interface GlobalHistoryExercise {
   exerciseId?: string;
   supersetId?: string | null;
   sets?: GlobalHistorySet[];
+  /** Отрезки кардио: минуты, скорость, наклон. */
+  cardio?: { minutes?: number; speed?: number; incline?: number; order?: number }[];
 }
 
 export interface GlobalHistorySession {

@@ -12,6 +12,8 @@ export interface Exercise {
   weightType?: string;
   baseWeight?: number;
   weightMultiplier?: number;
+  /** Как записывается результат: подходы с весом или отрезки кардио. */
+  measure?: 'strength' | 'cardio';
   /* Release B progression targets. Null/undefined means "not configured" —
      the card then offers a setup button instead of a recommendation. */
   repRangeLow?: number | null;
@@ -33,6 +35,19 @@ export interface WorkoutSet {
   rir?: number | string;
   isLowConfidence?: boolean;
   requestId?: string;
+  order?: number;
+  /** Поля отрезка кардио; у силовых подходов пустые. */
+  minutes?: string;
+  speed?: string;
+  incline?: string;
+}
+
+export interface CardioHistoryItem {
+  session_id?: string;
+  date: string;
+  minutes: number;
+  speed?: number;
+  incline?: number;
   order?: number;
 }
 
@@ -56,5 +71,6 @@ export interface ExerciseSessionData {
   note: string;
   sets: WorkoutSet[];
   history: HistoryItem[];
+  cardioHistory?: CardioHistoryItem[];
   sessionId?: string;
 }

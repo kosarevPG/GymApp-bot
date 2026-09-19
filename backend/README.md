@@ -46,6 +46,17 @@ that is not a recognisable snapshot is dropped. Sets saved before this have no
 `load`; the client reads them by the exercise's current settings. No stored
 weight is ever rewritten.
 
+Cardio is stored apart from sets, in `gym_cardio_segments` (migration
+`supabase/migrations/202609190001_gym_cardio_segments.sql`): one row per
+segment of steady work with `duration_seconds`, `speed_kmh`, `incline_pct`.
+`save_cardio`, `update_cardio` and `delete_cardio` follow the set contract —
+idempotent by `client_request_id`, a retry applies an edit, `missing_ok` for
+queued deletes. Exercises carry `measure` (`strength` or `cardio`); history
+returns segments as `cardio` next to `sets`, and cardio never counts as sets,
+reps or tonnage. A session is deleted only when neither sets nor cardio are
+left in it. **Apply the migration before deploying this backend**: it selects
+`gym_exercises.measure` and reads the new table.
+
 `delete_set` with `missing_ok: true` treats an absent row as deleted. The
 offline queue sends it: its deletes may target sets that never reached the
 server or repeat a delete whose answer was lost. Without the flag (history
