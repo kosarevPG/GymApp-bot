@@ -71,6 +71,30 @@ def _stable_uuid(*parts: Any) -> str:
     return str(uuid.uuid5(LIVE_NAMESPACE, ":".join(str(part) for part in parts)))
 
 
+WEIGHT_TYPES = {"Machine", "Plate_Loaded", "Dumbbell", "Barbell", "Bodyweight", "Assisted", "Other"}
+
+
+def _load_rules(value: Any) -> Optional[Dict[str, Any]]:
+    """The client's snapshot of how a set's input became its total weight.
+
+    Kept in source_payload so a later change of the exercise's settings does not
+    reinterpret old numbers. Anything that does not look like a snapshot is
+    dropped rather than stored half-understood.
+    """
+    if not isinstance(value, dict) or str(value.get("type") or "") not in WEIGHT_TYPES:
+        return None
+    rules: Dict[str, Any] = {
+        "v": _to_int(value.get("v"), 1),
+        "type": str(value["type"]),
+        "mult": _to_float(value.get("mult"), 1.0),
+        "base": _to_float(value.get("base")),
+    }
+    body_weight = _optional_float(value.get("bw"))
+    if body_weight is not None and body_weight > 0:
+        rules["bw"] = body_weight
+    return rules
+
+
 def _valid_client_request_id(value: Any) -> str:
     try:
         return str(uuid.UUID(str(value or "").strip()))
@@ -489,6 +513,7 @@ class SupabaseStore:
         try:
             session = self._ensure_session(user_id, session_ref, performed_at)
             group = self._ensure_group(user_id, session, session_ref, group_ref, position)
+            load = _load_rules(data.get("load"))
             row = {
                 "id": _stable_uuid(user_id, "set", request_id),
                 "user_id": user_id,
@@ -503,7 +528,7 @@ class SupabaseStore:
                 "source_record_id": f"live:{request_id}",
                 "client_request_id": request_id,
                 "legacy_session_id": session_ref,
-                "source_payload": {"client_group_id": group_ref},
+                "source_payload": {"client_group_id": group_ref, **({"load": load} if load else {})},
             }
             written = self.client.upsert(
                 "gym_sets", row, on_conflict="user_id,client_request_id"
@@ -558,6 +583,11 @@ class SupabaseStore:
                 updates[column] = convert(data[api_name])
         if updates.get("reps", 1) <= 0 or updates.get("rest_seconds", 0) < 0:
             return False
+        load = _load_rules(data.get("load"))
+        if load:
+            # A weight edit brings the rules it was computed with; the rest of
+            # the payload (client group, import provenance) stays as it was.
+            updates["source_payload"] = {**(existing.get("source_payload") or {}), "load": load}
         updates["updated_at"] = self._now().isoformat()
         return bool(self.client.update(
             "gym_sets", updates, filters={"user_id": user_id, "id": existing["id"]}
@@ -643,6 +673,9 @@ class SupabaseStore:
             result["rpe"] = _to_float(row["rpe"])
         if row.get("rir") is not None:
             result["rir"] = _to_float(row["rir"])
+        load = (row.get("source_payload") or {}).get("load")
+        if isinstance(load, dict):
+            result["load"] = load
         return result
 
     def get_exercise_history(self, user_id: str, exercise_id: str, limit: int = 50) -> Dict[str, Any]:

@@ -1,3 +1,5 @@
+import type { LoadRules } from './exerciseConfig';
+
 /** Shapes returned by GET /api/global_history. Shared by the summary code. */
 export interface GlobalHistorySet {
   id?: string;
@@ -9,6 +11,7 @@ export interface GlobalHistorySet {
   set_type?: string;
   rpe?: number;
   rir?: number;
+  load?: LoadRules | null;
 }
 
 export interface GlobalHistoryExercise {

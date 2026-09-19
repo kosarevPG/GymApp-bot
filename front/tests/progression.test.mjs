@@ -28,7 +28,7 @@ const progCompiled = ts.transpileModule(progSource, {
 }).outputText;
 const {
   buildProgressionAdvice, formatLastSessionSets, lastSessionWorkingSets, nextInputWeight,
-  progressionDirection, roundToStep, suggestTargets,
+  personalBest, progressionDirection, roundToStep, suggestTargets,
 } = await import(`data:text/javascript;base64,${Buffer.from(progCompiled).toString('base64')}`);
 const { calcEffectiveWeight } = await import(cfgUrl);
 
@@ -272,22 +272,57 @@ test('лесенка показывается парами, а не одним �
   const line = formatLastSessionSets([
     setOf(0, 15), setOf(5, 15), setOf(10, 12), setOf(15, 12), setOf(20, 12), setOf(25, 9),
   ]);
-  assert.equal(line, '0×15 · 5×15 · 10×12 · 15×12 · 20×12 · 25×9');
+  assert.equal(line, '0 кг × 15 · 5 кг × 15 · 10 кг × 12 · 15 кг × 12 · 20 кг × 12 · 25 кг × 9');
 });
 
 test('прямые подходы схлопываются в один вес', () => {
   const line = formatLastSessionSets([setOf(20, 12), setOf(20, 12), setOf(20, 10)]);
-  assert.equal(line, '20×12/12/10');
+  assert.equal(line, '20 кг × 12/12/10');
 });
 
 test('схлопываются только подряд идущие одинаковые веса', () => {
   const line = formatLastSessionSets([setOf(20, 12), setOf(25, 8), setOf(20, 10)]);
-  assert.equal(line, '20×12 · 25×8 · 20×10');
+  assert.equal(line, '20 кг × 12 · 25 кг × 8 · 20 кг × 10');
 });
 
-test('вес берётся из input_weight, а при его отсутствии из weight', () => {
-  const line = formatLastSessionSets([{ weight: 40, reps: 10 }, { input_weight: 0, weight: 20, reps: 15 }]);
-  assert.equal(line, '40×10 · 0×15');
+test('без известных правил показывается итог, а без итога — введённое число', () => {
+  const line = formatLastSessionSets([{ weight: 40, reps: 10 }, { input_weight: 25, reps: 15 }]);
+  assert.equal(line, '40 кг × 10 · 25 кг × 15');
+});
+
+test('«прошлый раз» пишет вес так же, как история', () => {
+  const pair = (input, reps) => ({ input_weight: input, weight: input * 2, reps, date: '2026-02-28' });
+  assert.equal(formatLastSessionSets([pair(8, 12), pair(8, 12), pair(10, 10)], DUMBBELL), '2×8 кг × 12/12 · 2×10 кг × 10');
+  // Штанга по сторонам показывается итогом, а не весом на сторону.
+  const bar = { input_weight: 20, weight: 60, reps: 10, date: '2026-02-28' };
+  assert.equal(formatLastSessionSets([bar, bar], BARBELL), '60 кг × 10/10');
+  const help = { input_weight: 30, weight: 60, reps: 8, date: '2026-02-28' };
+  assert.equal(formatLastSessionSets([help], ASSISTED), 'помощь 30 кг × 8');
+});
+
+test('снимок правил подхода важнее нынешних настроек упражнения', () => {
+  const old = { input_weight: 16, weight: 16, reps: 12, load: { v: 1, type: 'Machine', mult: 1, base: 0 } };
+  assert.equal(formatLastSessionSets([old], DUMBBELL), '16 кг × 12');
+});
+
+test('PR — лучший рабочий подход, разминка не в счёт', () => {
+  const rows = [
+    { input_weight: 30, weight: 30, reps: 5, set_type: 'warmup' },
+    { input_weight: 20, weight: 20, reps: 10, set_type: 'working' },
+    { input_weight: 22.5, weight: 22.5, reps: 8, set_type: 'working' },
+  ];
+  assert.deepEqual(personalBest(rows, null), { label: '22.5 кг', value: 22.5 });
+  assert.equal(personalBest([], null), null);
+});
+
+test('PR гравитрона — наименьшая помощь, а не наибольший итог', () => {
+  // Итог 60 при весе тела 90 и итог 58 при весе 78: второй подход легче по
+  // итогу, но помощи в нём меньше — он и есть рекорд.
+  const rows = [
+    { input_weight: 30, weight: 60, reps: 8, load: { v: 1, type: 'Assisted', mult: -1, base: 90, bw: 90 } },
+    { input_weight: 20, weight: 58, reps: 8, load: { v: 1, type: 'Assisted', mult: -1, base: 90, bw: 78 } },
+  ];
+  assert.equal(personalBest(rows, ASSISTED).label, 'помощь 20 кг');
 });
 
 test('пустой ввод даёт пустую строку и не бросает', () => {
@@ -299,5 +334,5 @@ test('пустой ввод даёт пустую строку и не брос�
 
 test('мусор в весах и повторах не роняет строку', () => {
   const line = formatLastSessionSets([{ input_weight: 'ерунда', reps: null }, setOf(10, 5)]);
-  assert.equal(line, '0×0 · 10×5');
+  assert.equal(line, '0 кг × 0 · 10 кг × 5');
 });

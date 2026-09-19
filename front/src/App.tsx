@@ -9,10 +9,10 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts';
 import { API_BASE_URL, STANDALONE_API_BASE_URL, WORKOUT_STORAGE_KEY, ACTIVE_WORKOUT_KEY, sortGroups, SESSION_ID_KEY, ORDER_COUNTER_KEY, LAST_ACTIVE_KEY } from './constants';
 import { readSessionDeeplink, stripSessionParam } from './deeplink';
-import { lastSessionWorkingSets, formatLastSessionSets } from './progression';
+import { lastSessionWorkingSets, formatLastSessionSets, personalBest } from './progression';
 import { buildTrainerSummary, formatTrainerSummaryText, isoDaysAgo } from './trainerSummary';
 import { SetDisplayRow } from './components/SetDisplayRow';
-import { calcEffectiveWeight, weightInputLabel, WEIGHT_TYPE_OPTIONS, USER_BODY_WEIGHT_DEFAULT, describeLoad, DEFAULT_PLATES, PLATE_CHOICES } from './exerciseConfig';
+import { calcEffectiveWeight, weightInputLabel, WEIGHT_TYPE_OPTIONS, USER_BODY_WEIGHT_DEFAULT, describeLoad, DEFAULT_PLATES, PLATE_CHOICES, carryOverInput, loadRulesOf, rulesAsExercise, rulesForSet, setLoadLabel } from './exerciseConfig';
 import type { Exercise, WorkoutSet, HistoryItem, ExerciseSessionData, SetType } from './types';
 import {
   QUEUE_CHANGED_EVENT,
@@ -617,7 +617,7 @@ const NoteWidget = ({ initialValue, onChange }: any) => {
   );
 };
 
-const HistoryListModal = ({ isOpen, onClose, history, exerciseName }: any) => {
+const HistoryListModal = ({ isOpen, onClose, history, exerciseName, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT }: any) => {
   const groupedHistory = useMemo(() => {
     const groups: Record<string, { date: string; items: HistoryItem[] }> = {};
     history.forEach((item: HistoryItem) => {
@@ -643,7 +643,7 @@ const HistoryListModal = ({ isOpen, onClose, history, exerciseName }: any) => {
               {group.items.map((item, idx) => (
                 <div key={idx} className="p-3 border-b border-zinc-800 last:border-0">
                   <SetDisplayRow
-                    weight={item.weight}
+                    weightText={setLoadLabel(item, exercise, bodyWeight)}
                     reps={item.reps}
                     rest={item.rest}
                     setType={item.set_type}
@@ -804,13 +804,13 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates =
  * the app has no business arguing with it — it shows the previous session and
  * stops. What it can do that a coach cannot is remember every set exactly.
  */
-const LastTimeBlock = ({ exercise, history }: any) => {
+const LastTimeBlock = ({ exercise, history, bodyWeight = USER_BODY_WEIGHT_DEFAULT }: any) => {
   const line = useMemo(() => {
     const sets = lastSessionWorkingSets(history, exercise?.targetWorkingSets ?? null);
     if (!sets.length) return null;
     const date = String(sets[0].date || '').slice(5).replace('-', '.');
-    return `${date} · ${formatLastSessionSets(sets)}`;
-  }, [exercise, history]);
+    return `${date} · ${formatLastSessionSets(sets, exercise, bodyWeight)}`;
+  }, [exercise, history, bodyWeight]);
 
   if (!line) return null;
   return (
@@ -823,19 +823,21 @@ const LastTimeBlock = ({ exercise, history }: any) => {
 
 const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates = DEFAULT_PLATES, syncMarks = {}, onAddSet, onUpdateSet, onDeleteSet, onCompleteSet, onNoteChange, onAddSuperset, onRemove }: any) => {
   const [showHistoryModal, setShowHistoryModal] = useState(false);
+  // Лучший рабочий подход, записанный так же, как в истории: «2×12 кг»,
+  // «помощь 20 кг». Нулевой вес рекордом не считается.
   const personalRecord = useMemo(() => {
-    if (!exerciseData.history.length) return 0;
-    return Math.max(...exerciseData.history.map((h: HistoryItem) => h.weight));
-  }, [exerciseData.history]);
+    const best = personalBest(exerciseData.history, exerciseData.exercise, bodyWeight);
+    return best && best.label !== '0 кг' && best.label !== 'свой вес' ? best.label : null;
+  }, [exerciseData.history, exerciseData.exercise, bodyWeight]);
 
   return (
     <Card className="p-4 mb-4">
       <div className="flex justify-between items-start mb-4">
         <div>
           <h2 className="text-xl font-semibold text-zinc-50">{exerciseData.exercise.name}</h2>
-          {personalRecord > 0 && (
+          {personalRecord && (
             <div className="flex items-center gap-1 text-yellow-500 text-xs font-medium mt-1">
-              <Trophy className="w-3 h-3" /><span>PR: {personalRecord} кг</span>
+              <Trophy className="w-3 h-3" /><span>PR: {personalRecord}</span>
             </div>
           )}
         </div>
@@ -844,9 +846,9 @@ const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plat
           <button onClick={onRemove} title="Убрать из тренировки" className="p-2 bg-zinc-800/50 rounded-lg text-zinc-500 hover:text-red-500"><X className="w-5 h-5" /></button>
         </div>
       </div>
-      <LastTimeBlock exercise={exerciseData.exercise} history={exerciseData.history} />
+      <LastTimeBlock exercise={exerciseData.exercise} history={exerciseData.history} bodyWeight={bodyWeight} />
       <NoteWidget initialValue={exerciseData.note} onChange={onNoteChange} />
-      <HistoryListModal isOpen={showHistoryModal} onClose={() => setShowHistoryModal(false)} history={exerciseData.history} exerciseName={exerciseData.exercise.name} />
+      <HistoryListModal isOpen={showHistoryModal} onClose={() => setShowHistoryModal(false)} history={exerciseData.history} exerciseName={exerciseData.exercise.name} exercise={exerciseData.exercise} bodyWeight={bodyWeight} />
       <div className="grid grid-cols-[auto_auto_1fr_1fr_1fr_auto] gap-2 mb-2 px-1">
         <div className="w-8" />
         <div className="w-10" />
@@ -889,7 +891,7 @@ const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plat
  * the same exercise was done, and a list of what went down. No advice — the
  * programme is the coach's.
  */
-const TrainerSummaryScreen = ({ onBack, notify }: any) => {
+const TrainerSummaryScreen = ({ onBack, notify, allExercises = [] }: any) => {
   const [history, setHistory] = useState<any[] | null>(null);
   const [days, setDays] = useState(7);
   const [copied, setCopied] = useState(false);
@@ -897,9 +899,13 @@ const TrainerSummaryScreen = ({ onBack, notify }: any) => {
   useEffect(() => { api.getGlobalHistory().then((data: any) => setHistory(data || [])); }, []);
 
   const today = todayInLogFormat().replace(/\./g, '-');
+  const exerciseById = useMemo(
+    () => Object.fromEntries(allExercises.map((ex: Exercise) => [ex.id, ex])),
+    [allExercises],
+  );
   const summary = useMemo(
-    () => (history ? buildTrainerSummary(history, isoDaysAgo(today, days), today) : null),
-    [history, days, today],
+    () => (history ? buildTrainerSummary(history, isoDaysAgo(today, days), today, exerciseById) : null),
+    [history, days, today, exerciseById],
   );
   const text = useMemo(() => (summary ? formatTrainerSummaryText(summary) : ''), [summary]);
 
@@ -956,8 +962,8 @@ const TrainerSummaryScreen = ({ onBack, notify }: any) => {
                   {exercise.change ? (
                     <div className={`text-[11px] ${exercise.change.down ? 'text-amber-400' : 'text-zinc-500'}`}>
                       было {exercise.change.previousText}
-                      {exercise.change.weightDelta !== 0 && ` · вес ${exercise.change.weightDelta > 0 ? '+' : ''}${exercise.change.weightDelta}`}
-                      {exercise.change.repsDelta !== 0 && ` · повт. ${exercise.change.repsDelta > 0 ? '+' : ''}${exercise.change.repsDelta}`}
+                      {exercise.change.weightText && ` · ${exercise.change.weightText}`}
+                      {exercise.change.repsDelta !== 0 && ` · повт. ${exercise.change.repsDelta > 0 ? '+' : '−'}${Math.abs(exercise.change.repsDelta)}`}
                       {exercise.change.weightDelta === 0 && exercise.change.repsDelta === 0 && ' · как в прошлый раз'}
                     </div>
                   ) : (
@@ -1189,7 +1195,9 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
           .sort((a, b) => (a.order || 0) - (b.order || 0));
         initialSets = lastDateItems.map(h => ({
           id: crypto.randomUUID(), 
-          weight: (h.input_weight ?? h.weight).toString(),
+          // Если настройки упражнения с тех пор менялись, прошлый итог
+          // переводится в нынешние единицы ввода, а не копируется число.
+          weight: String(carryOverInput(h, allExercises.find((e: Exercise) => e.id === exId), bodyWeight)),
           reps: h.reps.toString(), 
           rest: h.rest.toString(), 
           completed: false, 
@@ -1278,6 +1286,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
       exercise_name: exercise?.name,
       input_weight: inputWeight,
       weight: calcEffectiveWeight(exercise, inputWeight, bodyWeight),
+      load: loadRulesOf(exercise, bodyWeight),
       reps: parseInt(set.reps),
       rest: parseFloat(set.rest) || 0,
       note: sessionData[exId].note,
@@ -1496,7 +1505,9 @@ const HistoryScreen = ({ onBack, allExercises = [], bodyWeight = USER_BODY_WEIGH
 
   const openEdit = (s: any, ex: any) => {
     const exercise = allExercises.find((e: Exercise) => e.id === ex.exerciseId);
-    setEditTarget({ set: s, exerciseId: ex.exerciseId, exerciseName: ex.name, exercise });
+    // Подход правится по своим правилам — тем, что были в день подхода.
+    const rules = rulesForSet(s, exercise, bodyWeight);
+    setEditTarget({ set: s, exerciseId: ex.exerciseId, exerciseName: ex.name, exercise, rules });
     setEditW(String(s.input_weight ?? s.weight ?? ''));
     setEditR(String(s.reps ?? ''));
     setEditRest(String(s.rest ?? ''));
@@ -1512,10 +1523,17 @@ const HistoryScreen = ({ onBack, allExercises = [], bodyWeight = USER_BODY_WEIGH
     const reps = parseInt(editR, 10);
     if (Number.isNaN(inputWeight) || !(reps > 0)) { notify?.('error'); return; }
     setBusy(true);
+    // Повторы и отдых правятся без пересчёта веса: итог старого подхода
+    // считался по весу тела и настройкам того дня, а не нынешним.
+    const { set: original, rules } = editTarget;
+    const weightChanged = inputWeight !== Number(original.input_weight ?? original.weight);
     const res = await api.request('update_set', { method: 'POST', body: JSON.stringify({
       ...locator(editTarget),
-      input_weight: inputWeight,
-      weight: calcEffectiveWeight(editTarget.exercise, inputWeight, bodyWeight),
+      ...(weightChanged ? {
+        input_weight: inputWeight,
+        weight: calcEffectiveWeight(rulesAsExercise(rules), inputWeight, rules.bw ?? bodyWeight),
+        load: rules,
+      } : {}),
       reps,
       rest: parseFloat(editRest.replace(',', '.')) || 0,
     }) });
@@ -1595,7 +1613,7 @@ const HistoryScreen = ({ onBack, allExercises = [], bodyWeight = USER_BODY_WEIGH
                               {ex.sets.map((s: any, j: number) => (
                                 <button key={j} onClick={() => openEdit(s, ex)} className="w-full px-2 py-1 bg-zinc-800/30 rounded flex items-center justify-between text-left active:bg-zinc-800/60">
                                   <SetDisplayRow
-                                    weight={s.weight}
+                                    weightText={setLoadLabel(s, allExercises.find((e: Exercise) => e.id === ex.exerciseId), bodyWeight)}
                                     reps={s.reps}
                                     rest={s.rest}
                                     setType={s.set_type}
@@ -1623,7 +1641,7 @@ const HistoryScreen = ({ onBack, allExercises = [], bodyWeight = USER_BODY_WEIGH
           <div className="space-y-4">
             <div className="text-sm text-zinc-400">{editTarget.exerciseName} · {editTarget.set.date}</div>
             <div className="grid grid-cols-3 gap-2">
-              <div><label className="text-[10px] text-zinc-500 mb-1 block uppercase">{weightInputLabel(editTarget.exercise)}</label><Input type="number" inputMode="decimal" value={editW} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditW(e.target.value)} /></div>
+              <div><label className="text-[10px] text-zinc-500 mb-1 block uppercase">{weightInputLabel(rulesAsExercise(editTarget.rules))}</label><Input type="number" inputMode="decimal" value={editW} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditW(e.target.value)} /></div>
               <div><label className="text-[10px] text-zinc-500 mb-1 block uppercase">Повт</label><Input type="tel" inputMode="numeric" value={editR} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditR(e.target.value)} /></div>
               <div><label className="text-[10px] text-zinc-500 mb-1 block uppercase">Мин</label><Input type="number" inputMode="decimal" value={editRest} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditRest(e.target.value)} /></div>
             </div>
@@ -2164,7 +2182,7 @@ const App = () => {
     <div className="bg-zinc-950 min-h-screen text-zinc-50 font-sans selection:bg-blue-500/30 pb-safe">
       {screen === 'home' && <HomeScreen groups={groups} workoutActive={workoutActive} onStartWorkout={startWorkout} onFinishWorkout={() => setIsFinishConfirmOpen(true)} onSearch={(q: string) => { setSearchQuery(q); if (q) setScreen('exercises'); }} onSelectGroup={(g: string) => { setSelectedGroup(g); setScreen('exercises'); }} onAllExercises={() => { setSelectedGroup(null); setScreen('exercises'); }} onHistory={() => setScreen('history')} onAnalytics={() => setScreen('analytics')} onSummary={() => setScreen('summary')} onSettings={() => { setBodyWeightInput(String(bodyWeight)); setPlatesDraft(plates); setIsSettingsOpen(true); }} />}
       {screen === 'analytics' && <AnalyticsScreen onBack={() => setScreen('home')} />}
-      {screen === 'summary' && <TrainerSummaryScreen onBack={() => setScreen('home')} notify={notify} />}
+      {screen === 'summary' && <TrainerSummaryScreen onBack={() => setScreen('home')} notify={notify} allExercises={allExercises} />}
       {screen === 'history' && <HistoryScreen onBack={() => { setDeeplinkSession(null); setScreen('home'); }} allExercises={allExercises} bodyWeight={bodyWeight} notify={notify} haptic={haptic} focusSessionId={deeplinkSession} />}
       {screen === 'exercises' && <ExercisesListScreen exercises={filteredExercises} title={selectedGroup || (searchQuery ? `Поиск: ${searchQuery}` : 'Все упражнения')} searchQuery={searchQuery} onSearch={(q: string) => setSearchQuery(q)} onBack={() => { setSearchQuery(''); setSelectedGroup(null); setScreen('home'); }} onSelectExercise={(ex: Exercise) => { haptic('light'); setCurrentExercise(ex); setScreen('workout'); }} onAddExercise={() => setIsCreateModalOpen(true)} onEditExercise={(ex: Exercise) => setExerciseToEdit(ex)} />}
       {screen === 'workout' && currentExercise && <WorkoutScreen initialExercise={currentExercise} allExercises={allExercises} onExerciseUpdated={(id: string, updates: Partial<Exercise>) => setAllExercises(p => p.map(ex => ex.id === id ? { ...ex, ...updates } : ex))} sessionId={sessionId} incrementOrder={incrementOrder} ensureOrderAtLeast={ensureOrderAtLeast} bodyWeight={bodyWeight} plates={plates} haptic={haptic} notify={notify} onBack={() => setScreen('exercises')} />}
@@ -2243,7 +2261,7 @@ const App = () => {
             <div key={item.id} className="flex items-center gap-3 p-3 bg-zinc-800/50 rounded-xl border border-zinc-800">
               <div className="flex-1 min-w-0">
                 <div className="text-sm text-zinc-200 truncate">{String(item.data.exercise_name || 'Подход')}</div>
-                <div className="text-xs text-zinc-500">{String(item.data.input_weight ?? item.data.weight ?? '?')} кг × {String(item.data.reps ?? '?')} · {item.type === 'saveSet' ? 'новый подход' : item.type === 'deleteSet' ? 'удаление' : 'правка'}</div>
+                <div className="text-xs text-zinc-500">{item.data.input_weight != null || item.data.weight != null ? setLoadLabel(item.data as any, null) : '?'} × {String(item.data.reps ?? '?')} · {item.type === 'saveSet' ? 'новый подход' : item.type === 'deleteSet' ? 'удаление' : 'правка'}</div>
                 {item.id === inFlightId
                   ? <div className="text-xs text-amber-300">отправляется…</div>
                   : item.lastError && <div className={`text-xs ${item.rejected ? 'text-red-400' : 'text-zinc-400'}`}>попыток: {item.attempts} · {item.lastError === 'authorization' ? 'токен не подходит' : item.lastError}</div>}

@@ -208,3 +208,186 @@ export function describeLoad(
   // Стек и всё, где введённое число уже итоговое: пояснять нечего.
   return null;
 }
+
+/* ── Снимок правил и единый показ веса ─────────────────────────────────── */
+
+export const LOAD_RULES_VERSION = 1;
+
+/**
+ * Правила, по которым из введённого числа получился итоговый вес подхода.
+ * Пишется в подход при сохранении: смена настроек упражнения потом не
+ * переиначивает старые числа ни в показе, ни при правке.
+ */
+export interface LoadRules {
+  v: number;
+  type: string;
+  mult: number;
+  base: number;
+  /** Вес тела — только там, где он входит в итог: свой вес и гравитрон. */
+  bw?: number;
+}
+
+/** Подход в том виде, в каком его отдаёт история. */
+export interface LoggedLoad {
+  input_weight?: number | string | null;
+  weight?: number | string | null;
+  load?: LoadRules | null;
+}
+
+const usesBodyWeight = (type: string): boolean => type === 'bodyweight' || type === 'assisted';
+
+const toNum = (value: unknown): number | null => {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = typeof value === 'number' ? value : parseFloat(String(value).replace(',', '.'));
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const fmtKg = (value: number): string => String(round2(value));
+
+/** Правила упражнения на сейчас — то, что уйдёт в снимок нового подхода. */
+export function loadRulesOf(
+  exercise: ExerciseForWeight | null | undefined,
+  bodyWeight: number = USER_BODY_WEIGHT_DEFAULT
+): LoadRules {
+  const type = (exercise?.weightType ?? '').trim() || 'Other';
+  const rules: LoadRules = {
+    v: LOAD_RULES_VERSION,
+    type,
+    mult: exercise?.weightMultiplier ?? 1,
+    base: exercise?.baseWeight ?? 0,
+  };
+  if (usesBodyWeight(type.toLowerCase())) rules.bw = bodyWeight;
+  return rules;
+}
+
+export const rulesAsExercise = (rules: LoadRules): ExerciseForWeight => ({
+  weightType: rules.type,
+  weightMultiplier: rules.mult,
+  baseWeight: rules.base,
+});
+
+/** Одинаково ли толкуется введённое число. Вес тела не в счёт — он меняется сам. */
+export function sameLoadRules(a: LoadRules, b: LoadRules): boolean {
+  return a.type.trim().toLowerCase() === b.type.trim().toLowerCase()
+    && Number(a.mult) === Number(b.mult)
+    && Number(a.base) === Number(b.base);
+}
+
+/** Снимок подхода, а для старых подходов без снимка — нынешние правила упражнения. */
+export function rulesForSet(
+  set: LoggedLoad | null | undefined,
+  exercise: ExerciseForWeight | null | undefined,
+  bodyWeight: number = USER_BODY_WEIGHT_DEFAULT
+): LoadRules {
+  return set?.load && typeof set.load === 'object' && set.load.type
+    ? set.load
+    : loadRulesOf(exercise, bodyWeight);
+}
+
+/** Введённое число и итог подхода; недостающее досчитывается по правилам. */
+function inputAndTotal(set: LoggedLoad | null | undefined, rules: LoadRules, bodyWeight: number) {
+  const asExercise = rulesAsExercise(rules);
+  const bw = rules.bw ?? bodyWeight;
+  const total = toNum(set?.weight);
+  const input = toNum(set?.input_weight) ?? (total !== null ? toInputWeight(asExercise, total, bw) : 0);
+  return { input, total: total ?? calcEffectiveWeight(asExercise, input, bw) };
+}
+
+/**
+ * Вес подхода словами — одинаково в истории, «Прошлом разе», PR и сводке.
+ * Итоговые типы показывают общий вес, гантели — вес одной и сколько их,
+ * свой вес — добавку, гравитрон — помощь: от веса тела в тот день эти два
+ * числа не зависят.
+ */
+export function formatLoad(rules: LoadRules, input: number, total: number): string {
+  switch (rules.type.trim().toLowerCase()) {
+    case 'dumbbell':
+      return Number(rules.mult) === 1 ? `${fmtKg(input)} кг` : `${fmtKg(Number(rules.mult))}×${fmtKg(input)} кг`;
+    case 'bodyweight':
+      return input > 0 ? `свой вес +${fmtKg(input)} кг` : 'свой вес';
+    case 'assisted':
+      return `помощь ${fmtKg(input)} кг`;
+    default:
+      return `${fmtKg(total)} кг`;
+  }
+}
+
+export function setLoadLabel(
+  set: LoggedLoad | null | undefined,
+  exercise: ExerciseForWeight | null | undefined,
+  bodyWeight: number = USER_BODY_WEIGHT_DEFAULT
+): string {
+  const rules = rulesForSet(set, exercise, bodyWeight);
+  const { input, total } = inputAndTotal(set, rules, bodyWeight);
+  return formatLoad(rules, input, total);
+}
+
+/**
+ * Число, которое растёт, когда подход тяжелее, в тех же единицах, что и
+ * показ: итог, вес гантели, добавка — или помощь со знаком минус.
+ */
+export function loadProgress(
+  set: LoggedLoad | null | undefined,
+  exercise: ExerciseForWeight | null | undefined,
+  bodyWeight: number = USER_BODY_WEIGHT_DEFAULT
+): number {
+  const rules = rulesForSet(set, exercise, bodyWeight);
+  const { input, total } = inputAndTotal(set, rules, bodyWeight);
+  switch (rules.type.trim().toLowerCase()) {
+    case 'dumbbell':
+    case 'bodyweight':
+      return input;
+    case 'assisted':
+      return -input;
+    default:
+      return total;
+  }
+}
+
+/** Как назвать изменение `loadProgress` в тексте: «вес +2.5», «помощь −5». */
+export function describeLoadChange(rules: LoadRules, delta: number): string {
+  const sign = (value: number) => (value > 0 ? `+${fmtKg(value)}` : `−${fmtKg(-value)}`);
+  switch (rules.type.trim().toLowerCase()) {
+    case 'assisted':
+      return `помощь ${sign(-delta)}`;
+    case 'bodyweight':
+      return `добавка ${sign(delta)}`;
+    default:
+      return `вес ${sign(delta)}`;
+  }
+}
+
+/**
+ * Что подставить в поле ввода из прошлого подхода. Если правила с тех пор не
+ * менялись (или снимка нет), подставляется то же число. Если поменялись —
+ * сохранённый итог переводится в нынешние единицы ввода, а не копируется
+ * число, которое теперь значит другое.
+ */
+export function carryOverInput(
+  set: LoggedLoad | null | undefined,
+  exercise: ExerciseForWeight | null | undefined,
+  bodyWeight: number = USER_BODY_WEIGHT_DEFAULT
+): number {
+  const input = toNum(set?.input_weight);
+  const total = toNum(set?.weight);
+  const snapshot = set?.load && typeof set.load === 'object' && set.load.type ? set.load : null;
+  if (!snapshot || sameLoadRules(snapshot, loadRulesOf(exercise, bodyWeight))) {
+    return input ?? (total !== null ? toInputWeight(exercise, total, bodyWeight) : 0);
+  }
+  const was = inputAndTotal(set, snapshot, bodyWeight);
+  return Math.max(0, toInputWeight(exercise, was.total, bodyWeight));
+}
+
+/**
+ * Подходы строкой: одинаковый вес подряд схлопывается, повторы через «/».
+ * «60 кг × 10/10 · 65 кг × 8».
+ */
+export function formatSetSequence(items: { label: string; reps: number }[]): string {
+  const groups: { label: string; reps: number[] }[] = [];
+  for (const { label, reps } of items) {
+    const last = groups[groups.length - 1];
+    if (last && last.label === label) last.reps.push(reps);
+    else groups.push({ label, reps: [reps] });
+  }
+  return groups.map((group) => `${group.label} × ${group.reps.join('/')}`).join(' · ');
+}

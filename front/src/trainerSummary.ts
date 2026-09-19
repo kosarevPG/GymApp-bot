@@ -9,15 +9,19 @@
  * Everything here is descriptive. A drop is reported as a drop — fewer reps,
  * less weight — never as a diagnosis or a recommendation.
  */
+import {
+  describeLoadChange, formatSetSequence, loadProgress, rulesForSet, setLoadLabel,
+  type ExerciseForWeight,
+} from './exerciseConfig';
 import type { GlobalHistorySession, GlobalHistorySet } from './historyTypes';
 
 export interface ExerciseLine {
   exerciseId: string;
   name: string;
-  /** Input weight the sets were done at, one entry per distinct weight. */
+  /** `loadProgress` of every set: grows when the set gets harder. */
   weights: number[];
   reps: number[];
-  /** `22.5 × 12/12/10` — what to read aloud to a coach. */
+  /** `2×8 кг × 12/12 · 2×10 кг × 10` — what to read aloud to a coach. */
   text: string;
   totalReps: number;
   maxWeight: number;
@@ -27,6 +31,8 @@ export interface ExerciseLine {
     previousDate: string;
     previousText: string;
     weightDelta: number;
+    /** `вес +2.5`, `помощь −5` — the weight change in the words of the display. */
+    weightText: string | null;
     repsDelta: number;
     /** True when weight or total reps went down. */
     down: boolean;
@@ -61,25 +67,25 @@ export function normalizeDate(value: unknown): string {
   return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : '';
 }
 
-const fmtNum = (value: number) => (Number.isInteger(value) ? String(value) : String(Math.round(value * 100) / 100));
 const short = (iso: string) => `${iso.slice(8, 10)}.${iso.slice(5, 7)}`;
 
-/** Weight the user typed, falling back to the effective weight when absent. */
-const inputOf = (set: GlobalHistorySet) =>
-  (set.input_weight !== undefined && set.input_weight !== null ? num(set.input_weight) : num(set.weight));
-
-function lineOf(name: string, exerciseId: string, sets: GlobalHistorySet[]): ExerciseLine {
+function lineOf(
+  name: string,
+  exerciseId: string,
+  sets: GlobalHistorySet[],
+  exercise: ExerciseForWeight | null,
+): ExerciseLine {
   const ordered = [...sets].sort((a, b) => num(a.order) - num(b.order));
-  const weights = ordered.map(inputOf);
+  // Weight is compared and written the way the history shows it: a snapshot
+  // on the set when there is one, the exercise's current rules otherwise.
+  const weights = ordered.map((s) => loadProgress(s, exercise));
   const reps = ordered.map((s) => num(s.reps));
-  const distinct = [...new Set(weights)];
-  const weightText = distinct.length === 1 ? fmtNum(distinct[0]) : distinct.map(fmtNum).join('/');
   return {
     exerciseId,
     name,
     weights,
     reps,
-    text: `${weightText} × ${reps.join('/')}`,
+    text: formatSetSequence(ordered.map((s, i) => ({ label: setLoadLabel(s, exercise), reps: reps[i] }))),
     totalReps: reps.reduce((a, b) => a + b, 0),
     maxWeight: weights.length ? Math.max(...weights) : 0,
     setCount: ordered.length,
@@ -91,11 +97,13 @@ function lineOf(name: string, exerciseId: string, sets: GlobalHistorySet[]): Exe
  * @param history rows from /api/global_history
  * @param since inclusive ISO date
  * @param until inclusive ISO date
+ * @param exercises catalog by id, for sets saved before load snapshots
  */
 export function buildTrainerSummary(
   history: GlobalHistorySession[] | null | undefined,
   since: string,
   until: string,
+  exercises: Record<string, ExerciseForWeight> = {},
 ): TrainerSummary {
   const sessions = (Array.isArray(history) ? history : [])
     .map((session) => ({ ...session, iso: normalizeDate(session?.date) }))
@@ -111,7 +119,7 @@ export function buildTrainerSummary(
       const sets = entry?.sets || [];
       if (!id || !sets.length) continue;
       const list = occurrences.get(id) || [];
-      list.push({ iso: session.iso, line: lineOf(String(entry.name || id), id, sets) });
+      list.push({ iso: session.iso, line: lineOf(String(entry.name || id), id, sets, exercises[id] || null) });
       occurrences.set(id, list);
     }
   }
@@ -127,7 +135,7 @@ export function buildTrainerSummary(
       const id = String(entry?.exerciseId ?? '');
       const sets = entry?.sets || [];
       if (!id || !sets.length) continue;
-      const line = lineOf(String(entry.name || id), id, sets);
+      const line = lineOf(String(entry.name || id), id, sets, exercises[id] || null);
 
       const history_ = occurrences.get(id) || [];
       const index = history_.findIndex((x) => x.iso === session.iso);
@@ -140,6 +148,9 @@ export function buildTrainerSummary(
           previousDate: previous.iso,
           previousText: previous.line.text,
           weightDelta,
+          weightText: weightDelta !== 0
+            ? describeLoadChange(rulesForSet(sets[0], exercises[id] || null), weightDelta)
+            : null,
           repsDelta,
           down,
         };
@@ -180,11 +191,11 @@ export function formatTrainerSummaryText(summary: TrainerSummary): string {
     for (const exercise of session.exercises) {
       let suffix = '';
       if (exercise.change) {
-        const { weightDelta, repsDelta, previousText } = exercise.change;
+        const { weightDelta, weightText, repsDelta, previousText } = exercise.change;
         if (weightDelta !== 0 || repsDelta !== 0) {
           const parts: string[] = [];
-          if (weightDelta !== 0) parts.push(`вес ${weightDelta > 0 ? '+' : ''}${fmtNum(weightDelta)}`);
-          if (repsDelta !== 0) parts.push(`повт. ${repsDelta > 0 ? '+' : ''}${repsDelta}`);
+          if (weightText) parts.push(weightText);
+          if (repsDelta !== 0) parts.push(`повт. ${repsDelta > 0 ? '+' : '−'}${Math.abs(repsDelta)}`);
           suffix = `  (было ${previousText}; ${parts.join(', ')})`;
         } else {
           suffix = '  (как в прошлый раз)';

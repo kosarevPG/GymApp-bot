@@ -37,6 +37,15 @@ in flight; answering "already saved" would drop it. The client aborts a queued
 request only after 35 s, longer than the function's 30 s execution timeout, so
 an abandoned request cannot land after its own retry.
 
+`save_set` and a weight edit through `update_set` may carry `load`: the rules
+the client used to turn the typed number into the total (`type`, `mult`,
+`base`, and `bw` for bodyweight and assisted exercises). It is stored as
+`source_payload.load` on the set and returned with it in history, so a later
+change of the exercise's settings does not reinterpret old numbers. Anything
+that is not a recognisable snapshot is dropped. Sets saved before this have no
+`load`; the client reads them by the exercise's current settings. No stored
+weight is ever rewritten.
+
 `delete_set` with `missing_ok: true` treats an absent row as deleted. The
 offline queue sends it: its deletes may target sets that never reached the
 server or repeat a delete whose answer was lost. Without the flag (history

@@ -2,7 +2,8 @@ import React from 'react';
 import type { SetType } from '../types';
 
 export interface SetDisplayRowProps {
-  weight: number | string;
+  /** Вес словами из `setLoadLabel`: «60 кг», «2×8 кг», «помощь 30 кг». */
+  weightText: string;
   reps: number | string;
   rest: number | string;
   setType?: SetType | string;
@@ -12,7 +13,7 @@ export interface SetDisplayRowProps {
 }
 
 export const SetDisplayRow: React.FC<SetDisplayRowProps> = ({
-  weight,
+  weightText,
   reps,
   rest,
   setType,
@@ -20,7 +21,6 @@ export const SetDisplayRow: React.FC<SetDisplayRowProps> = ({
   rir,
   className = '',
 }) => {
-  const w = typeof weight === 'number' ? weight : parseFloat(String(weight || 0));
   const r = typeof reps === 'number' ? reps : parseInt(String(reps || 0), 10);
   const restVal = typeof rest === 'number' ? rest : parseFloat(String(rest || 0));
   const isWarmup = setType === 'warmup';
@@ -31,7 +31,7 @@ export const SetDisplayRow: React.FC<SetDisplayRowProps> = ({
         isWarmup ? 'text-zinc-500' : 'text-zinc-200'
       } ${className}`}
     >
-      {w} <span className="opacity-70">кг</span> × {r}{' '}
+      {weightText} × {r}{' '}
       <span className="opacity-70">повт</span>, {restVal}
       <span className="opacity-70">м</span>
       {isWarmup && (

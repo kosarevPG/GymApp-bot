@@ -12,7 +12,10 @@ async function load(rel) {
   return import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
 }
 
-const { describeLoad, splitIntoPlates, DEFAULT_PLATES } = await load('../src/exerciseConfig.ts');
+const {
+  describeLoad, splitIntoPlates, DEFAULT_PLATES,
+  carryOverInput, formatLoad, loadRulesOf, sameLoadRules, setLoadLabel,
+} = await load('../src/exerciseConfig.ts');
 
 test('splitIntoPlates набирает вес точно', () => {
   assert.deepEqual(splitIntoPlates(40).items, [25, 15]);
@@ -114,4 +117,54 @@ test('стек и пустой ввод не дают подсказки', () =>
 test('набор блинов по умолчанию отсортирован по убыванию и без дублей', () => {
   assert.deepEqual(DEFAULT_PLATES, [...new Set(DEFAULT_PLATES)]);
   assert.deepEqual(DEFAULT_PLATES, [...DEFAULT_PLATES].sort((a, b) => b - a));
+});
+
+
+/* ── снимок правил и единый показ веса ─────────────────────────────────── */
+
+const MACHINE = { weightType: 'Machine', weightMultiplier: 1, baseWeight: 0 };
+const PAIR = { weightType: 'Dumbbell', weightMultiplier: 2, baseWeight: 0 };
+const BAR = { weightType: 'Barbell', weightMultiplier: 2, baseWeight: 20 };
+const PULLUP = { weightType: 'Bodyweight', weightMultiplier: 1, baseWeight: 0 };
+const GRAVITRON = { weightType: 'Assisted', weightMultiplier: -1, baseWeight: 90 };
+
+test('вес показывается по смыслу типа нагрузки', () => {
+  assert.equal(formatLoad(loadRulesOf(MACHINE), 40, 40), '40 кг');
+  assert.equal(formatLoad(loadRulesOf(PAIR), 8, 16), '2×8 кг');
+  assert.equal(formatLoad(loadRulesOf({ ...PAIR, weightMultiplier: 1 }), 8, 8), '8 кг');
+  assert.equal(formatLoad(loadRulesOf(BAR), 20, 60), '60 кг');
+  assert.equal(formatLoad(loadRulesOf(PULLUP), 10, 100), 'свой вес +10 кг');
+  assert.equal(formatLoad(loadRulesOf(PULLUP), 0, 90), 'свой вес');
+  assert.equal(formatLoad(loadRulesOf(GRAVITRON), 30, 60), 'помощь 30 кг');
+  assert.equal(formatLoad(loadRulesOf(PAIR), 1.25, 2.5), '2×1.25 кг');
+});
+
+test('вес тела попадает в снимок только там, где входит в итог', () => {
+  assert.equal(loadRulesOf(MACHINE, 84).bw, undefined);
+  assert.equal(loadRulesOf(GRAVITRON, 84).bw, 84);
+  assert.equal(loadRulesOf(PULLUP, 84).bw, 84);
+  assert.equal(loadRulesOf(null).type, 'Other');
+});
+
+test('смена веса тела не считается сменой правил', () => {
+  assert.ok(sameLoadRules(loadRulesOf(GRAVITRON, 90), loadRulesOf(GRAVITRON, 80)));
+  assert.ok(!sameLoadRules(loadRulesOf(PAIR), loadRulesOf(MACHINE)));
+});
+
+test('старый подход без снимка читается по нынешним правилам', () => {
+  assert.equal(setLoadLabel({ input_weight: 8, weight: 16 }, PAIR), '2×8 кг');
+  assert.equal(carryOverInput({ input_weight: 8, weight: 16 }, PAIR), 8);
+});
+
+test('подставляется прошлое число, пока правила те же', () => {
+  const set = { input_weight: 30, weight: 55, load: loadRulesOf(GRAVITRON, 85) };
+  // Вес тела с тех пор другой, но противовес на тренажёре ставят тот же.
+  assert.equal(carryOverInput(set, GRAVITRON, 90), 30);
+});
+
+test('после смены правил прошлый итог переводится в нынешний ввод', () => {
+  // Раньше «Жим гантелей» вели как стек: 16 кг итогом. Теперь это пара гантелей.
+  const set = { input_weight: 16, weight: 16, load: loadRulesOf(MACHINE) };
+  assert.equal(carryOverInput(set, PAIR), 8);
+  assert.equal(setLoadLabel(set, PAIR), '16 кг');
 });
