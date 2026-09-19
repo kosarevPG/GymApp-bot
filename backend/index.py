@@ -288,7 +288,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             group = str(data.get("group", "")).strip()
             if not name or not group:
                 return response({"error": "name and group are required"}, 400)
-            return response(create_exercise(user_id, name, group))
+            measure = "cardio" if data.get("measure") == "cardio" else "strength"
+            return response(create_exercise(user_id, name, group, measure))
         if endpoint == "update_exercise" and method == "POST":
             data = _body(event)
             exercise_id = str(data.get("id", "")).strip()

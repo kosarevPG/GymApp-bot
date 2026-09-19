@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts';
-import { API_BASE_URL, STANDALONE_API_BASE_URL, WORKOUT_STORAGE_KEY, ACTIVE_WORKOUT_KEY, WORKOUT_PRESET_KEY, sortGroups, SESSION_ID_KEY, ORDER_COUNTER_KEY, LAST_ACTIVE_KEY } from './constants';
+import { API_BASE_URL, STANDALONE_API_BASE_URL, WORKOUT_STORAGE_KEY, ACTIVE_WORKOUT_KEY, WORKOUT_PRESET_KEY, GROUP_ORDER, sortGroups, SESSION_ID_KEY, ORDER_COUNTER_KEY, LAST_ACTIVE_KEY } from './constants';
 import { CARDIO_QUICK_MINUTES, durationSeconds, formatCardioSegment, formatCardioSegments, toNumber } from './cardio';
 import { DEFAULT_PRESET, normalizePreset, planDefaultsFor, planFromPreset, planItemDone, planTargetText, type PlanDefaults, type PlanItem, type PlanKey, type WorkoutPreset } from './workoutPlan';
 import { readSessionDeeplink, stripSessionParam } from './deeplink';
@@ -312,8 +312,8 @@ const api = {
     return syncQueue(sendQueuedItem);
   },
 
-  createExercise: async (name: string, group: string) => {
-    return await api.request('create_exercise', { method: 'POST', body: JSON.stringify({ name, group }) });
+  createExercise: async (name: string, group: string, measure: 'strength' | 'cardio' = 'strength') => {
+    return await api.request('create_exercise', { method: 'POST', body: JSON.stringify({ name, group, measure }) });
   },
 
   updateExercise: async (id: string, updates: Partial<Exercise>) => {
@@ -2102,6 +2102,7 @@ const App = () => {
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [newName, setNewName] = useState('');
   const [newGroup, setNewGroup] = useState('');
+  const [newMeasure, setNewMeasure] = useState<'strength' | 'cardio'>('strength');
   const [pendingCount, setPendingCount] = useState(getPendingCount());
   const telegramMode = isTelegramMode();
   const [authState, setAuthState] = useState<'loading' | 'authenticated' | 'anonymous'>(
@@ -2367,7 +2368,7 @@ const App = () => {
       alert('Упражнение с таким названием уже есть в библиотеке.');
       return;
     }
-    const newEx = await api.createExercise(newName, newGroup);
+    const newEx = await api.createExercise(newName, newGroup, newMeasure);
     if (!newEx) { notify('error'); return; }
     // Сервер вернул существующее (дубль перехвачен) — не добавляем вторую копию.
     if ((newEx as any).deduplicated) {
@@ -2376,11 +2377,14 @@ const App = () => {
       alert('Такое упражнение уже было — открыл существующее, дубль не создан.');
     } else {
       setAllExercises(p => [...p, newEx]);
+      // Группа могла появиться впервые — главной она нужна сразу, а не после перезапуска.
+      setGroups(g => (g.includes(newGroup) ? g : sortGroups([...g, newGroup])));
       notify('success');
     }
     setIsCreateModalOpen(false);
     setNewName('');
     setNewGroup('');
+    setNewMeasure('strength');
   };
 
   const handleUpdate = async (id: string, updates: Partial<Exercise>) => {
@@ -2433,9 +2437,19 @@ const App = () => {
         <div className="space-y-4">
           <div><label className="text-sm text-zinc-400 mb-1 block">Название</label><Input value={newName} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewName(e.target.value)} placeholder="Например: Отжимания" /></div>
           <div>
+            <label className="text-sm text-zinc-400 mb-1 block">Что записывать</label>
+            <div className="flex flex-wrap gap-2">
+              {([['strength', 'Подходы и вес'], ['cardio', 'Кардио: минуты, скорость, наклон']] as const).map(([value, label]) => (
+                <button key={value} onClick={() => { setNewMeasure(value); if (value === 'cardio' && !newGroup) setNewGroup('Кардио'); }} className={newMeasure === value ? 'px-3 py-2 rounded-xl text-sm border bg-blue-600 border-blue-600 text-white' : 'px-3 py-2 rounded-xl text-sm border bg-zinc-800 border-zinc-700 text-zinc-400'}>{label}</button>
+              ))}
+            </div>
+          </div>
+          <div>
             <label className="text-sm text-zinc-400 mb-1 block">Группа</label>
             <div className="flex flex-wrap gap-2">
-              {groups.map(g => <button key={g} onClick={() => setNewGroup(g)} className={newGroup === g ? 'px-3 py-2 rounded-xl text-sm border bg-blue-600 border-blue-600 text-white' : 'px-3 py-2 rounded-xl text-sm border bg-zinc-800 border-zinc-700 text-zinc-400'}>{g}</button>)}
+              {/* Стандартные группы доступны всегда: первое упражнение в «Кардио»
+                  или «Пресс» иначе некуда было бы положить. */}
+              {sortGroups(Array.from(new Set([...groups, ...GROUP_ORDER]))).map(g => <button key={g} onClick={() => setNewGroup(g)} className={newGroup === g ? 'px-3 py-2 rounded-xl text-sm border bg-blue-600 border-blue-600 text-white' : 'px-3 py-2 rounded-xl text-sm border bg-zinc-800 border-zinc-700 text-zinc-400'}>{g}</button>)}
             </div>
           </div>
           <Button onClick={handleCreate} className="w-full h-12 mt-4">Создать</Button>
@@ -2502,7 +2516,7 @@ const App = () => {
               );
             })}
             {!allExercises.some(ex => ex.measure === 'cardio') && (
-              <p className="text-xs text-amber-300">В каталоге нет кардио. Открой дорожку в списке упражнений, нажми карандаш и выбери «Кардио».</p>
+              <p className="text-xs text-amber-300">В каталоге нет кардио. «Все упражнения» → «+» → «Кардио», или у существующей дорожки: миниатюра → карандаш → «Кардио».</p>
             )}
           </div>
           <Button className="w-full h-12" onClick={() => { const v = parseFloat(bodyWeightInput.replace(',', '.')); if (v >= 30 && v <= 250) { updateBodyWeight(v); updatePlates(platesDraft); savePreset(normalizePreset(presetDraft)); notify('success'); setIsSettingsOpen(false); } else { notify('error'); } }}>Сохранить</Button>
