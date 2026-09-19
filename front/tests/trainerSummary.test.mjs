@@ -11,9 +11,15 @@ const cfgCompiled = ts.transpileModule(
   { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 } },
 ).outputText;
 const cfgUrl = `data:text/javascript;base64,${Buffer.from(cfgCompiled).toString('base64')}`;
+const cardioCompiled = ts.transpileModule(
+  await readFile(new URL('../src/cardio.ts', import.meta.url), 'utf8'),
+  { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 } },
+).outputText;
+const cardioUrl = `data:text/javascript;base64,${Buffer.from(cardioCompiled).toString('base64')}`;
 const source = (await readFile(new URL('../src/trainerSummary.ts', import.meta.url), 'utf8'))
   .replace(/import type \{[^}]*\} from '\.\/historyTypes';?/, '')
-  .replace("from './exerciseConfig'", `from '${cfgUrl}'`);
+  .replace("from './exerciseConfig'", `from '${cfgUrl}'`)
+  .replace("from './cardio'", `from '${cardioUrl}'`);
 const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 },
 }).outputText;
@@ -217,6 +223,20 @@ test('a set keeps the rules it was saved with', () => {
   const stack = { input_weight: 40, weight: 40, reps: 10, order: 1, set_type: 'working', load: { v: 1, type: 'Machine', mult: 1, base: 0 } };
   const summary = build([S('2026.08.19', [E('a', [stack])])], '2026-08-18', '2026-08-24');
   assert.equal(summary.sessions[0].exercises[0].text, '40 кг × 10');
+});
+
+test('cardio is listed as done, never as a first time, a drop or sets', () => {
+  const history = [S('2026.08.19', [
+    { exerciseId: 'tm', name: 'Дорожка', sets: [], cardio: [{ minutes: 10, speed: 6, incline: 5, order: 1 }, { minutes: 5, speed: 5, order: 9 }] },
+    E('a', [SET(12, 20, 2)], 'Жим'),
+  ])];
+  const summary = build(history, '2026-08-18', '2026-08-24');
+  const [cardio] = summary.sessions[0].exercises;
+  assert.equal(cardio.text, '10 мин, 6 км/ч, наклон 5% · 5 мин, 5 км/ч');
+  assert.equal(summary.sessions[0].totalSets, 1);
+  assert.deepEqual(summary.firstTime.map((x) => x.name), ['Жим']);
+  const text = formatTrainerSummaryText(summary);
+  assert.match(text, /^  Дорожка: 10 мин, 6 км\/ч, наклон 5% · 5 мин, 5 км\/ч$/m);
 });
 
 /* ── junk ──────────────────────────────────────────────────────────────── */

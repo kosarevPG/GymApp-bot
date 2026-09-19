@@ -7,6 +7,8 @@ export const EDIT_EXERCISE_DRAFT_KEY = 'gym_edit_exercise_draft';
 export const SESSION_ID_KEY = 'gym_session_id';
 export const ORDER_COUNTER_KEY = 'gym_order_counter';
 export const LAST_ACTIVE_KEY = 'gym_last_active';
+/** Пресет «начало и конец тренировки»; живёт только на устройстве. */
+export const WORKOUT_PRESET_KEY = 'gym_workout_preset_v1';
 
 export const GROUP_ORDER = ['Спина', 'Ноги', 'Грудь', 'Плечи', 'Трицепс', 'Бицепс', 'Пресс', 'Кардио'];
 

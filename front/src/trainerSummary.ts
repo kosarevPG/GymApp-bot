@@ -13,6 +13,7 @@ import {
   describeLoadChange, formatSetSequence, loadProgress, rulesForSet, setLoadLabel,
   type ExerciseForWeight,
 } from './exerciseConfig';
+import { formatCardioSegments } from './cardio';
 import type { GlobalHistorySession, GlobalHistorySet } from './historyTypes';
 
 export interface ExerciseLine {
@@ -26,6 +27,8 @@ export interface ExerciseLine {
   totalReps: number;
   maxWeight: number;
   setCount: number;
+  /** Timed work: listed as done, never compared, never counted as sets. */
+  cardio?: boolean;
   /** Comparison with the previous time this exercise was done, if any. */
   change: null | {
     previousDate: string;
@@ -134,6 +137,15 @@ export function buildTrainerSummary(
     for (const entry of session.exercises || []) {
       const id = String(entry?.exerciseId ?? '');
       const sets = entry?.sets || [];
+      const cardio = Array.isArray(entry?.cardio) ? entry.cardio : [];
+      if (id && !sets.length && cardio.length) {
+        lines.push({
+          exerciseId: id, name: String(entry.name || id), weights: [], reps: [],
+          text: formatCardioSegments(cardio), totalReps: 0, maxWeight: 0, setCount: 0,
+          change: null, cardio: true,
+        });
+        continue;
+      }
       if (!id || !sets.length) continue;
       const line = lineOf(String(entry.name || id), id, sets, exercises[id] || null);
 
@@ -200,7 +212,7 @@ export function formatTrainerSummaryText(summary: TrainerSummary): string {
         } else {
           suffix = '  (как в прошлый раз)';
         }
-      } else {
+      } else if (!exercise.cardio) {
         suffix = '  (впервые)';
       }
       lines.push(`  ${exercise.name}: ${exercise.text}${suffix}`);

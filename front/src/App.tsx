@@ -7,13 +7,15 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts';
-import { API_BASE_URL, STANDALONE_API_BASE_URL, WORKOUT_STORAGE_KEY, ACTIVE_WORKOUT_KEY, sortGroups, SESSION_ID_KEY, ORDER_COUNTER_KEY, LAST_ACTIVE_KEY } from './constants';
+import { API_BASE_URL, STANDALONE_API_BASE_URL, WORKOUT_STORAGE_KEY, ACTIVE_WORKOUT_KEY, WORKOUT_PRESET_KEY, sortGroups, SESSION_ID_KEY, ORDER_COUNTER_KEY, LAST_ACTIVE_KEY } from './constants';
+import { CARDIO_QUICK_MINUTES, durationSeconds, formatCardioSegment, formatCardioSegments, toNumber } from './cardio';
+import { DEFAULT_PRESET, normalizePreset, planDefaultsFor, planFromPreset, planItemDone, planTargetText, type PlanDefaults, type PlanItem, type PlanKey, type WorkoutPreset } from './workoutPlan';
 import { readSessionDeeplink, stripSessionParam } from './deeplink';
 import { lastSessionWorkingSets, formatLastSessionSets, personalBest } from './progression';
 import { buildTrainerSummary, formatTrainerSummaryText, isoDaysAgo } from './trainerSummary';
 import { SetDisplayRow } from './components/SetDisplayRow';
 import { calcEffectiveWeight, weightInputLabel, WEIGHT_TYPE_OPTIONS, USER_BODY_WEIGHT_DEFAULT, describeLoad, DEFAULT_PLATES, PLATE_CHOICES, carryOverInput, loadRulesOf, rulesAsExercise, rulesForSet, setLoadLabel } from './exerciseConfig';
-import type { Exercise, WorkoutSet, HistoryItem, ExerciseSessionData, SetType } from './types';
+import type { Exercise, WorkoutSet, HistoryItem, CardioHistoryItem, ExerciseSessionData, SetType } from './types';
 import {
   QUEUE_CHANGED_EVENT,
   addToQueue,
@@ -100,8 +102,15 @@ const QUEUE_ENDPOINTS: Record<QueuedItem['type'], string> = {
   deleteSet: 'delete_set',
 };
 
+// Кардио идёт через ту же очередь, но в свою таблицу на сервере.
+const CARDIO_ENDPOINTS: Record<QueuedItem['type'], string> = {
+  saveSet: 'save_cardio',
+  updateSet: 'update_cardio',
+  deleteSet: 'delete_cardio',
+};
+
 const sendQueuedItem = async (item: QueuedItem): Promise<SendOutcome> => {
-  const endpoint = QUEUE_ENDPOINTS[item.type];
+  const endpoint = (item.data.kind === 'cardio' ? CARDIO_ENDPOINTS : QUEUE_ENDPOINTS)[item.type];
   // Удаление из очереди может прийти для строки, которой на сервере нет:
   // подход до него не дошёл, либо ответ на прошлое удаление потерялся.
   const body = item.type === 'deleteSet' ? { ...item.data, missing_ok: true } : item.data;
@@ -190,13 +199,16 @@ const api = {
     const raw = data || getCachedHistory(exerciseId) || { history: [], note: '' };
     if (data) cacheHistory(exerciseId, data);
     let history: HistoryItem[] = raw.history || [];
+    const cardio: CardioHistoryItem[] = (raw.history || []).flatMap((d: { session_id?: string; date: string; cardio?: Record<string, unknown>[] }) =>
+      (Array.isArray(d?.cardio) ? d.cardio : []).map((c) => ({ ...c, date: d.date, session_id: d.session_id }))
+    ) as CardioHistoryItem[];
     const first = history[0] as { sets?: unknown[] } | undefined;
     if (history.length > 0 && first && 'sets' in first && Array.isArray(first.sets)) {
       history = history.flatMap((d: { session_id?: string; date: string; sets?: Record<string, unknown>[] }) =>
         (d.sets || []).map((s) => ({ ...s, date: d.date, session_id: d.session_id }))
       ) as HistoryItem[];
     }
-    return { history, note: raw.note || '' };
+    return { history, cardio, note: raw.note || '' };
   },
 
   // Owner check lives on the backend: it answers 404 both for a session that
@@ -661,6 +673,14 @@ const HistoryListModal = ({ isOpen, onClose, history, exerciseName, exercise, bo
   );
 };
 
+/** Галочка — подход сохранён на телефоне; точка — сервер его ещё не подтвердил. */
+const SyncDot = ({ mark }: { mark?: SyncMark }) => (mark ? (
+  <span
+    title={mark === 'rejected' ? 'Сервер отклонил — подробности в очереди' : 'Ждёт отправки на сервер'}
+    className={`absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full border-2 border-zinc-900 ${mark === 'rejected' ? 'bg-red-500' : 'bg-amber-400'}`}
+  />
+) : null);
+
 const SET_TYPE_CYCLE: SetType[] = ['warmup', 'working', 'drop', 'failure'];
 const SET_TYPE_LABELS: Record<SetType, string> = { warmup: 'W', working: 'R', drop: 'D', failure: 'F' };
 
@@ -699,13 +719,7 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates =
         </button>
         <button onClick={() => onComplete(set.id)} className={`relative w-12 h-12 rounded-xl border flex items-center justify-center transition-colors ${set.completed ? 'bg-green-500 border-green-500' : 'bg-zinc-900 border-zinc-700'}`}>
           <Check className={`w-6 h-6 ${set.completed ? 'text-white' : 'text-zinc-700'}`} />
-          {/* Галочка — подход сохранён на телефоне; точка — сервер его ещё не подтвердил. */}
-          {syncMark && (
-            <span
-              title={syncMark === 'rejected' ? 'Сервер отклонил — подробности в очереди' : 'Ждёт отправки на сервер'}
-              className={`absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full border-2 border-zinc-900 ${syncMark === 'rejected' ? 'bg-red-500' : 'bg-amber-400'}`}
-            />
-          )}
+          <SyncDot mark={syncMark} />
         </button>
         <div className="flex flex-col gap-1">
           <input
@@ -818,6 +832,101 @@ const LastTimeBlock = ({ exercise, history, bodyWeight = USER_BODY_WEIGHT_DEFAUL
       <div className="text-[11px] text-zinc-500">Прошлый раз</div>
       <div className="text-xs text-zinc-200">{line}</div>
     </div>
+  );
+};
+
+/** Отрезки последней прошлой тренировки: сегодняшние уже в журнале. */
+const lastCardioSession = (history: CardioHistoryItem[] | undefined) => {
+  const past = (history || []).filter(item => item.date && item.date !== todayInLogFormat());
+  if (!past.length) return [];
+  const first = past[0];
+  return past.filter(item => (first.session_id ? item.session_id === first.session_id : item.date === first.date));
+};
+
+const CardioRow = ({ set, isActive, syncMark, onUpdate, onDelete, onComplete }: { set: WorkoutSet; isActive: boolean; syncMark?: SyncMark; onUpdate: (sid: string, field: string, value: string) => void; onDelete: (sid: string) => void; onComplete: (sid: string) => void }) => (
+  <div className={`mb-3 ${set.completed ? (syncMark ? 'opacity-80' : 'opacity-60 grayscale') : ''}`}>
+    <div className="grid grid-cols-[auto_1fr_1fr_1fr_auto] gap-2 items-center">
+      <button onClick={() => onComplete(set.id)} className={`relative w-12 h-12 rounded-xl border flex items-center justify-center transition-colors ${set.completed ? 'bg-green-500 border-green-500' : 'bg-zinc-900 border-zinc-700'}`}>
+        <Check className={`w-6 h-6 ${set.completed ? 'text-white' : 'text-zinc-700'}`} />
+        <SyncDot mark={syncMark} />
+      </button>
+      {(['minutes', 'speed', 'incline'] as const).map(field => (
+        <input
+          key={field}
+          type="number"
+          inputMode="decimal"
+          placeholder={field === 'minutes' ? 'мин' : '—'}
+          value={set[field] ?? ''}
+          disabled={set.completed}
+          onChange={(e) => onUpdate(set.id, field, e.target.value)}
+          className="w-full h-12 bg-zinc-800 rounded-xl text-center text-lg font-semibold text-zinc-50 disabled:text-zinc-400 outline-none focus:ring-1 focus:ring-blue-500"
+        />
+      ))}
+      <button onClick={() => onDelete(set.id)} className="p-2 text-zinc-600 hover:text-red-500"><Trash2 className="w-5 h-5" /></button>
+    </div>
+    {isActive && !set.completed && (
+      <div className="flex gap-2 mt-2 pl-14">
+        {CARDIO_QUICK_MINUTES.map(minutes => (
+          <button key={minutes} onClick={() => onUpdate(set.id, 'minutes', String(minutes))} className={`px-3 py-1.5 rounded-lg text-xs border ${String(set.minutes) === String(minutes) ? 'bg-blue-600 border-blue-600 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-400'}`}>{minutes} мин</button>
+        ))}
+      </div>
+    )}
+  </div>
+);
+
+const CardioCard = ({ exerciseData, syncMarks = {}, onAddSet, onUpdateSet, onDeleteSet, onCompleteSet, onRemove }: any) => {
+  const [showHistory, setShowHistory] = useState(false);
+  const last = useMemo(() => lastCardioSession(exerciseData.cardioHistory), [exerciseData.cardioHistory]);
+  const sessions = useMemo(() => {
+    const bySession: Record<string, { date: string; items: CardioHistoryItem[] }> = {};
+    (exerciseData.cardioHistory || []).forEach((item: CardioHistoryItem) => {
+      const key = item.session_id || item.date;
+      (bySession[key] ||= { date: item.date, items: [] }).items.push(item);
+    });
+    return Object.values(bySession);
+  }, [exerciseData.cardioHistory]);
+  const activeId = exerciseData.sets.find((s: WorkoutSet) => !s.completed)?.id;
+  return (
+    <Card className="p-4 mb-4">
+      <div className="flex justify-between items-start mb-4">
+        <div>
+          <h2 className="text-xl font-semibold text-zinc-50">{exerciseData.exercise.name}</h2>
+          <div className="text-xs text-zinc-500 mt-1">Кардио — в тоннаж не входит</div>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={() => setShowHistory(true)} className="p-2 bg-zinc-800/50 rounded-lg text-zinc-400 hover:text-blue-500"><Calendar className="w-5 h-5" /></button>
+          <button onClick={onRemove} title="Убрать из тренировки" className="p-2 bg-zinc-800/50 rounded-lg text-zinc-500 hover:text-red-500"><X className="w-5 h-5" /></button>
+        </div>
+      </div>
+      {last.length > 0 && (
+        <div className="mb-3 rounded-xl bg-zinc-800/40 px-3 py-2">
+          <div className="text-[11px] text-zinc-500">Прошлый раз</div>
+          <div className="text-xs text-zinc-200">{String(last[0].date || '').slice(5)} · {formatCardioSegments(last)}</div>
+        </div>
+      )}
+      <div className="grid grid-cols-[auto_1fr_1fr_1fr_auto] gap-2 mb-2 px-1">
+        <div className="w-12" />
+        <div className="text-[10px] text-center text-zinc-500 font-bold uppercase">Мин</div>
+        <div className="text-[10px] text-center text-zinc-500 font-bold uppercase">Км/ч</div>
+        <div className="text-[10px] text-center text-zinc-500 font-bold uppercase">Наклон, %</div>
+        <div className="w-9" />
+      </div>
+      {exerciseData.sets.map((set: WorkoutSet) => (
+        <CardioRow key={set.id} set={set} isActive={set.id === activeId} syncMark={set.requestId ? syncMarks[set.requestId] : undefined} onUpdate={onUpdateSet} onDelete={onDeleteSet} onComplete={onCompleteSet} />
+      ))}
+      <Button variant="secondary" onClick={onAddSet} className="w-full h-12 mt-2 bg-zinc-800/50 border border-dashed border-zinc-700 text-zinc-400 hover:text-blue-500"><Plus className="w-5 h-5 mr-2" /> Отрезок</Button>
+      <Modal isOpen={showHistory} onClose={() => setShowHistory(false)} title={`История: ${exerciseData.exercise.name}`}>
+        <div className="space-y-3">
+          {sessions.map((session, i) => (
+            <div key={i} className="p-3 bg-zinc-800/30 border border-zinc-800 rounded-xl">
+              <div className="text-xs text-zinc-500 mb-1">{session.date}</div>
+              <div className="text-sm text-zinc-200">{formatCardioSegments(session.items)}</div>
+            </div>
+          ))}
+          {sessions.length === 0 && <div className="text-center text-zinc-500 py-10">История пуста</div>}
+        </div>
+      </Modal>
+    </Card>
   );
 };
 
@@ -966,7 +1075,7 @@ const TrainerSummaryScreen = ({ onBack, notify, allExercises = [] }: any) => {
                       {exercise.change.repsDelta !== 0 && ` · повт. ${exercise.change.repsDelta > 0 ? '+' : '−'}${Math.abs(exercise.change.repsDelta)}`}
                       {exercise.change.weightDelta === 0 && exercise.change.repsDelta === 0 && ' · как в прошлый раз'}
                     </div>
-                  ) : (
+                  ) : exercise.cardio ? null : (
                     <div className="text-[11px] text-zinc-500">впервые</div>
                   )}
                 </div>
@@ -1005,11 +1114,28 @@ const TrainerSummaryScreen = ({ onBack, notify, allExercises = [] }: any) => {
   );
 };
 
-const HomeScreen = ({ groups, workoutActive, onStartWorkout, onFinishWorkout, onSearch, onSelectGroup, onAllExercises, onHistory, onAnalytics, onSummary, onSettings }: any) => (
+const HomeScreen = ({ groups, workoutActive, plan = [], planDone = [], exerciseNames = {}, onOpenPlanItem, onStartWorkout, onFinishWorkout, onSearch, onSelectGroup, onAllExercises, onHistory, onAnalytics, onSummary, onSettings }: any) => (
   <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="px-4 pb-4 pt-safe-4 space-y-6">
     {workoutActive
       ? <Button variant="secondary" onClick={onFinishWorkout} className="w-full h-14 text-lg border border-red-900/50 text-red-400">Закончить тренировку</Button>
       : <Button variant="primary" onClick={onStartWorkout} className="w-full h-14 text-lg font-semibold shadow-xl shadow-blue-900/20">Начать тренировку</Button>}
+    {workoutActive && plan.length > 0 && (
+      <Card className="p-3 space-y-2">
+        <div className="px-1 text-xs text-zinc-500 uppercase font-bold tracking-wider">План</div>
+        {plan.map((item: PlanItem, i: number) => (
+          <button key={item.key} onClick={() => onOpenPlanItem(item)} className="w-full flex items-center gap-3 p-3 rounded-xl bg-zinc-800/50 text-left active:bg-zinc-800">
+            <div className={`w-6 h-6 rounded-full border flex items-center justify-center flex-shrink-0 ${planDone[i] ? 'bg-green-500 border-green-500' : 'border-zinc-600'}`}>
+              {planDone[i] && <Check className="w-4 h-4 text-white" />}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm text-zinc-200">{item.label} · {planTargetText(item)}</div>
+              <div className="text-xs text-zinc-500 truncate">{exerciseNames[item.exerciseId] || 'упражнение не найдено в каталоге'}</div>
+            </div>
+            <ChevronRight className="w-5 h-5 text-zinc-600 flex-shrink-0" />
+          </button>
+        ))}
+      </Card>
+    )}
     <div className="flex items-center gap-2">
       <div className="relative flex-1">
         <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-500" />
@@ -1130,11 +1256,34 @@ type SyncMark = 'pending' | 'rejected';
 const readSyncMarks = (): Record<string, SyncMark> =>
   Object.fromEntries(getQueue().map(item => [item.id, item.rejected ? 'rejected' : 'pending']));
 
+const readPreset = (): WorkoutPreset => {
+  try { return normalizePreset(JSON.parse(localStorage.getItem(WORKOUT_PRESET_KEY) || 'null')); } catch { return normalizePreset(null); }
+};
+
+/** План текущей тренировки: пишется в отметку «тренировка идёт» при старте. */
+const readPlan = (): PlanItem[] => {
+  try {
+    const active = JSON.parse(localStorage.getItem(ACTIVE_WORKOUT_KEY) || 'null');
+    return Array.isArray(active?.plan) ? active.plan : [];
+  } catch { return []; }
+};
+
 /** Сегодняшняя дата в том же виде, в каком её пишет бэкенд: «2026.07.31». */
 const todayInLogFormat = () =>
   new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Moscow' }).replace(/-/g, '.');
 
-const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incrementOrder, ensureOrderAtLeast, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates = DEFAULT_PLATES, haptic, notify }: any) => {
+/** Пустая строка подхода; для кардио — ещё и поля отрезка. */
+const blankSet = (): WorkoutSet => ({ id: crypto.randomUUID(), weight: '', reps: '', rest: '', completed: false, prevWeight: 0 });
+
+/** Отрезок кардио: минуты из плана или образца, скорость и наклон — с образца. */
+const cardioRow = (minutes: unknown, like?: { minutes?: unknown; speed?: unknown; incline?: unknown } | null): WorkoutSet => ({
+  ...blankSet(),
+  minutes: minutes != null && minutes !== '' ? String(minutes) : like?.minutes != null ? String(like.minutes) : '',
+  speed: like?.speed != null && like.speed !== '' ? String(like.speed) : '',
+  incline: like?.incline != null && like.incline !== '' ? String(like.incline) : '',
+});
+
+const WorkoutScreen = ({ initialExercise, allExercises, planDefaults = null, onBack, sessionId, incrementOrder, ensureOrderAtLeast, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates = DEFAULT_PLATES, haptic, notify }: any) => {
 
   const timer = useTimer();
   const savedWorkoutRef = useRef<any>(null);
@@ -1169,8 +1318,13 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
     return () => window.removeEventListener(QUEUE_CHANGED_EVENT, update);
   }, []);
 
+  const isCardio = (exId: string) => allExercises.find((e: Exercise) => e.id === exId)?.measure === 'cardio';
+
   const loadExerciseData = async (exId: string) => {
-    const { history, note } = await api.getHistory(exId);
+    const { history, cardio, note } = await api.getHistory(exId);
+    const exercise = allExercises.find((e: Exercise) => e.id === exId);
+    // Значения плана — только для упражнения, с которого экран открыли.
+    const plan: PlanDefaults | null = exId === initialExercise.id ? planDefaults : null;
     const restored = savedWorkoutRef.current?.exercises?.[exId];
     if (restored && Array.isArray(restored.sets)) {
       // Восстановленные подходы уже занимают свои Order в таблице — счётчик
@@ -1181,7 +1335,18 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
       if (prev[exId]) return prev;
       const savedEx = savedWorkoutRef.current?.exercises?.[exId];
       if (savedEx && Array.isArray(savedEx.sets) && savedEx.sets.length > 0) {
-        return { ...prev, [exId]: { exercise: allExercises.find((e: Exercise) => e.id === exId)!, note: savedEx.note ?? note ?? '', history, sets: savedEx.sets, sessionId } };
+        let sets: WorkoutSet[] = savedEx.sets;
+        // Заминка на тренажёре разминки: разминка уже отмечена — к ней
+        // добавляется новый отрезок, а не открывается она же ещё раз.
+        if (plan?.append && sets.every(s => s.completed)) sets = [...sets, cardioRow(plan.minutes, sets[sets.length - 1])];
+        return { ...prev, [exId]: { exercise: exercise!, note: savedEx.note ?? note ?? '', history, cardioHistory: cardio, sets, sessionId } };
+      }
+      if (exercise?.measure === 'cardio') {
+        const last = lastCardioSession(cardio);
+        const initialSegments = plan?.minutes
+          ? [cardioRow(plan.minutes, plan.append ? last[last.length - 1] : last[0])]
+          : last.length ? last.map(segment => cardioRow(null, segment)) : [cardioRow(null, null)];
+        return { ...prev, [exId]: { exercise, note: note || '', history, cardioHistory: cardio, sets: initialSegments, sessionId } };
       }
       let initialSets: WorkoutSet[] = [];
       // Шаблон берём с прошлой тренировки. Сегодняшние подходы уже в журнале:
@@ -1207,9 +1372,16 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
           rir: h.rir
         }));
       } else {
-        initialSets = [{ id: crypto.randomUUID(), weight: '', reps: '', rest: '', completed: false, prevWeight: 0 }];
+        initialSets = [blankSet()];
       }
-      return { ...prev, [exId]: { exercise: allExercises.find((e: Exercise) => e.id === exId)!, note: note || '', history, sets: initialSets, sessionId } };
+      if (plan?.sets) {
+        // Пресс из плана: N строк по заданным повторам; вес — как в прошлый раз.
+        const like = initialSets.find(s => s.weight !== '');
+        initialSets = Array.from({ length: plan.sets }, () => ({
+          ...blankSet(), weight: like?.weight ?? '0', reps: String(plan.reps ?? like?.reps ?? ''), rest: like?.rest ?? '', setType: 'working' as SetType,
+        }));
+      }
+      return { ...prev, [exId]: { exercise: exercise!, note: note || '', history, sets: initialSets, sessionId } };
     });
   };
 
@@ -1244,7 +1416,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
     let total = 0;
     activeExercises.forEach(exId => {
       const data = sessionData[exId];
-      if (!data) return;
+      if (!data || isCardio(exId)) return;
       const ex = allExercises.find((e: Exercise) => e.id === exId);
       data.sets.filter((s: WorkoutSet) => s.completed && (s.setType || 'working') === 'working').forEach((s: WorkoutSet) => {
         const w = calcEffectiveWeight(ex, parseFloat(s.weight || '0'), bodyWeight);
@@ -1276,12 +1448,22 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
       setSessionData(prev => ({ ...prev, [exId]: { ...prev[exId], sets: prev[exId].sets.map(s => s.id === setId ? { ...s, completed: false } : s) } }));
       return;
     }
-    if (!set.weight || !set.reps) { notify('error'); return; }
+    const exercise = allExercises.find((e: Exercise) => e.id === exId);
+    const cardio = exercise?.measure === 'cardio';
+    const seconds = cardio ? durationSeconds(set.minutes) : null;
+    if (cardio ? seconds === null : (!set.weight || !set.reps)) { notify('error'); return; }
 
     const isEdit = !!set.requestId;
-    const exercise = allExercises.find((e: Exercise) => e.id === exId);
     const inputWeight = parseFloat(set.weight);
-    const payload = {
+    const payload = cardio ? {
+      kind: 'cardio',
+      exercise_id: exId,
+      exercise_name: exercise?.name,
+      session_id: sessionId,
+      duration_seconds: seconds,
+      speed_kmh: toNumber(set.speed),
+      incline_pct: toNumber(set.incline),
+    } : {
       exercise_id: exId,
       exercise_name: exercise?.name,
       input_weight: inputWeight,
@@ -1319,7 +1501,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
     setSessionData(prev => ({ ...prev, [exId]: { ...prev[exId], sets: prev[exId].sets.map(s => s.id === setId ? { ...s, completed: true, requestId: saved.requestId, order: saved.order } : s) } }));
 
     haptic('medium');
-    if (!isEdit) {
+    if (!isEdit && !cardio) {
       const restMs = (parseFloat(set.rest) || 0) * 60_000;
       setRestTarget(restMs > 0 ? restMs : null);
       restAlerted.current = false;
@@ -1336,7 +1518,9 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
     setSessionData(prev => {
       const currentSets = prev[exId].sets;
       const lastSet = currentSets[currentSets.length - 1];
-      const newSet: WorkoutSet = { id: crypto.randomUUID(), weight: lastSet?.weight || '', reps: lastSet?.reps || '', rest: lastSet?.rest || '', completed: false, prevWeight: 0, setType: 'working' };
+      const newSet: WorkoutSet = isCardio(exId)
+        ? cardioRow(lastSet?.minutes, lastSet)
+        : { id: crypto.randomUUID(), weight: lastSet?.weight || '', reps: lastSet?.reps || '', rest: lastSet?.rest || '', completed: false, prevWeight: 0, setType: 'working' };
       return { ...prev, [exId]: { ...prev[exId], sets: [...currentSets, newSet] } };
     });
   };
@@ -1346,7 +1530,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
     if (set?.requestId) {
       // Подход уже в очереди или на сервере — удаление тоже идёт через очередь.
       try {
-        api.deleteSet({ client_request_id: set.requestId, exercise_id: exId, set_group_id: setGroupId, order: set.order });
+        api.deleteSet({ client_request_id: set.requestId, exercise_id: exId, set_group_id: setGroupId, order: set.order, ...(isCardio(exId) ? { kind: 'cardio' } : {}) });
       } catch (e) {
         notify('error');
         return;
@@ -1361,7 +1545,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
       if (!prev[exId]) return prev;
       const filteredSets = prev[exId].sets.filter(s => s.id !== setId);
       const finalSets = filteredSets.length === 0
-        ? [{ id: crypto.randomUUID(), weight: '', reps: '', rest: '', completed: false, prevWeight: 0, setType: 'working' as SetType }]
+        ? [isCardio(exId) ? cardioRow(null, null) : { ...blankSet(), setType: 'working' as SetType }]
         : filteredSets;
       return { ...prev, [exId]: { ...prev[exId], sets: finalSets } };
     });
@@ -1373,7 +1557,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
 
   const removeExercise = (exId: string) => {
     try {
-      savedSetsOf(exId).forEach(s => api.deleteSet({ client_request_id: s.requestId, exercise_id: exId, set_group_id: setGroupId, order: s.order }));
+      savedSetsOf(exId).forEach(s => api.deleteSet({ client_request_id: s.requestId, exercise_id: exId, set_group_id: setGroupId, order: s.order, ...(isCardio(exId) ? { kind: 'cardio' } : {}) }));
     } catch (e) {
       notify('error');
       return;
@@ -1407,6 +1591,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
         {activeExercises.map(exId => {
           const data = sessionData[exId];
           if (!data) return <div key={exId} className="h-40 bg-zinc-900 rounded-2xl animate-pulse" />;
+          if (isCardio(exId)) return <CardioCard key={exId} exerciseData={data} syncMarks={syncMarks} onAddSet={() => handleAddSet(exId)} onUpdateSet={(sid: string, f: string, v: string) => handleUpdateSet(exId, sid, f, v)} onDeleteSet={(sid: string) => handleDeleteSet(exId, sid)} onCompleteSet={(sid: string) => handleCompleteSet(exId, sid)} onRemove={() => requestRemoveExercise(exId)} />;
           return <WorkoutCard key={exId} exerciseData={data} bodyWeight={bodyWeight} plates={plates} syncMarks={syncMarks} onAddSet={() => handleAddSet(exId)} onUpdateSet={(sid: string, f: string, v: string) => handleUpdateSet(exId, sid, f, v)} onDeleteSet={(sid: string) => handleDeleteSet(exId, sid)} onCompleteSet={(sid: string) => handleCompleteSet(exId, sid)} onNoteChange={(val: string) => setSessionData(p => ({...p, [exId]: {...p[exId], note: val}}))} onAddSuperset={() => setIsAddModalOpen(true)} onRemove={() => requestRemoveExercise(exId)} />;
         })}
       </div>
@@ -1608,7 +1793,13 @@ const HistoryScreen = ({ onBack, allExercises = [], bodyWeight = USER_BODY_WEIGH
                         <div key={i} className={`${paddingClass} ${borderClass} last:border-b-0`}>
                           {supersetIndicator}
                           <div className="font-medium text-zinc-300 mb-2">{ex.name}</div>
-                          {ex.sets && Array.isArray(ex.sets) && ex.sets.length > 0 ? (
+                          {Array.isArray(ex.cardio) && ex.cardio.length > 0 ? (
+                            <div className="space-y-1">
+                              {ex.cardio.map((segment: any, j: number) => (
+                                <div key={j} className="px-2 py-1 bg-zinc-800/30 rounded text-sm text-zinc-200">{formatCardioSegment(segment)}</div>
+                              ))}
+                            </div>
+                          ) : ex.sets && Array.isArray(ex.sets) && ex.sets.length > 0 ? (
                             <div className="space-y-1">
                               {ex.sets.map((s: any, j: number) => (
                                 <button key={j} onClick={() => openEdit(s, ex)} className="w-full px-2 py-1 bg-zinc-800/30 rounded flex items-center justify-between text-left active:bg-zinc-800/60">
@@ -1798,6 +1989,7 @@ const EditExerciseModal = ({ isOpen, onClose, exercise, groups, onSave }: any) =
   const [weightType, setWeightType] = useState('');
   const [baseWeight, setBaseWeight] = useState<string>('0');
   const [secondaryMuscles, setSecondaryMuscles] = useState('');
+  const [measure, setMeasure] = useState<'strength' | 'cardio'>('strength');
   const fileRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (exercise) {
@@ -1808,6 +2000,7 @@ const EditExerciseModal = ({ isOpen, onClose, exercise, groups, onSave }: any) =
       setWeightType(exercise.weightType || 'Machine');
       setBaseWeight(String(exercise.baseWeight ?? 0));
       setSecondaryMuscles(exercise.secondaryMuscles || '');
+      setMeasure(exercise.measure === 'cardio' ? 'cardio' : 'strength');
       setUploadState('idle');
       setUploadError('');
     }
@@ -1861,6 +2054,11 @@ const EditExerciseModal = ({ isOpen, onClose, exercise, groups, onSave }: any) =
           <div className="flex flex-wrap gap-2">{groups.map((g: string) => <button key={g} onClick={() => setGroup(g)} className={`px-3 py-2 rounded-xl text-sm border ${group === g ? 'bg-blue-600 border-blue-600 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-400'}`}>{g}</button>)}</div>
         </div>
         <div>
+          <label className="text-sm text-zinc-400 mb-1 block">Что записывать</label>
+          <div className="flex flex-wrap gap-2">{([['strength', 'Подходы и вес'], ['cardio', 'Кардио: минуты, скорость, наклон']] as const).map(([value, label]) => <button key={value} onClick={() => setMeasure(value)} className={`px-3 py-2 rounded-xl text-sm border ${measure === value ? 'bg-blue-600 border-blue-600 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-400'}`}>{label}</button>)}</div>
+        </div>
+        {measure === 'strength' && (<>
+        <div>
           <label className="text-sm text-zinc-400 mb-1 block">Тип нагрузки</label>
           <div className="flex flex-wrap gap-2">{WEIGHT_TYPE_OPTIONS.map(opt => <button key={opt.value} onClick={() => { setWeightType(opt.value); if (opt.value === 'Assisted') { setBaseWeight('90'); setWeightMultiplier('-1'); } }} className={`px-3 py-2 rounded-xl text-sm border ${weightType === opt.value ? 'bg-blue-600 border-blue-600 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-400'}`}>{opt.label}</button>)}</div>
         </div>
@@ -1875,11 +2073,12 @@ const EditExerciseModal = ({ isOpen, onClose, exercise, groups, onSave }: any) =
           </div>
         </div>
         <div className="text-xs text-zinc-500 -mt-3">Множитель 2 — ввод «блины на сторону» или вес одной гантели. Для «Свой вес» — доля веса тела (0.68 для отжиманий).</div>
+        </>)}
         <div>
           <label className="text-sm text-zinc-400 mb-1 block">Вторичные мышцы</label>
           <Input value={secondaryMuscles} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSecondaryMuscles(e.target.value)} placeholder="Грудь, Трицепс" />
         </div>
-        <Button onClick={() => { if (uploadState === 'busy') return; onSave(exercise.id, { name, muscleGroup: group, imageUrl: image, weightType, baseWeight: parseFloat(baseWeight) || 0, weightMultiplier: parseFloat(weightMultiplier) || 1, secondaryMuscles }); onClose(); }} className="w-full h-12">{uploadState === 'busy' ? 'Ждём фото…' : 'Сохранить'}</Button>
+        <Button onClick={() => { if (uploadState === 'busy') return; onSave(exercise.id, { name, muscleGroup: group, imageUrl: image, weightType, baseWeight: parseFloat(baseWeight) || 0, weightMultiplier: parseFloat(weightMultiplier) || 1, secondaryMuscles, measure }); onClose(); }} className="w-full h-12">{uploadState === 'busy' ? 'Ждём фото…' : 'Сохранить'}</Button>
       </div>
     </Modal>
   );
@@ -1927,6 +2126,12 @@ const App = () => {
   ));
 
   const [workoutActive, setWorkoutActive] = useState(() => !!localStorage.getItem(ACTIVE_WORKOUT_KEY));
+  const [preset, setPreset] = useState<WorkoutPreset>(readPreset);
+  const [presetDraft, setPresetDraft] = useState<any>(preset);
+  const [plan, setPlan] = useState<PlanItem[]>(readPlan);
+  const [planDone, setPlanDone] = useState<boolean[]>([]);
+  // Что подставить на экране упражнения, если его открыли из плана.
+  const [planDefaults, setPlanDefaults] = useState<PlanDefaults | null>(null);
   const [isFinishConfirmOpen, setIsFinishConfirmOpen] = useState(false);
   const [importReport, setImportReport] = useState('');
   const [dataBusy, setDataBusy] = useState(false);
@@ -1984,18 +2189,44 @@ const App = () => {
   // Тренировка могла стартовать неявно (из экрана подходов) — освежаем флаг
   // при каждом возврате на главную.
   useEffect(() => {
-    if (screen === 'home') setWorkoutActive(!!localStorage.getItem(ACTIVE_WORKOUT_KEY));
+    if (screen === 'home') {
+      setWorkoutActive(!!localStorage.getItem(ACTIVE_WORKOUT_KEY));
+      const current = readPlan();
+      const draft = readSavedWorkout();
+      setPlan(current);
+      setPlanDone(current.map(item => planItemDone(item, current, draft)));
+    }
   }, [screen]);
 
   const startWorkout = () => {
-    localStorage.setItem(ACTIVE_WORKOUT_KEY, JSON.stringify({ startedAt: Date.now() }));
+    // Пресет только строит план: результаты появятся, когда их отметят.
+    const next = planFromPreset(preset);
+    localStorage.setItem(ACTIVE_WORKOUT_KEY, JSON.stringify({ startedAt: Date.now(), plan: next }));
+    setPlan(next);
+    setPlanDone(next.map(() => false));
     setWorkoutActive(true);
     haptic('medium');
+  };
+
+  const openPlanItem = (item: PlanItem) => {
+    const exercise = allExercises.find(ex => ex.id === item.exerciseId);
+    if (!exercise) { notify('error'); return; }
+    haptic('light');
+    setPlanDefaults(planDefaultsFor(item, plan));
+    setCurrentExercise(exercise);
+    setScreen('workout');
+  };
+
+  const savePreset = (next: WorkoutPreset) => {
+    setPreset(next);
+    try { localStorage.setItem(WORKOUT_PRESET_KEY, JSON.stringify(next)); } catch (_) {}
   };
 
   const finishWorkoutConfirmed = () => {
     localStorage.removeItem(ACTIVE_WORKOUT_KEY);
     localStorage.removeItem(WORKOUT_STORAGE_KEY);
+    setPlan([]);
+    setPlanDone([]);
     resetSession();
     setWorkoutActive(false);
     setIsFinishConfirmOpen(false);
@@ -2180,12 +2411,12 @@ const App = () => {
 
   return (
     <div className="bg-zinc-950 min-h-screen text-zinc-50 font-sans selection:bg-blue-500/30 pb-safe">
-      {screen === 'home' && <HomeScreen groups={groups} workoutActive={workoutActive} onStartWorkout={startWorkout} onFinishWorkout={() => setIsFinishConfirmOpen(true)} onSearch={(q: string) => { setSearchQuery(q); if (q) setScreen('exercises'); }} onSelectGroup={(g: string) => { setSelectedGroup(g); setScreen('exercises'); }} onAllExercises={() => { setSelectedGroup(null); setScreen('exercises'); }} onHistory={() => setScreen('history')} onAnalytics={() => setScreen('analytics')} onSummary={() => setScreen('summary')} onSettings={() => { setBodyWeightInput(String(bodyWeight)); setPlatesDraft(plates); setIsSettingsOpen(true); }} />}
+      {screen === 'home' && <HomeScreen groups={groups} workoutActive={workoutActive} plan={plan} planDone={planDone} exerciseNames={Object.fromEntries(allExercises.map(ex => [ex.id, ex.name]))} onOpenPlanItem={openPlanItem} onStartWorkout={startWorkout} onFinishWorkout={() => setIsFinishConfirmOpen(true)} onSearch={(q: string) => { setSearchQuery(q); if (q) setScreen('exercises'); }} onSelectGroup={(g: string) => { setSelectedGroup(g); setScreen('exercises'); }} onAllExercises={() => { setSelectedGroup(null); setScreen('exercises'); }} onHistory={() => setScreen('history')} onAnalytics={() => setScreen('analytics')} onSummary={() => setScreen('summary')} onSettings={() => { setBodyWeightInput(String(bodyWeight)); setPlatesDraft(plates); setPresetDraft(preset); setIsSettingsOpen(true); }} />}
       {screen === 'analytics' && <AnalyticsScreen onBack={() => setScreen('home')} />}
       {screen === 'summary' && <TrainerSummaryScreen onBack={() => setScreen('home')} notify={notify} allExercises={allExercises} />}
       {screen === 'history' && <HistoryScreen onBack={() => { setDeeplinkSession(null); setScreen('home'); }} allExercises={allExercises} bodyWeight={bodyWeight} notify={notify} haptic={haptic} focusSessionId={deeplinkSession} />}
-      {screen === 'exercises' && <ExercisesListScreen exercises={filteredExercises} title={selectedGroup || (searchQuery ? `Поиск: ${searchQuery}` : 'Все упражнения')} searchQuery={searchQuery} onSearch={(q: string) => setSearchQuery(q)} onBack={() => { setSearchQuery(''); setSelectedGroup(null); setScreen('home'); }} onSelectExercise={(ex: Exercise) => { haptic('light'); setCurrentExercise(ex); setScreen('workout'); }} onAddExercise={() => setIsCreateModalOpen(true)} onEditExercise={(ex: Exercise) => setExerciseToEdit(ex)} />}
-      {screen === 'workout' && currentExercise && <WorkoutScreen initialExercise={currentExercise} allExercises={allExercises} onExerciseUpdated={(id: string, updates: Partial<Exercise>) => setAllExercises(p => p.map(ex => ex.id === id ? { ...ex, ...updates } : ex))} sessionId={sessionId} incrementOrder={incrementOrder} ensureOrderAtLeast={ensureOrderAtLeast} bodyWeight={bodyWeight} plates={plates} haptic={haptic} notify={notify} onBack={() => setScreen('exercises')} />}
+      {screen === 'exercises' && <ExercisesListScreen exercises={filteredExercises} title={selectedGroup || (searchQuery ? `Поиск: ${searchQuery}` : 'Все упражнения')} searchQuery={searchQuery} onSearch={(q: string) => setSearchQuery(q)} onBack={() => { setSearchQuery(''); setSelectedGroup(null); setScreen('home'); }} onSelectExercise={(ex: Exercise) => { haptic('light'); setPlanDefaults(null); setCurrentExercise(ex); setScreen('workout'); }} onAddExercise={() => setIsCreateModalOpen(true)} onEditExercise={(ex: Exercise) => setExerciseToEdit(ex)} />}
+      {screen === 'workout' && currentExercise && <WorkoutScreen initialExercise={currentExercise} allExercises={allExercises} planDefaults={planDefaults} onExerciseUpdated={(id: string, updates: Partial<Exercise>) => setAllExercises(p => p.map(ex => ex.id === id ? { ...ex, ...updates } : ex))} sessionId={sessionId} incrementOrder={incrementOrder} ensureOrderAtLeast={ensureOrderAtLeast} bodyWeight={bodyWeight} plates={plates} haptic={haptic} notify={notify} onBack={() => setScreen(planDefaults ? 'home' : 'exercises')} />}
       {pendingCount > 0 && (
         <button
           onClick={() => { setQueueItems(getQueue()); setIsQueueOpen(true); void api.syncOfflineQueue(); }}
@@ -2232,7 +2463,42 @@ const App = () => {
             </div>
             <p className="text-xs text-zinc-500 mt-1">По ним считается подсказка «на сторону» для штанги и блинов.</p>
           </div>
-          <Button className="w-full h-12" onClick={() => { const v = parseFloat(bodyWeightInput.replace(',', '.')); if (v >= 30 && v <= 250) { updateBodyWeight(v); updatePlates(platesDraft); notify('success'); setIsSettingsOpen(false); } else { notify('error'); } }}>Сохранить</Button>
+          <div className="space-y-3">
+            <div>
+              <div className="text-sm text-zinc-400">Начало и конец тренировки</div>
+              <p className="text-xs text-zinc-500 mt-1">«Начать тренировку» добавит на главную план. Подходы появятся, только когда их отметишь.</p>
+            </div>
+            {(['warmup', 'abs', 'cooldown'] as PlanKey[]).map(key => {
+              const item = presetDraft?.[key] || DEFAULT_PRESET[key]!;
+              const options = allExercises.filter(ex => (key === 'abs') !== (ex.measure === 'cardio'));
+              const set = (patch: Record<string, string>) => setPresetDraft({ ...presetDraft, [key]: { ...item, ...patch } });
+              return (
+                <div key={key} className="grid grid-cols-[1fr_auto] gap-2 items-end">
+                  <div>
+                    <label className="text-xs text-zinc-500 mb-1 block">{{ warmup: 'Разминка', abs: 'Пресс', cooldown: 'Заминка' }[key]}</label>
+                    <select value={item.exerciseId || ''} onChange={(e) => set({ exerciseId: e.target.value })} className="w-full h-12 rounded-xl bg-zinc-800 border border-zinc-700 px-3 text-zinc-100">
+                      <option value="">— не добавлять —</option>
+                      {options.map(ex => <option key={ex.id} value={ex.id}>{ex.name}</option>)}
+                    </select>
+                  </div>
+                  {key === 'abs' ? (
+                    <div className="flex items-center gap-1 text-zinc-500">
+                      <Input type="tel" inputMode="numeric" value={String(item.sets ?? '')} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ sets: e.target.value })} className="w-14 text-center" />×
+                      <Input type="tel" inputMode="numeric" value={String(item.reps ?? '')} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ reps: e.target.value })} className="w-14 text-center" />
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1 text-xs text-zinc-500">
+                      <Input type="tel" inputMode="numeric" value={String(item.minutes ?? '')} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ minutes: e.target.value })} className="w-16 text-center" />мин
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {!allExercises.some(ex => ex.measure === 'cardio') && (
+              <p className="text-xs text-amber-300">В каталоге нет кардио. Открой дорожку в списке упражнений, нажми карандаш и выбери «Кардио».</p>
+            )}
+          </div>
+          <Button className="w-full h-12" onClick={() => { const v = parseFloat(bodyWeightInput.replace(',', '.')); if (v >= 30 && v <= 250) { updateBodyWeight(v); updatePlates(platesDraft); savePreset(normalizePreset(presetDraft)); notify('success'); setIsSettingsOpen(false); } else { notify('error'); } }}>Сохранить</Button>
           {!telegramMode && <Button variant="secondary" className="w-full h-12" onClick={() => { void signOutStandalone(); setIsSettingsOpen(false); }}>Выйти из HealthOS</Button>}
           <div className="border-t border-zinc-800 pt-4 space-y-3">
             <div className="text-sm font-medium text-zinc-400">Данные</div>
@@ -2261,7 +2527,9 @@ const App = () => {
             <div key={item.id} className="flex items-center gap-3 p-3 bg-zinc-800/50 rounded-xl border border-zinc-800">
               <div className="flex-1 min-w-0">
                 <div className="text-sm text-zinc-200 truncate">{String(item.data.exercise_name || 'Подход')}</div>
-                <div className="text-xs text-zinc-500">{item.data.input_weight != null || item.data.weight != null ? setLoadLabel(item.data as any, null) : '?'} × {String(item.data.reps ?? '?')} · {item.type === 'saveSet' ? 'новый подход' : item.type === 'deleteSet' ? 'удаление' : 'правка'}</div>
+                <div className="text-xs text-zinc-500">{item.data.kind === 'cardio'
+                  ? formatCardioSegment({ minutes: Number(item.data.duration_seconds || 0) / 60, speed: item.data.speed_kmh as number | null, incline: item.data.incline_pct as number | null })
+                  : `${item.data.input_weight != null || item.data.weight != null ? setLoadLabel(item.data as any, null) : '?'} × ${String(item.data.reps ?? '?')}`} · {item.type === 'saveSet' ? 'новый подход' : item.type === 'deleteSet' ? 'удаление' : 'правка'}</div>
                 {item.id === inFlightId
                   ? <div className="text-xs text-amber-300">отправляется…</div>
                   : item.lastError && <div className={`text-xs ${item.rejected ? 'text-red-400' : 'text-zinc-400'}`}>попыток: {item.attempts} · {item.lastError === 'authorization' ? 'токен не подходит' : item.lastError}</div>}
