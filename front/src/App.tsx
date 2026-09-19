@@ -18,10 +18,10 @@ import {
   QUEUE_CHANGED_EVENT,
   addToQueue,
   upsertQueue,
+  enqueueDelete,
   getPendingCount,
   getQueue,
   getInFlightId,
-  removeFromQueue,
   discardQueued,
   syncQueue,
   type QueuedItem,
@@ -94,15 +94,24 @@ const GLOBAL_HISTORY_CACHE_KEY = 'gym_global_history_cache';
 // не разминётся на сервере со своим же оригиналом.
 const SYNC_REQUEST_TIMEOUT_MS = 35_000;
 
+const QUEUE_ENDPOINTS: Record<QueuedItem['type'], string> = {
+  saveSet: 'save_set',
+  updateSet: 'update_set',
+  deleteSet: 'delete_set',
+};
+
 const sendQueuedItem = async (item: QueuedItem): Promise<SendOutcome> => {
-  const endpoint = item.type === 'saveSet' ? 'save_set' : 'update_set';
+  const endpoint = QUEUE_ENDPOINTS[item.type];
+  // Удаление из очереди может прийти для строки, которой на сервере нет:
+  // подход до него не дошёл, либо ответ на прошлое удаление потерялся.
+  const body = item.type === 'deleteSet' ? { ...item.data, missing_ok: true } : item.data;
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), SYNC_REQUEST_TIMEOUT_MS);
   try {
     const res = await authenticatedFetch(getApiUrl(endpoint), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(item.data),
+      body: JSON.stringify(body),
       signal: controller.signal,
     });
     if (res.status === 401 || res.status === 403) return { ok: false, error: 'authorization', stop: true };
@@ -111,7 +120,8 @@ const sendQueuedItem = async (item: QueuedItem): Promise<SendOutcome> => {
     if (res.ok && result?.status === 'success') return { ok: true };
     const reason = typeof result?.error === 'string' && result.error
       ? result.error
-      : item.type === 'updateSet' ? 'подход не найден или данные неверны' : `HTTP ${res.status}`;
+      : item.type === 'updateSet' ? 'подход не найден или данные неверны'
+      : item.type === 'deleteSet' ? 'подход не удалось удалить' : `HTTP ${res.status}`;
     return { ok: false, error: `сервер отклонил: ${reason}`, stop: false };
   } catch (error) {
     if (error instanceof AuthRequiredError) return { ok: false, error: 'authorization', stop: true };
@@ -235,24 +245,12 @@ const api = {
     return pendingId;
   },
 
-  // 'busy' — запрос по этому подходу прямо сейчас в сети. Удалить его из
-  // очереди нельзя: сервер может записать подход уже после удаления.
-  deleteSet: async (data: any): Promise<'ok' | 'busy' | 'error'> => {
-    const id = String(data.client_request_id || '');
-    if (id && getInFlightId() === id) return 'busy';
-    const queued = id ? getQueue().find((item) => item.id === id) : undefined;
-    if (queued?.type === 'saveSet') {
-      // Подход не подтверждён сервером — убираем его из очереди. Если его уже
-      // пытались отправить, запрос мог дойти без ответа: удаляем и там.
-      removeFromQueue(id);
-      if (queued.attempts > 0) void api.request('delete_set', { method: 'POST', body: JSON.stringify(data) });
-      return 'ok';
-    }
-    const res = await api.request('delete_set', { method: 'POST', body: JSON.stringify(data) });
-    if (!res || res.status !== 'success') return 'error';
-    // Неотправленная правка удалённой строки иначе висела бы в очереди с ошибкой.
-    if (id) removeFromQueue(id);
-    return 'ok';
+  // Удаление идёт через ту же очередь: работает без сети и уходит после
+  // запроса, который по этому подходу уже в пути, — поздний save не вернёт
+  // строку. Бросает исключение, если localStorage запись не принял.
+  deleteSet: (data: any): void => {
+    enqueueDelete(data);
+    queueMicrotask(() => { void api.syncOfflineQueue(); });
   },
 
   deleteWorkout: async (date: string, sessionId?: string): Promise<{ status?: string; deleted?: number } | null> => {
@@ -823,7 +821,7 @@ const LastTimeBlock = ({ exercise, history }: any) => {
   );
 };
 
-const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates = DEFAULT_PLATES, syncMarks = {}, onAddSet, onUpdateSet, onDeleteSet, onCompleteSet, onNoteChange, onAddSuperset }: any) => {
+const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates = DEFAULT_PLATES, syncMarks = {}, onAddSet, onUpdateSet, onDeleteSet, onCompleteSet, onNoteChange, onAddSuperset, onRemove }: any) => {
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const personalRecord = useMemo(() => {
     if (!exerciseData.history.length) return 0;
@@ -841,7 +839,10 @@ const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plat
             </div>
           )}
         </div>
-        <button onClick={() => setShowHistoryModal(true)} className="p-2 bg-zinc-800/50 rounded-lg text-zinc-400 hover:text-blue-500"><Calendar className="w-5 h-5" /></button>
+        <div className="flex gap-2">
+          <button onClick={() => setShowHistoryModal(true)} className="p-2 bg-zinc-800/50 rounded-lg text-zinc-400 hover:text-blue-500"><Calendar className="w-5 h-5" /></button>
+          <button onClick={onRemove} title="Убрать из тренировки" className="p-2 bg-zinc-800/50 rounded-lg text-zinc-500 hover:text-red-500"><X className="w-5 h-5" /></button>
+        </div>
       </div>
       <LastTimeBlock exercise={exerciseData.exercise} history={exerciseData.history} />
       <NoteWidget initialValue={exerciseData.note} onChange={onNoteChange} />
@@ -1096,18 +1097,26 @@ const readSavedWorkout = () => {
   return null;
 };
 
-/** Синхронно переписывает один подход в сохранённом черновике тренировки. */
-const writeDraftSet = (exId: string, set: WorkoutSet) => {
+/**
+ * Синхронно правит сохранённый черновик тренировки, не дожидаясь эффекта после
+ * рендера: закрытие приложения между очередью и эффектом оставило бы черновик
+ * в состоянии, которое очередь уже не отражает.
+ */
+const patchDraft = (patch: (draft: any) => void) => {
   try {
     const saved = JSON.parse(localStorage.getItem(WORKOUT_STORAGE_KEY) || 'null');
-    const block = saved?.exercises?.[exId];
-    // Блока ещё нет — его запишет эффект после рендера вместе со всем остальным.
-    if (!block || !Array.isArray(block.sets)) return;
-    block.sets = block.sets.map((s: WorkoutSet) => s.id === set.id ? set : s);
+    // Черновика ещё нет — его запишет эффект вместе со всем остальным.
+    if (!saved?.exercises) return;
+    patch(saved);
     saved.timestamp = Date.now();
     localStorage.setItem(WORKOUT_STORAGE_KEY, JSON.stringify(saved));
   } catch (_) {}
 };
+
+const writeDraftSet = (exId: string, set: WorkoutSet) => patchDraft((draft) => {
+  const block = draft.exercises[exId];
+  if (block && Array.isArray(block.sets)) block.sets = block.sets.map((s: WorkoutSet) => s.id === set.id ? set : s);
+});
 
 type SyncMark = 'pending' | 'rejected';
 
@@ -1323,13 +1332,20 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
     });
   };
 
-  const handleDeleteSet = async (exId: string, setId: string) => {
+  const handleDeleteSet = (exId: string, setId: string) => {
     const set = sessionData[exId]?.sets.find(s => s.id === setId);
     if (set?.requestId) {
-      // Подход уже записан в таблицу — удаляем и строку на сервере.
-      const result = await api.deleteSet({ client_request_id: set.requestId, exercise_id: exId, set_group_id: setGroupId, order: set.order });
-      if (result === 'busy') { notify('warning'); return; }
-      if (result !== 'ok') { notify('error'); return; }
+      // Подход уже в очереди или на сервере — удаление тоже идёт через очередь.
+      try {
+        api.deleteSet({ client_request_id: set.requestId, exercise_id: exId, set_group_id: setGroupId, order: set.order });
+      } catch (e) {
+        notify('error');
+        return;
+      }
+      patchDraft((draft) => {
+        const block = draft.exercises[exId];
+        if (block && Array.isArray(block.sets)) block.sets = block.sets.filter((s: WorkoutSet) => s.id !== setId);
+      });
       haptic('medium');
     }
     setSessionData(prev => {
@@ -1342,6 +1358,39 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
     });
   };
 
+  // Упражнение, которое просят убрать из тренировки, пока ждёт подтверждения.
+  const [removeTarget, setRemoveTarget] = useState<string | null>(null);
+  const savedSetsOf = (exId: string) => (sessionData[exId]?.sets || []).filter(s => s.requestId);
+
+  const removeExercise = (exId: string) => {
+    try {
+      savedSetsOf(exId).forEach(s => api.deleteSet({ client_request_id: s.requestId, exercise_id: exId, set_group_id: setGroupId, order: s.order }));
+    } catch (e) {
+      notify('error');
+      return;
+    }
+    patchDraft((draft) => {
+      delete draft.exercises[exId];
+      if (Array.isArray(draft.activeExercises)) draft.activeExercises = draft.activeExercises.filter((id: string) => id !== exId);
+    });
+    setRemoveTarget(null);
+    haptic('medium');
+    const remaining = activeExercises.filter(id => id !== exId);
+    if (remaining.length === 0) { onBack(); return; }
+    setActiveExercises(remaining);
+    setSessionData(prev => {
+      const next = { ...prev };
+      delete next[exId];
+      return next;
+    });
+  };
+
+  // Без выполненных подходов терять нечего — убираем сразу, иначе спрашиваем.
+  const requestRemoveExercise = (exId: string) => {
+    if (savedSetsOf(exId).length === 0) removeExercise(exId);
+    else setRemoveTarget(exId);
+  };
+
   return (
     <div className="min-h-screen bg-zinc-950 pb-20">
       <TimerBlock timer={timer} onToggle={() => { if (timer.isRunning) { timer.reset(); setRestTarget(null); } else { timer.start(); } }} sessionTonnage={sessionTonnage} restTarget={restTarget} />
@@ -1349,10 +1398,21 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
         {activeExercises.map(exId => {
           const data = sessionData[exId];
           if (!data) return <div key={exId} className="h-40 bg-zinc-900 rounded-2xl animate-pulse" />;
-          return <WorkoutCard key={exId} exerciseData={data} bodyWeight={bodyWeight} plates={plates} syncMarks={syncMarks} onAddSet={() => handleAddSet(exId)} onUpdateSet={(sid: string, f: string, v: string) => handleUpdateSet(exId, sid, f, v)} onDeleteSet={(sid: string) => handleDeleteSet(exId, sid)} onCompleteSet={(sid: string) => handleCompleteSet(exId, sid)} onNoteChange={(val: string) => setSessionData(p => ({...p, [exId]: {...p[exId], note: val}}))} onAddSuperset={() => setIsAddModalOpen(true)} />;
+          return <WorkoutCard key={exId} exerciseData={data} bodyWeight={bodyWeight} plates={plates} syncMarks={syncMarks} onAddSet={() => handleAddSet(exId)} onUpdateSet={(sid: string, f: string, v: string) => handleUpdateSet(exId, sid, f, v)} onDeleteSet={(sid: string) => handleDeleteSet(exId, sid)} onCompleteSet={(sid: string) => handleCompleteSet(exId, sid)} onNoteChange={(val: string) => setSessionData(p => ({...p, [exId]: {...p[exId], note: val}}))} onAddSuperset={() => setIsAddModalOpen(true)} onRemove={() => requestRemoveExercise(exId)} />;
         })}
       </div>
       <div className="px-4 mt-8 mb-20"><Button variant="primary" onClick={onBack} className="w-full h-14 text-lg font-semibold shadow-xl shadow-blue-900/20">Завершить упражнение</Button></div>
+      <Modal isOpen={!!removeTarget} onClose={() => setRemoveTarget(null)} title="Убрать упражнение?">
+        {removeTarget && (
+          <div className="space-y-4">
+            <p className="text-sm text-zinc-400">
+              «{sessionData[removeTarget]?.exercise.name}» уйдёт из этой тренировки вместе с выполненными подходами: {savedSetsOf(removeTarget).length}. С сервера они тоже будут удалены.
+            </p>
+            <Button variant="danger" className="w-full h-12" onClick={() => removeExercise(removeTarget)}>Убрать и удалить подходы</Button>
+            <Button variant="secondary" className="w-full h-12" onClick={() => setRemoveTarget(null)}>Отмена</Button>
+          </div>
+        )}
+      </Modal>
       <Modal isOpen={isAddModalOpen} onClose={() => { setIsAddModalOpen(false); setSupersetSearchQuery(''); }} title="Добавить в суперсет">
         <div className="space-y-3">
           <div className="relative">
@@ -2183,7 +2243,7 @@ const App = () => {
             <div key={item.id} className="flex items-center gap-3 p-3 bg-zinc-800/50 rounded-xl border border-zinc-800">
               <div className="flex-1 min-w-0">
                 <div className="text-sm text-zinc-200 truncate">{String(item.data.exercise_name || 'Подход')}</div>
-                <div className="text-xs text-zinc-500">{String(item.data.input_weight ?? item.data.weight ?? '?')} кг × {String(item.data.reps ?? '?')} · {item.type === 'saveSet' ? 'новый подход' : 'правка'}</div>
+                <div className="text-xs text-zinc-500">{String(item.data.input_weight ?? item.data.weight ?? '?')} кг × {String(item.data.reps ?? '?')} · {item.type === 'saveSet' ? 'новый подход' : item.type === 'deleteSet' ? 'удаление' : 'правка'}</div>
                 {item.id === inFlightId
                   ? <div className="text-xs text-amber-300">отправляется…</div>
                   : item.lastError && <div className={`text-xs ${item.rejected ? 'text-red-400' : 'text-zinc-400'}`}>попыток: {item.attempts} · {item.lastError === 'authorization' ? 'токен не подходит' : item.lastError}</div>}
