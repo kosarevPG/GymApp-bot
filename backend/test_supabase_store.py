@@ -194,6 +194,45 @@ class SupabaseStoreTests(unittest.TestCase):
         self.assertTrue(self.store.delete_set(USER_ID, {"client_request_id": REQUEST_1}))
         self.assertEqual(self.client.tables["gym_sets"], [])
 
+    def test_load_snapshot_is_stored_and_returned_with_history(self):
+        load = {"v": 1, "type": "Dumbbell", "mult": 2, "base": 0}
+        self.store.save_set(USER_ID, {**self.payload(), "load": load})
+        [row] = self.client.tables["gym_sets"]
+        self.assertEqual(row["source_payload"]["load"], {"v": 1, "type": "Dumbbell", "mult": 2.0, "base": 0.0})
+        self.assertEqual(row["source_payload"]["client_group_id"], "group-session-morning")
+        history = self.store.get_exercise_history(USER_ID, "legacy-exercise")["history"]
+        self.assertEqual(history[0]["sets"][0]["load"]["type"], "Dumbbell")
+
+    def test_body_weight_is_kept_only_when_given(self):
+        self.store.save_set(USER_ID, {
+            **self.payload(), "load": {"type": "Assisted", "mult": -1, "base": 90, "bw": 84.5},
+        })
+        self.assertEqual(self.client.tables["gym_sets"][0]["source_payload"]["load"]["bw"], 84.5)
+
+    def test_something_that_is_not_a_snapshot_is_not_stored(self):
+        self.store.save_set(USER_ID, {**self.payload(), "load": {"type": "Rocket", "mult": 3}})
+        self.store.save_set(USER_ID, {**self.payload(request_id=REQUEST_2), "order": 2, "load": "2x"})
+        for row in self.client.tables["gym_sets"]:
+            self.assertNotIn("load", row["source_payload"])
+        history = self.store.get_exercise_history(USER_ID, "legacy-exercise")["history"]
+        self.assertTrue(all("load" not in s for s in history[0]["sets"]))
+
+    def test_reps_only_edit_leaves_the_weights_alone(self):
+        self.store.save_set(USER_ID, self.payload())
+        self.assertTrue(self.store.update_set(USER_ID, {"client_request_id": REQUEST_1, "reps": 7}))
+        [row] = self.client.tables["gym_sets"]
+        self.assertEqual((row["input_weight_kg"], row["total_weight_kg"], row["reps"]), (20, 40, 7))
+
+    def test_weight_edit_records_its_rules_next_to_the_rest_of_the_payload(self):
+        self.store.save_set(USER_ID, self.payload())
+        self.assertTrue(self.store.update_set(USER_ID, {
+            "client_request_id": REQUEST_1, "input_weight": 22.5, "weight": 45,
+            "load": {"v": 1, "type": "Dumbbell", "mult": 2, "base": 0},
+        }))
+        payload = self.client.tables["gym_sets"][0]["source_payload"]
+        self.assertEqual(payload["client_group_id"], "group-session-morning")
+        self.assertEqual(payload["load"]["type"], "Dumbbell")
+
     def test_missing_row_counts_as_deleted_only_for_the_queue(self):
         self.assertFalse(self.store.delete_set(USER_ID, {"client_request_id": REQUEST_1}))
         self.assertTrue(self.store.delete_set(
