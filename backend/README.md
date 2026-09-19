@@ -29,6 +29,14 @@ enters the offline queue. The adapter converts it to `Europe/Moscow`, derives
 set timestamps. Reads page through the complete Data API result instead of
 assuming the default 1000-row response is complete.
 
+A repeated `save_set` with an already stored `client_request_id` answers
+`deduplicated` and, if the editable fields (weights, reps, rest, set type,
+RPE/RIR, note) differ from the row, applies them and adds `updated: true`. A
+retry after a lost response may carry an edit made while the first request was
+in flight; answering "already saved" would drop it. The client aborts a queued
+request only after 35 s, longer than the function's 30 s execution timeout, so
+an abandoned request cannot land after its own retry.
+
 `delete_workout` should receive `session_id`. The legacy date-only form is
 accepted only when that date resolves to exactly one owner session; ambiguity
 returns HTTP 409. Deleting a workout sends one owner-scoped session DELETE and

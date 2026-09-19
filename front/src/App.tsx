@@ -20,9 +20,12 @@ import {
   upsertQueue,
   getPendingCount,
   getQueue,
-  markAttempt,
+  getInFlightId,
   removeFromQueue,
+  discardQueued,
+  syncQueue,
   type QueuedItem,
+  type SendOutcome,
 } from './offlineSync';
 import {
   getStandaloneAccessToken,
@@ -86,7 +89,37 @@ const getCachedHistory = (exerciseId: string) => {
 
 const GLOBAL_HISTORY_CACHE_KEY = 'gym_global_history_cache';
 
-let syncInFlight = false;
+// Дольше, чем живёт вызов функции (--execution-timeout=30s в deploy_function.sh):
+// к моменту, когда клиент бросает запрос, сервер его уже не допишет, и повтор
+// не разминётся на сервере со своим же оригиналом.
+const SYNC_REQUEST_TIMEOUT_MS = 35_000;
+
+const sendQueuedItem = async (item: QueuedItem): Promise<SendOutcome> => {
+  const endpoint = item.type === 'saveSet' ? 'save_set' : 'update_set';
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), SYNC_REQUEST_TIMEOUT_MS);
+  try {
+    const res = await authenticatedFetch(getApiUrl(endpoint), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(item.data),
+      signal: controller.signal,
+    });
+    if (res.status === 401 || res.status === 403) return { ok: false, error: 'authorization', stop: true };
+    if (res.status >= 500) return { ok: false, error: `сервер недоступен (HTTP ${res.status})`, stop: true };
+    const result = await res.json().catch(() => null);
+    if (res.ok && result?.status === 'success') return { ok: true };
+    const reason = typeof result?.error === 'string' && result.error
+      ? result.error
+      : item.type === 'updateSet' ? 'подход не найден или данные неверны' : `HTTP ${res.status}`;
+    return { ok: false, error: `сервер отклонил: ${reason}`, stop: false };
+  } catch (error) {
+    if (error instanceof AuthRequiredError) return { ok: false, error: 'authorization', stop: true };
+    return { ok: false, error: controller.signal.aborted ? 'сервер не ответил за 35 с' : 'нет связи', stop: true };
+  } finally {
+    window.clearTimeout(timeout);
+  }
+};
 
 const initNetworkListeners = () => {
   const sync = () => { void api.syncOfflineQueue(); };
@@ -186,29 +219,40 @@ const api = {
     });
   },
 
-  saveSet: async (data: any): Promise<{ status?: string; row_number?: number; pending_id?: string; offline?: boolean }> => {
+  // Постановка в очередь синхронная и бросает исключение, если localStorage
+  // запись не принял: вызывающий тогда не отмечает подход выполненным.
+  saveSet: (data: any): string => {
     const clientRequestId = String(data.client_request_id || crypto.randomUUID());
     const pendingId = addToQueue('saveSet', { ...data, client_request_id: clientRequestId });
     queueMicrotask(() => { void api.syncOfflineQueue(); });
-    return { status: 'queued', pending_id: pendingId, offline: !navigator.onLine };
+    return pendingId;
   },
 
-  updateSet: async (data: any): Promise<{ status?: string; pending_id?: string; offline?: boolean }> => {
+  updateSet: (data: any): string => {
     const clientRequestId = String(data.client_request_id || crypto.randomUUID());
     const pendingId = upsertQueue('updateSet', { ...data, client_request_id: clientRequestId });
     queueMicrotask(() => { void api.syncOfflineQueue(); });
-    return { status: 'queued', pending_id: pendingId, offline: !navigator.onLine };
+    return pendingId;
   },
 
-  deleteSet: async (data: any): Promise<boolean> => {
+  // 'busy' — запрос по этому подходу прямо сейчас в сети. Удалить его из
+  // очереди нельзя: сервер может записать подход уже после удаления.
+  deleteSet: async (data: any): Promise<'ok' | 'busy' | 'error'> => {
     const id = String(data.client_request_id || '');
-    // Подход ещё не улетел на сервер — достаточно убрать его из очереди.
-    if (id && getQueue().some((item) => item.id === id && item.type === 'saveSet')) {
+    if (id && getInFlightId() === id) return 'busy';
+    const queued = id ? getQueue().find((item) => item.id === id) : undefined;
+    if (queued?.type === 'saveSet') {
+      // Подход не подтверждён сервером — убираем его из очереди. Если его уже
+      // пытались отправить, запрос мог дойти без ответа: удаляем и там.
       removeFromQueue(id);
-      return true;
+      if (queued.attempts > 0) void api.request('delete_set', { method: 'POST', body: JSON.stringify(data) });
+      return 'ok';
     }
     const res = await api.request('delete_set', { method: 'POST', body: JSON.stringify(data) });
-    return !!res && res.status === 'success';
+    if (!res || res.status !== 'success') return 'error';
+    // Неотправленная правка удалённой строки иначе висела бы в очереди с ошибкой.
+    if (id) removeFromQueue(id);
+    return 'ok';
   },
 
   deleteWorkout: async (date: string, sessionId?: string): Promise<{ status?: string; deleted?: number } | null> => {
@@ -253,43 +297,9 @@ const api = {
     }
   },
 
-  syncOfflineQueue: async () => {
-    if (syncInFlight || !navigator.onLine || !getApiBaseUrl()) return;
-    syncInFlight = true;
-    try {
-      for (const item of getQueue()) {
-        const endpoint = item.type === 'saveSet' ? 'save_set' : 'update_set';
-        const controller = new AbortController();
-        const timeout = window.setTimeout(() => controller.abort(), 12_000);
-        try {
-          const res = await authenticatedFetch(getApiUrl(endpoint), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(item.data),
-            signal: controller.signal,
-          });
-          if (res.status === 401 || res.status === 403) {
-            markAttempt(item.id, 'authorization');
-            break;
-          }
-          const result = res.ok ? await res.json() : null;
-          if (res.ok && result?.status === 'success') {
-            removeFromQueue(item.id);
-          } else {
-            markAttempt(item.id, `HTTP ${res.status}`);
-            if (res.status >= 500) break;
-          }
-        } catch (error) {
-          if (error instanceof AuthRequiredError) break;
-          markAttempt(item.id, error instanceof Error ? error.message : 'network');
-          break;
-        } finally {
-          window.clearTimeout(timeout);
-        }
-      }
-    } finally {
-      syncInFlight = false;
-    }
+  syncOfflineQueue: (): Promise<void> => {
+    if (!navigator.onLine || !getApiBaseUrl()) return Promise.resolve();
+    return syncQueue(sendQueuedItem);
   },
 
   createExercise: async (name: string, group: string) => {
@@ -656,7 +666,7 @@ const HistoryListModal = ({ isOpen, onClose, history, exerciseName }: any) => {
 const SET_TYPE_CYCLE: SetType[] = ['warmup', 'working', 'drop', 'failure'];
 const SET_TYPE_LABELS: Record<SetType, string> = { warmup: 'W', working: 'R', drop: 'D', failure: 'F' };
 
-const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates = DEFAULT_PLATES, isActive = false, onUpdate, onDelete, onComplete }: { set: WorkoutSet; exercise?: Exercise; bodyWeight?: number; plates?: number[]; isActive?: boolean; onUpdate: (sid: string, field: string, value: string | number) => void; onDelete: (sid: string) => void; onComplete: (sid: string) => void }) => {
+const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates = DEFAULT_PLATES, isActive = false, syncMark, onUpdate, onDelete, onComplete }: { set: WorkoutSet; exercise?: Exercise; bodyWeight?: number; plates?: number[]; isActive?: boolean; syncMark?: SyncMark; onUpdate: (sid: string, field: string, value: string | number) => void; onDelete: (sid: string) => void; onComplete: (sid: string) => void }) => {
   const effectiveWeight = calcEffectiveWeight(exercise, parseFloat(set.weight || '0'), bodyWeight);
   const showTotal = set.weight !== '' && effectiveWeight !== parseFloat(set.weight || '0');
   const oneRM = set.weight && set.reps ? Math.round(effectiveWeight * (1 + parseInt(set.reps) / 30)) : 0;
@@ -670,7 +680,7 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates =
     : null;
 
   return (
-    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`mb-3 ${set.completed ? 'opacity-60 grayscale' : ''}`}>
+    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`mb-3 ${set.completed ? (syncMark ? 'opacity-80' : 'opacity-60 grayscale') : ''}`}>
       <div className="grid grid-cols-[auto_auto_1fr_1fr_1fr_auto] gap-2 items-start">
         <button
           disabled={set.completed}
@@ -689,8 +699,15 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates =
         >
           {SET_TYPE_LABELS[(set.setType || 'working') as SetType]}
         </button>
-        <button onClick={() => onComplete(set.id)} className={`w-12 h-12 rounded-xl border flex items-center justify-center transition-colors ${set.completed ? 'bg-green-500 border-green-500' : 'bg-zinc-900 border-zinc-700'}`}>
+        <button onClick={() => onComplete(set.id)} className={`relative w-12 h-12 rounded-xl border flex items-center justify-center transition-colors ${set.completed ? 'bg-green-500 border-green-500' : 'bg-zinc-900 border-zinc-700'}`}>
           <Check className={`w-6 h-6 ${set.completed ? 'text-white' : 'text-zinc-700'}`} />
+          {/* Галочка — подход сохранён на телефоне; точка — сервер его ещё не подтвердил. */}
+          {syncMark && (
+            <span
+              title={syncMark === 'rejected' ? 'Сервер отклонил — подробности в очереди' : 'Ждёт отправки на сервер'}
+              className={`absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full border-2 border-zinc-900 ${syncMark === 'rejected' ? 'bg-red-500' : 'bg-amber-400'}`}
+            />
+          )}
         </button>
         <div className="flex flex-col gap-1">
           <input
@@ -806,7 +823,7 @@ const LastTimeBlock = ({ exercise, history }: any) => {
   );
 };
 
-const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates = DEFAULT_PLATES, onAddSet, onUpdateSet, onDeleteSet, onCompleteSet, onNoteChange, onAddSuperset }: any) => {
+const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates = DEFAULT_PLATES, syncMarks = {}, onAddSet, onUpdateSet, onDeleteSet, onCompleteSet, onNoteChange, onAddSuperset }: any) => {
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const personalRecord = useMemo(() => {
     if (!exerciseData.history.length) return 0;
@@ -846,6 +863,7 @@ const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plat
             bodyWeight={bodyWeight}
             plates={plates}
             isActive={set.id === exerciseData.sets.find((s: WorkoutSet) => !s.completed)?.id}
+            syncMark={set.requestId ? syncMarks[set.requestId] : undefined}
             onUpdate={onUpdateSet}
             onDelete={onDeleteSet}
             onComplete={onCompleteSet}
@@ -1078,6 +1096,25 @@ const readSavedWorkout = () => {
   return null;
 };
 
+/** Синхронно переписывает один подход в сохранённом черновике тренировки. */
+const writeDraftSet = (exId: string, set: WorkoutSet) => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(WORKOUT_STORAGE_KEY) || 'null');
+    const block = saved?.exercises?.[exId];
+    // Блока ещё нет — его запишет эффект после рендера вместе со всем остальным.
+    if (!block || !Array.isArray(block.sets)) return;
+    block.sets = block.sets.map((s: WorkoutSet) => s.id === set.id ? set : s);
+    saved.timestamp = Date.now();
+    localStorage.setItem(WORKOUT_STORAGE_KEY, JSON.stringify(saved));
+  } catch (_) {}
+};
+
+type SyncMark = 'pending' | 'rejected';
+
+/** Какие подходы ещё не подтверждены сервером, по client_request_id. */
+const readSyncMarks = (): Record<string, SyncMark> =>
+  Object.fromEntries(getQueue().map(item => [item.id, item.rejected ? 'rejected' : 'pending']));
+
 /** Сегодняшняя дата в том же виде, в каком её пишет бэкенд: «2026.07.31». */
 const todayInLogFormat = () =>
   new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Moscow' }).replace(/-/g, '.');
@@ -1109,6 +1146,13 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
   const [sessionData, setSessionData] = useState<Record<string, ExerciseSessionData>>({});
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [supersetSearchQuery, setSupersetSearchQuery] = useState('');
+  const [syncMarks, setSyncMarks] = useState<Record<string, SyncMark>>(readSyncMarks);
+
+  useEffect(() => {
+    const update = () => setSyncMarks(readSyncMarks());
+    window.addEventListener(QUEUE_CHANGED_EVENT, update);
+    return () => window.removeEventListener(QUEUE_CHANGED_EVENT, update);
+  }, []);
 
   const loadExerciseData = async (exId: string) => {
     const { history, note } = await api.getHistory(exId);
@@ -1205,7 +1249,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
     }
   }, [timer.time, restTarget, timer.isRunning]);
 
-  const handleCompleteSet = async (exId: string, setId: string) => {
+  const handleCompleteSet = (exId: string, setId: string) => {
     const set = sessionData[exId]?.sets.find(s => s.id === setId);
     if (!set) return;
     if (set.completed) {
@@ -1217,45 +1261,53 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
     }
     if (!set.weight || !set.reps) { notify('error'); return; }
 
-    haptic('medium');
     const isEdit = !!set.requestId;
-    setSessionData(prev => ({ ...prev, [exId]: { ...prev[exId], sets: prev[exId].sets.map(s => s.id === setId ? { ...s, completed: true } : s) } }));
+    const exercise = allExercises.find((e: Exercise) => e.id === exId);
+    const inputWeight = parseFloat(set.weight);
+    const payload = {
+      exercise_id: exId,
+      exercise_name: exercise?.name,
+      input_weight: inputWeight,
+      weight: calcEffectiveWeight(exercise, inputWeight, bodyWeight),
+      reps: parseInt(set.reps),
+      rest: parseFloat(set.rest) || 0,
+      note: sessionData[exId].note,
+      set_group_id: setGroupId,
+      session_id: sessionId,
+      set_type: set.setType || 'working',
+      rpe: set.rpe != null && set.rpe !== '' ? parseFloat(String(set.rpe)) : undefined,
+      rir: set.rir != null && set.rir !== '' ? parseInt(String(set.rir), 10) : undefined
+    };
+    // Галочка ставится только после того, как подход лёг в очередь на
+    // устройстве. Не лёг — строка остаётся открытой с введёнными числами.
+    let saved: WorkoutSet;
+    try {
+      if (isEdit) {
+        api.updateSet({ ...payload, client_request_id: set.requestId, order: set.order });
+        saved = { ...set, completed: true };
+      } else {
+        const order = incrementOrder();
+        const requestId = api.saveSet({ ...payload, order });
+        saved = { ...set, completed: true, requestId, order };
+      }
+    } catch (e) {
+      notify('error');
+      return;
+    }
+    // Черновик переписываем сразу, не дожидаясь рендера: закрытие приложения
+    // между очередью и эффектом оставило бы подход без requestId, и повторная
+    // галочка записала бы его второй раз.
+    writeDraftSet(exId, saved);
+    setSessionData(prev => ({ ...prev, [exId]: { ...prev[exId], sets: prev[exId].sets.map(s => s.id === setId ? { ...s, completed: true, requestId: saved.requestId, order: saved.order } : s) } }));
+
+    haptic('medium');
     if (!isEdit) {
       const restMs = (parseFloat(set.rest) || 0) * 60_000;
       setRestTarget(restMs > 0 ? restMs : null);
       restAlerted.current = false;
       timer.resetAndStart();
     }
-
-    try {
-      const exercise = allExercises.find((e: Exercise) => e.id === exId);
-      const inputWeight = parseFloat(set.weight);
-      const payload = {
-        exercise_id: exId,
-        exercise_name: exercise?.name,
-        input_weight: inputWeight,
-        weight: calcEffectiveWeight(exercise, inputWeight, bodyWeight),
-        reps: parseInt(set.reps),
-        rest: parseFloat(set.rest) || 0,
-        note: sessionData[exId].note,
-        set_group_id: setGroupId,
-        session_id: sessionId,
-        set_type: set.setType || 'working',
-        rpe: set.rpe != null && set.rpe !== '' ? parseFloat(String(set.rpe)) : undefined,
-        rir: set.rir != null && set.rir !== '' ? parseInt(String(set.rir), 10) : undefined
-      };
-      if (isEdit) {
-        await api.updateSet({ ...payload, client_request_id: set.requestId, order: set.order });
-      } else {
-        const order = incrementOrder();
-        const result = await api.saveSet({ ...payload, order });
-        const requestId = result?.pending_id;
-        setSessionData(prev => ({ ...prev, [exId]: { ...prev[exId], sets: prev[exId].sets.map(s => s.id === setId ? { ...s, requestId, order } : s) } }));
-      }
-      notify('success');
-    } catch (e) {
-      notify('error');
-    }
+    notify('success');
   };
 
   const handleUpdateSet = (exId: string, setId: string, field: string, val: string | number) => {
@@ -1275,8 +1327,9 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
     const set = sessionData[exId]?.sets.find(s => s.id === setId);
     if (set?.requestId) {
       // Подход уже записан в таблицу — удаляем и строку на сервере.
-      const ok = await api.deleteSet({ client_request_id: set.requestId, exercise_id: exId, set_group_id: setGroupId, order: set.order });
-      if (!ok) { notify('error'); return; }
+      const result = await api.deleteSet({ client_request_id: set.requestId, exercise_id: exId, set_group_id: setGroupId, order: set.order });
+      if (result === 'busy') { notify('warning'); return; }
+      if (result !== 'ok') { notify('error'); return; }
       haptic('medium');
     }
     setSessionData(prev => {
@@ -1296,7 +1349,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, onBack, sessionId, incre
         {activeExercises.map(exId => {
           const data = sessionData[exId];
           if (!data) return <div key={exId} className="h-40 bg-zinc-900 rounded-2xl animate-pulse" />;
-          return <WorkoutCard key={exId} exerciseData={data} bodyWeight={bodyWeight} plates={plates} onAddSet={() => handleAddSet(exId)} onUpdateSet={(sid: string, f: string, v: string) => handleUpdateSet(exId, sid, f, v)} onDeleteSet={(sid: string) => handleDeleteSet(exId, sid)} onCompleteSet={(sid: string) => handleCompleteSet(exId, sid)} onNoteChange={(val: string) => setSessionData(p => ({...p, [exId]: {...p[exId], note: val}}))} onAddSuperset={() => setIsAddModalOpen(true)} />;
+          return <WorkoutCard key={exId} exerciseData={data} bodyWeight={bodyWeight} plates={plates} syncMarks={syncMarks} onAddSet={() => handleAddSet(exId)} onUpdateSet={(sid: string, f: string, v: string) => handleUpdateSet(exId, sid, f, v)} onDeleteSet={(sid: string) => handleDeleteSet(exId, sid)} onCompleteSet={(sid: string) => handleCompleteSet(exId, sid)} onNoteChange={(val: string) => setSessionData(p => ({...p, [exId]: {...p[exId], note: val}}))} onAddSuperset={() => setIsAddModalOpen(true)} />;
         })}
       </div>
       <div className="px-4 mt-8 mb-20"><Button variant="primary" onClick={onBack} className="w-full h-14 text-lg font-semibold shadow-xl shadow-blue-900/20">Завершить упражнение</Button></div>
@@ -1785,6 +1838,7 @@ const App = () => {
   const [platesDraft, setPlatesDraft] = useState<number[]>(DEFAULT_PLATES);
   const [isQueueOpen, setIsQueueOpen] = useState(false);
   const [queueItems, setQueueItems] = useState<QueuedItem[]>([]);
+  const [inFlightId, setInFlightId] = useState<string | null>(null);
 
   // Deep link arrives either as ?session=<uuid> (standalone) or as Telegram's
   // start_param. It is read once at mount but only acted on after auth — an
@@ -1958,7 +2012,7 @@ const App = () => {
   useEffect(() => {
     if (!isAuthenticated) return;
     const cleanupNetwork = initNetworkListeners();
-    const updatePendingCount = () => { setPendingCount(getPendingCount()); setQueueItems(getQueue()); };
+    const updatePendingCount = () => { setPendingCount(getPendingCount()); setQueueItems(getQueue()); setInFlightId(getInFlightId()); };
     window.addEventListener(QUEUE_CHANGED_EVENT, updatePendingCount);
     updatePendingCount();
     return () => {
@@ -2114,7 +2168,10 @@ const App = () => {
       </Modal>
       <Modal isOpen={isFinishConfirmOpen} onClose={() => setIsFinishConfirmOpen(false)} title="Закончить тренировку?">
         <div className="space-y-4">
-          <p className="text-sm text-zinc-400">Выполненные подходы уже сохранены в таблице. Незавершённые строки и восстановление сессии будут очищены.</p>
+          {pendingCount > 0
+            ? <p className="text-sm text-amber-300">Не отправлено на сервер: {pendingCount}. Эти подходы останутся в очереди на телефоне и уйдут сами, когда будет связь, — счётчик внизу экрана.</p>
+            : <p className="text-sm text-zinc-400">Все выполненные подходы уже на сервере.</p>}
+          <p className="text-sm text-zinc-400">Незавершённые строки и восстановление сессии будут очищены.</p>
           <Button className="w-full h-12" onClick={finishWorkoutConfirmed}>Да, закончить</Button>
           <Button variant="secondary" className="w-full h-12" onClick={() => setIsFinishConfirmOpen(false)}>Отмена</Button>
         </div>
@@ -2127,9 +2184,11 @@ const App = () => {
               <div className="flex-1 min-w-0">
                 <div className="text-sm text-zinc-200 truncate">{String(item.data.exercise_name || 'Подход')}</div>
                 <div className="text-xs text-zinc-500">{String(item.data.input_weight ?? item.data.weight ?? '?')} кг × {String(item.data.reps ?? '?')} · {item.type === 'saveSet' ? 'новый подход' : 'правка'}</div>
-                {item.lastError && <div className="text-xs text-red-400">попыток: {item.attempts} · {item.lastError === 'authorization' ? 'токен не подходит' : item.lastError}</div>}
+                {item.id === inFlightId
+                  ? <div className="text-xs text-amber-300">отправляется…</div>
+                  : item.lastError && <div className={`text-xs ${item.rejected ? 'text-red-400' : 'text-zinc-400'}`}>попыток: {item.attempts} · {item.lastError === 'authorization' ? 'токен не подходит' : item.lastError}</div>}
               </div>
-              <button onClick={() => { removeFromQueue(item.id); }} className="p-2 text-zinc-500 hover:text-red-500 flex-shrink-0"><Trash2 className="w-5 h-5" /></button>
+              <button disabled={item.id === inFlightId} onClick={() => { if (!discardQueued(item.id)) notify('warning'); }} className="p-2 text-zinc-500 hover:text-red-500 disabled:opacity-30 flex-shrink-0"><Trash2 className="w-5 h-5" /></button>
             </div>
           ))}
           {queueItems.length > 0 && (

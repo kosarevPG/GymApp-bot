@@ -34,6 +34,32 @@ class MemoryStorage {
 }
 
 
+function installEnv() {
+  Object.assign(globalThis, {
+    localStorage: new MemoryStorage(),
+    window: { dispatchEvent: () => true },
+    CustomEvent: class {
+      constructor(type, init) {
+        this.type = type;
+        this.init = init;
+      }
+    },
+  });
+}
+
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+
+const SET_A = '22222222-2222-4222-8222-222222222222';
+const SET_B = '33333333-3333-4333-8333-333333333333';
+const SET_C = '44444444-4444-4444-8444-444444444444';
+
+
 test('performed_at is created once and survives a next-day queue update', () => {
   const realDate = Date;
   let now = Date.parse('2026-08-22T20:00:00Z');
@@ -47,17 +73,8 @@ test('performed_at is created once and survives a next-day queue update', () => 
     }
   }
 
-  Object.assign(globalThis, {
-    Date: ControlledDate,
-    localStorage: new MemoryStorage(),
-    window: { dispatchEvent: () => true },
-    CustomEvent: class {
-      constructor(type, init) {
-        this.type = type;
-        this.init = init;
-      }
-    },
-  });
+  installEnv();
+  globalThis.Date = ControlledDate;
 
   try {
     offlineSync.clearQueue();
@@ -75,4 +92,133 @@ test('performed_at is created once and survives a next-day queue update', () => 
   } finally {
     globalThis.Date = realDate;
   }
+});
+
+
+test('an edit made while the save is in flight is sent after it, not dropped', async () => {
+  installEnv();
+  offlineSync.addToQueue('saveSet', { client_request_id: SET_A, reps: 10 });
+  const sent = [];
+  const gate = deferred();
+  const run = offlineSync.syncQueue(async (item) => {
+    sent.push({ type: item.type, reps: item.data.reps });
+    if (sent.length === 1) await gate.promise;
+    return { ok: true };
+  });
+
+  assert.equal(offlineSync.getInFlightId(), SET_A);
+  offlineSync.upsertQueue('updateSet', { client_request_id: SET_A, reps: 12 });
+  gate.resolve();
+  await run;
+
+  // Ответ на первый запрос подтвердил reps=10; правка ушла отдельным update.
+  assert.deepEqual(sent, [
+    { type: 'saveSet', reps: 10 },
+    { type: 'updateSet', reps: 12 },
+  ]);
+  assert.deepEqual(offlineSync.getQueue(), []);
+  assert.equal(offlineSync.getInFlightId(), null);
+});
+
+
+test('a set queued during a pass is sent by the same run, not the next timer', async () => {
+  installEnv();
+  offlineSync.addToQueue('saveSet', { client_request_id: SET_A, reps: 10 });
+  const sent = [];
+  const gate = deferred();
+  const send = async (item) => {
+    sent.push(item.id);
+    if (sent.length === 1) await gate.promise;
+    return { ok: true };
+  };
+  const run = offlineSync.syncQueue(send);
+
+  offlineSync.addToQueue('saveSet', { client_request_id: SET_B, reps: 8 });
+  const second = offlineSync.syncQueue(send);
+  gate.resolve();
+  await Promise.all([run, second]);
+
+  assert.deepEqual(sent, [SET_A, SET_B]);
+  assert.deepEqual(offlineSync.getQueue(), []);
+});
+
+
+test('a request already on the wire cannot be discarded; a waiting one can', async () => {
+  installEnv();
+  offlineSync.addToQueue('saveSet', { client_request_id: SET_A, reps: 10 });
+  offlineSync.addToQueue('saveSet', { client_request_id: SET_B, reps: 8 });
+  const gate = deferred();
+  const sent = [];
+  const run = offlineSync.syncQueue(async (item) => {
+    sent.push(item.id);
+    await gate.promise;
+    return { ok: true };
+  });
+
+  assert.equal(offlineSync.discardQueued(SET_A), false);
+  assert.equal(offlineSync.discardQueued(SET_B), true);
+  gate.resolve();
+  await run;
+
+  assert.deepEqual(sent, [SET_A]);
+  assert.deepEqual(offlineSync.getQueue(), []);
+});
+
+
+test('a rejected set does not block the rest; a network failure stops the pass', async () => {
+  installEnv();
+  offlineSync.addToQueue('saveSet', { client_request_id: SET_A, reps: 10 });
+  offlineSync.addToQueue('saveSet', { client_request_id: SET_B, reps: 8 });
+  offlineSync.addToQueue('saveSet', { client_request_id: SET_C, reps: 6 });
+  const sent = [];
+  await offlineSync.syncQueue(async (item) => {
+    sent.push(item.id);
+    if (item.id === SET_A) return { ok: false, error: 'сервер отклонил: Unknown exercise_id', stop: false };
+    return { ok: false, error: 'нет связи', stop: true };
+  });
+
+  assert.deepEqual(sent, [SET_A, SET_B]);
+  const [a, b, c] = offlineSync.getQueue();
+  assert.equal(a.lastError, 'сервер отклонил: Unknown exercise_id');
+  assert.equal(a.rejected, true);
+  assert.equal(b.lastError, 'нет связи');
+  assert.equal(b.rejected, false);
+  assert.equal(c.attempts, 0);
+});
+
+
+test('a throwing sender counts as a network failure and keeps the set', async () => {
+  installEnv();
+  offlineSync.addToQueue('saveSet', { client_request_id: SET_A, reps: 10 });
+  await offlineSync.syncQueue(async () => { throw new Error('Failed to fetch'); });
+
+  const [item] = offlineSync.getQueue();
+  assert.equal(item.attempts, 1);
+  assert.equal(item.lastError, 'Failed to fetch');
+  assert.equal(offlineSync.getInFlightId(), null);
+});
+
+
+test('an edit resets a rejection so the set is retried as pending', () => {
+  installEnv();
+  offlineSync.addToQueue('saveSet', { client_request_id: SET_A, reps: 10 });
+  offlineSync.markAttempt(SET_A, 'сервер отклонил: reps must be greater than zero', true);
+  offlineSync.upsertQueue('updateSet', { client_request_id: SET_A, reps: 12 });
+
+  const [item] = offlineSync.getQueue();
+  assert.equal(item.rejected, false);
+  assert.equal(item.lastError, undefined);
+  assert.equal(item.rev, 1);
+});
+
+
+test('items stored before versioning are read as rev 0 and acknowledged', async () => {
+  installEnv();
+  localStorage.setItem('gym_offline_queue_v2', JSON.stringify([{
+    id: SET_A, type: 'saveSet', createdAt: 1, attempts: 2,
+    data: { client_request_id: SET_A, reps: 10, performed_at: '2026-09-18T10:00:00.000Z' },
+  }]));
+  assert.equal(offlineSync.getQueue()[0].rev, 0);
+  await offlineSync.syncQueue(async () => ({ ok: true }));
+  assert.deepEqual(offlineSync.getQueue(), []);
 });

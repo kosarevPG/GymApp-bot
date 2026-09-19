@@ -4,6 +4,11 @@
  * A set is written here before any network request. The queue survives page
  * reloads and every item carries a stable client_request_id so retrying a
  * request cannot create duplicate rows in Supabase.
+ *
+ * Items are sent one at a time by a single runner. Every local change to an
+ * item bumps its rev, and a server answer acknowledges only the rev that was
+ * sent: an edit made while the request was in flight stays in the queue and
+ * goes out next instead of being dropped together with the acknowledged item.
  */
 
 const QUEUE_KEY = 'gym_offline_queue_v2';
@@ -19,7 +24,24 @@ export interface QueuedItem {
   createdAt: number;
   attempts: number;
   lastError?: string;
+  /** Сервер отклонил элемент по существу; сетевые сбои сюда не относятся. */
+  rejected?: boolean;
+  /** Номер локальной версии данных; растёт при каждой правке элемента. */
+  rev: number;
 }
+
+/**
+ * Итог одной отправки. stop=true — сеть, сервер или авторизация: проход
+ * прерывается, чтобы не перепрыгивать через неотправленные подходы. stop=false —
+ * сервер отклонил именно этот элемент, остальные можно отправлять дальше.
+ */
+export type SendOutcome =
+  | { ok: true }
+  | { ok: false; error: string; stop: boolean };
+
+let inFlightId: string | null = null;
+let running: Promise<void> | null = null;
+let rerunRequested = false;
 
 function withStablePerformedAt(
   data: Record<string, unknown>,
@@ -29,11 +51,20 @@ function withStablePerformedAt(
   return { ...data, performed_at: String(performedAt) };
 }
 
+function notifyChanged(pending: number): void {
+  window.dispatchEvent(
+    new CustomEvent(QUEUE_CHANGED_EVENT, { detail: { pending, inFlight: inFlightId } })
+  );
+}
+
 function persist(queue: QueuedItem[]): void {
   localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
-  window.dispatchEvent(
-    new CustomEvent(QUEUE_CHANGED_EVENT, { detail: { pending: queue.length } })
-  );
+  notifyChanged(queue.length);
+}
+
+function setInFlight(id: string | null): void {
+  inFlightId = id;
+  notifyChanged(getQueue().length);
 }
 
 export function addToQueue(type: QueueItemType, data: Record<string, unknown>): string {
@@ -47,6 +78,7 @@ export function addToQueue(type: QueueItemType, data: Record<string, unknown>): 
       data: { ...stableData, client_request_id: id },
       createdAt: Date.now(),
       attempts: 0,
+      rev: 0,
     });
     persist(queue);
   }
@@ -59,12 +91,14 @@ export function getQueue(): QueuedItem[] {
     if (Array.isArray(value) && value.length > 0) {
       let changed = false;
       const normalized: QueuedItem[] = value.map((item) => {
-        if (item?.data?.performed_at) return item;
+        const rev = Number(item?.rev) || 0;
+        if (item?.data?.performed_at) return { ...item, rev };
         changed = true;
         const createdAt = Number(item?.createdAt) || Date.now();
         return {
           ...item,
           createdAt,
+          rev,
           data: withStablePerformedAt(item?.data || {}, new Date(createdAt).toISOString()),
         };
       });
@@ -86,6 +120,7 @@ export function getQueue(): QueuedItem[] {
         },
         createdAt,
         attempts: 0,
+        rev: 0,
       };
     });
     localStorage.setItem(QUEUE_KEY, JSON.stringify(migrated));
@@ -101,8 +136,9 @@ export function upsertQueue(type: QueueItemType, data: Record<string, unknown>):
   const queue = getQueue();
   const existing = queue.find((item) => item.id === id);
   if (existing) {
-    // Строка ещё не ушла на сервер: обновляем данные на месте. Если это был
-    // saveSet, тип сохраняем — строки в таблице ещё нет, update её не найдёт.
+    // Строка ещё не подтверждена сервером: обновляем данные на месте. Если это
+    // был saveSet, тип сохраняем — строки в таблице может ещё не быть, update
+    // её не найдёт. Новая версия не даст ответу на старый запрос убрать правку.
     existing.data = {
       ...existing.data,
       ...data,
@@ -111,6 +147,8 @@ export function upsertQueue(type: QueueItemType, data: Record<string, unknown>):
     };
     existing.attempts = 0;
     existing.lastError = undefined;
+    existing.rejected = false;
+    existing.rev += 1;
     persist(queue);
     return id;
   }
@@ -124,6 +162,7 @@ export function upsertQueue(type: QueueItemType, data: Record<string, unknown>):
     },
     createdAt,
     attempts: 0,
+    rev: 0,
   });
   persist(queue);
   return id;
@@ -133,10 +172,15 @@ export function getPendingCount(): number {
   return getQueue().length;
 }
 
-export function markAttempt(id: string, error?: string): void {
+/** Id элемента, запрос по которому сейчас в сети, либо null. */
+export function getInFlightId(): string | null {
+  return inFlightId;
+}
+
+export function markAttempt(id: string, error?: string, rejected = false): void {
   const queue = getQueue().map((item) =>
     item.id === id
-      ? { ...item, attempts: item.attempts + 1, lastError: error }
+      ? { ...item, attempts: item.attempts + 1, lastError: error, rejected }
       : item
   );
   persist(queue);
@@ -146,6 +190,87 @@ export function removeFromQueue(id: string): void {
   persist(getQueue().filter((item) => item.id !== id));
 }
 
+/**
+ * Убирает элемент, пока его запрос не отправлен. Отправленный уже не отозвать:
+ * сервер может записать его и после тайм-аута, поэтому такой элемент не
+ * трогаем и возвращаем false.
+ */
+export function discardQueued(id: string): boolean {
+  if (inFlightId === id) return false;
+  removeFromQueue(id);
+  return true;
+}
+
 export function clearQueue(): void {
   persist([]);
+}
+
+/**
+ * Сервер подтвердил версию sentRev. Если с тех пор элемент не меняли, он
+ * отправлен целиком. Иначе строка уже есть в таблице, а свежие данные ещё нет —
+ * элемент остаётся правкой. Возвращает true, если элемент остался в очереди.
+ */
+function acknowledge(id: string, sentRev: number): boolean {
+  const queue = getQueue();
+  const item = queue.find((entry) => entry.id === id);
+  if (!item) return false;
+  if (item.rev === sentRev) {
+    persist(queue.filter((entry) => entry.id !== id));
+    return false;
+  }
+  item.type = 'updateSet';
+  item.attempts = 0;
+  item.lastError = undefined;
+  item.rejected = false;
+  persist(queue);
+  return true;
+}
+
+/** Один проход по очереди. Возвращает true, если проход прерван. */
+async function runPass(send: (item: QueuedItem) => Promise<SendOutcome>): Promise<boolean> {
+  for (const { id } of getQueue()) {
+    // Данные читаем заново перед каждой отправкой: пока шёл предыдущий
+    // запрос, элемент могли поправить или удалить.
+    const item = getQueue().find((entry) => entry.id === id);
+    if (!item) continue;
+    setInFlight(id);
+    let outcome: SendOutcome;
+    try {
+      outcome = await send(item);
+    } catch (error) {
+      outcome = { ok: false, error: error instanceof Error ? error.message : 'network', stop: true };
+    } finally {
+      setInFlight(null);
+    }
+    if (outcome.ok) {
+      if (acknowledge(id, item.rev)) rerunRequested = true;
+      continue;
+    }
+    markAttempt(id, outcome.error, !outcome.stop);
+    if (outcome.stop) return true;
+  }
+  return false;
+}
+
+/**
+ * Отправляет очередь по одному элементу. Вызов во время идущей отправки не
+ * теряется: текущий прогон сделает ещё один проход и заберёт новые подходы,
+ * а не оставит их ждать следующего таймера.
+ */
+export function syncQueue(send: (item: QueuedItem) => Promise<SendOutcome>): Promise<void> {
+  if (running) {
+    rerunRequested = true;
+    return running;
+  }
+  running = (async () => {
+    try {
+      do {
+        rerunRequested = false;
+        if (await runPass(send)) break;
+      } while (rerunRequested);
+    } finally {
+      running = null;
+    }
+  })();
+  return running;
 }
