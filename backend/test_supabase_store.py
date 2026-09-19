@@ -151,6 +151,26 @@ class SupabaseStoreTests(unittest.TestCase):
         self.assertEqual(len(self.client.tables["gym_sets"]), 1)
         self.assertEqual(self.client.tables["gym_sets"][0]["client_request_id"], REQUEST_1)
 
+    def test_retry_carrying_an_edit_applies_it_to_the_existing_row(self):
+        self.store.save_set(USER_ID, self.payload())
+        edited = {**self.payload(weight=45), "input_weight": 22.5, "reps": 8, "rir": 2}
+        result = self.store.save_set(USER_ID, edited)
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(result["deduplicated"])
+        self.assertTrue(result["updated"])
+        [row] = self.client.tables["gym_sets"]
+        self.assertEqual(row["input_weight_kg"], 22.5)
+        self.assertEqual(row["total_weight_kg"], 45)
+        self.assertEqual(row["reps"], 8)
+        self.assertEqual(row["rir"], 2)
+        self.assertEqual(row["position"], 1)
+
+    def test_identical_retry_leaves_the_row_untouched(self):
+        self.store.save_set(USER_ID, self.payload())
+        result = self.store.save_set(USER_ID, self.payload())
+        self.assertNotIn("updated", result)
+        self.assertNotIn("updated_at", self.client.tables["gym_sets"][0])
+
     def test_performed_at_requires_timezone_and_is_stable_per_request(self):
         invalid = self.payload(performed_at="2026-08-22T10:00:00")
         self.assertEqual(self.store.save_set(USER_ID, invalid)["status"], "error")

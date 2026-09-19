@@ -419,6 +419,23 @@ class SupabaseStore:
         )
         return result[0] if result else row
 
+    @staticmethod
+    def _set_values(data: Dict[str, Any]) -> Dict[str, Any]:
+        """Editable columns of a set, normalised exactly as save_set writes them."""
+        set_type = str(data.get("set_type") or "working").lower()
+        if set_type not in {"warmup", "working", "drop", "failure", "other"}:
+            set_type = "other"
+        return {
+            "input_weight_kg": max(0, _to_float(data.get("input_weight", data.get("weight")))),
+            "total_weight_kg": max(0, _to_float(data.get("weight", data.get("input_weight")))),
+            "reps": _to_int(data.get("reps")),
+            "rest_seconds": max(0, round(_to_float(data.get("rest")) * 60)),
+            "set_type": set_type,
+            "rpe": _optional_float(data.get("rpe")),
+            "rir": _optional_float(data.get("rir")),
+            "note": str(data.get("note") or "") or None,
+        }
+
     def save_set(self, user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         try:
             request_id = _valid_client_request_id(data.get("client_request_id") or data.get("request_id"))
@@ -427,6 +444,9 @@ class SupabaseStore:
             return {"status": "error", "error": str(error)}
         if performed_at > self._now() + timedelta(minutes=5):
             return {"status": "error", "error": "performed_at is in the future"}
+        values = self._set_values(data)
+        if values["reps"] <= 0:
+            return {"status": "error", "error": "reps must be greater than zero"}
         existing = self._select(
             "gym_sets",
             filters={"user_id": user_id, "client_request_id": request_id},
@@ -442,14 +462,25 @@ class SupabaseStore:
                     "status": "error",
                     "error": "performed_at does not match the existing client_request_id",
                 }
-            return {"status": "success", "request_id": request_id, "deduplicated": True}
+            result = {"status": "success", "request_id": request_id, "deduplicated": True}
+            # A retry after a lost response may carry an edit made while the
+            # first request was in flight: the row exists but holds the old
+            # numbers. Answering "already saved" would silently drop the edit.
+            changes = {
+                column: value for column, value in values.items()
+                if existing[0].get(column) != value
+            }
+            if changes:
+                changes["updated_at"] = self._now().isoformat()
+                self.client.update(
+                    "gym_sets", changes, filters={"user_id": user_id, "id": existing[0]["id"]}
+                )
+                result["updated"] = True
+            return result
 
         exercise = self._resolve_exercise(user_id, str(data.get("exercise_id") or ""))
         if not exercise:
             return {"status": "error", "error": "Unknown exercise_id"}
-        reps = _to_int(data.get("reps"))
-        if reps <= 0:
-            return {"status": "error", "error": "reps must be greater than zero"}
         position = _to_int(data.get("order"))
         if position <= 0:
             return {"status": "error", "error": "order must be greater than zero"}
@@ -458,9 +489,6 @@ class SupabaseStore:
         try:
             session = self._ensure_session(user_id, session_ref, performed_at)
             group = self._ensure_group(user_id, session, session_ref, group_ref, position)
-            set_type = str(data.get("set_type") or "working").lower()
-            if set_type not in {"warmup", "working", "drop", "failure", "other"}:
-                set_type = "other"
             row = {
                 "id": _stable_uuid(user_id, "set", request_id),
                 "user_id": user_id,
@@ -469,15 +497,8 @@ class SupabaseStore:
                 "exercise_id": exercise["id"],
                 "performed_at": performed_at.isoformat(),
                 "position": position,
-                "input_weight_kg": max(0, _to_float(data.get("input_weight", data.get("weight")))),
-                "total_weight_kg": max(0, _to_float(data.get("weight", data.get("input_weight")))),
-                "reps": reps,
-                "rest_seconds": max(0, round(_to_float(data.get("rest")) * 60)),
-                "set_type": set_type,
-                "rpe": _optional_float(data.get("rpe")),
-                "rir": _optional_float(data.get("rir")),
+                **values,
                 "include_in_tonnage": exercise.get("tonnage_mode") != "excluded",
-                "note": str(data.get("note") or "") or None,
                 "source": "gymapp",
                 "source_record_id": f"live:{request_id}",
                 "client_request_id": request_id,
