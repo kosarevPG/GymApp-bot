@@ -315,6 +315,14 @@ class SupabaseStoreTests(unittest.TestCase):
         self.assertEqual((row["duration_seconds"], row["speed_kmh"], row["incline_pct"]), (600, 6, 8))
         self.assertFalse(self.store.update_cardio(USER_ID, {"client_request_id": REQUEST_2, "duration_seconds": 0}))
 
+    def test_a_new_cardio_exercise_is_created_as_cardio_without_load(self):
+        created = self.store.create_exercise(USER_ID, "Дорожка", "Кардио", "cardio")
+        self.assertEqual(created["measure"], "cardio")
+        row = next(r for r in self.client.tables["gym_exercises"] if r["name_ru"] == "Дорожка")
+        self.assertEqual((row["weight_type"], row["tonnage_mode"]), ("Other", "excluded"))
+        plain = self.store.create_exercise(USER_ID, "Жим ногами", "Ноги")
+        self.assertEqual(plain["measure"], "strength")
+
     def test_exercise_measure_round_trips_and_defaults_to_strength(self):
         self.add_treadmill()
         by_id = {row["id"]: row for row in self.store.get_init(USER_ID)["exercises"]}

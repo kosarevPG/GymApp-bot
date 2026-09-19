@@ -1010,7 +1010,7 @@ class SupabaseStore:
             "muscleSets": muscle_sets,
         }
 
-    def create_exercise(self, user_id: str, name: str, group: str) -> Dict[str, Any]:
+    def create_exercise(self, user_id: str, name: str, group: str, measure: str = "strength") -> Dict[str, Any]:
         wanted = name.strip().casefold()
         for row in self._exercises(user_id):
             if str(row.get("name_ru") or "").strip().casefold() == wanted:
@@ -1018,10 +1018,16 @@ class SupabaseStore:
                 result["deduplicated"] = True
                 return result
         exercise_id = str(uuid.uuid4())
+        cardio = measure == "cardio"
         row = {
             "id": exercise_id, "user_id": user_id, "source": "gymapp", "source_key": exercise_id,
-            "name_ru": name.strip(), "muscle_group": group.strip(), "weight_type": "Machine",
-            "base_weight_kg": 0, "multiplier": 1, "tonnage_mode": "external_load",
+            "name_ru": name.strip(), "muscle_group": group.strip(),
+            # Cardio has no load: its segments live apart from sets, and should a
+            # set ever be logged against it, it stays out of tonnage.
+            "weight_type": "Other" if cardio else "Machine",
+            "base_weight_kg": 0, "multiplier": 1,
+            "tonnage_mode": "excluded" if cardio else "external_load",
+            "measure": "cardio" if cardio else "strength",
             "source_payload": {"created_by": "gymapp-live"},
         }
         written = self.client.upsert("gym_exercises", row, on_conflict="user_id,source,source_key")
@@ -1122,7 +1128,7 @@ def delete_cardio(user_id: str, data: Dict[str, Any]): return _store().delete_ca
 def delete_workout(user_id: str, date_text: str, session_id: str = ""): return _store().delete_workout(user_id, date_text, session_id)
 def export_data(user_id: str): return _store().export_data(user_id)
 def import_data(user_id: str, data: Dict[str, Any]): return _store().import_data(user_id, data)
-def create_exercise(user_id: str, name: str, group: str): return _store().create_exercise(user_id, name, group)
+def create_exercise(user_id: str, name: str, group: str, measure: str = "strength"): return _store().create_exercise(user_id, name, group, measure)
 def update_exercise(user_id: str, exercise_id: str, updates: Dict[str, Any]): return _store().update_exercise(user_id, exercise_id, updates)
 def get_global_history(user_id: str, limit_rows: int = 3000): return _store().get_global_history(user_id, limit_rows)
 def get_workout_session(user_id: str, session_id: str): return _store().get_workout_session(user_id, session_id)
