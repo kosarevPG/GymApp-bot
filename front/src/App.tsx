@@ -1256,6 +1256,9 @@ type SyncMark = 'pending' | 'rejected';
 const readSyncMarks = (): Record<string, SyncMark> =>
   Object.fromEntries(getQueue().map(item => [item.id, item.rejected ? 'rejected' : 'pending']));
 
+/** Узкое числовое поле пресета: своя ширина и фон, не растягивается, как Input. */
+const PRESET_NUMBER_CLASS = 'w-12 h-12 flex-shrink-0 rounded-xl bg-zinc-800 border border-zinc-700 text-center text-base text-zinc-100 outline-none focus:ring-1 focus:ring-blue-500';
+
 const readPreset = (): WorkoutPreset => {
   try { return normalizePreset(JSON.parse(localStorage.getItem(WORKOUT_PRESET_KEY) || 'null')); } catch { return normalizePreset(null); }
 };
@@ -2473,24 +2476,28 @@ const App = () => {
               const options = allExercises.filter(ex => (key === 'abs') !== (ex.measure === 'cardio'));
               const set = (patch: Record<string, string>) => setPresetDraft({ ...presetDraft, [key]: { ...item, ...patch } });
               return (
-                <div key={key} className="grid grid-cols-[1fr_auto] gap-2 items-end">
-                  <div>
-                    <label className="text-xs text-zinc-500 mb-1 block">{{ warmup: 'Разминка', abs: 'Пресс', cooldown: 'Заминка' }[key]}</label>
-                    <select value={item.exerciseId || ''} onChange={(e) => set({ exerciseId: e.target.value })} className="w-full h-12 rounded-xl bg-zinc-800 border border-zinc-700 px-3 text-zinc-100">
+                <div key={key}>
+                  <label className="text-xs text-zinc-500 mb-1 block">{{ warmup: 'Разминка', abs: 'Пресс', cooldown: 'Заминка' }[key]}</label>
+                  {/* Список занимает всю строку, числа — узкие поля справа. Шрифт 16px:
+                      на меньшем iOS приближает экран при фокусе. */}
+                  <div className="flex items-center gap-2">
+                    <select value={item.exerciseId || ''} onChange={(e) => set({ exerciseId: e.target.value })} className="min-w-0 flex-1 h-12 rounded-xl bg-zinc-800 border border-zinc-700 px-3 text-base text-zinc-100">
                       <option value="">— не добавлять —</option>
                       {options.map(ex => <option key={ex.id} value={ex.id}>{ex.name}</option>)}
                     </select>
+                    {key === 'abs' ? (
+                      <>
+                        <input type="tel" inputMode="numeric" aria-label="Подходов" value={String(item.sets ?? '')} onChange={(e) => set({ sets: e.target.value })} className={PRESET_NUMBER_CLASS} />
+                        <span className="text-zinc-500">×</span>
+                        <input type="tel" inputMode="numeric" aria-label="Повторов" value={String(item.reps ?? '')} onChange={(e) => set({ reps: e.target.value })} className={PRESET_NUMBER_CLASS} />
+                      </>
+                    ) : (
+                      <>
+                        <input type="tel" inputMode="numeric" aria-label="Минут" value={String(item.minutes ?? '')} onChange={(e) => set({ minutes: e.target.value })} className={PRESET_NUMBER_CLASS} />
+                        <span className="text-xs text-zinc-500">мин</span>
+                      </>
+                    )}
                   </div>
-                  {key === 'abs' ? (
-                    <div className="flex items-center gap-1 text-zinc-500">
-                      <Input type="tel" inputMode="numeric" value={String(item.sets ?? '')} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ sets: e.target.value })} className="w-14 text-center" />×
-                      <Input type="tel" inputMode="numeric" value={String(item.reps ?? '')} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ reps: e.target.value })} className="w-14 text-center" />
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-1 text-xs text-zinc-500">
-                      <Input type="tel" inputMode="numeric" value={String(item.minutes ?? '')} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ minutes: e.target.value })} className="w-16 text-center" />мин
-                    </div>
-                  )}
                 </div>
               );
             })}
