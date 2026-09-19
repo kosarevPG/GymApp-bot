@@ -1256,6 +1256,13 @@ type SyncMark = 'pending' | 'rejected';
 const readSyncMarks = (): Record<string, SyncMark> =>
   Object.fromEntries(getQueue().map(item => [item.id, item.rejected ? 'rejected' : 'pending']));
 
+/**
+ * Группа «Кардио» сама включает кардио: 2026-09-19 дорожку создали в этой
+ * группе, не тронув переключатель, и она записалась силовым упражнением.
+ * Обратно не действует — силовое в группе «Кардио» остаётся возможным.
+ */
+const CARDIO_GROUP = 'Кардио';
+
 /** Узкое числовое поле пресета: своя ширина и фон, не растягивается, как Input. */
 const PRESET_NUMBER_CLASS = 'w-12 h-12 flex-shrink-0 rounded-xl bg-zinc-800 border border-zinc-700 text-center text-base text-zinc-100 outline-none focus:ring-1 focus:ring-blue-500';
 
@@ -2054,7 +2061,7 @@ const EditExerciseModal = ({ isOpen, onClose, exercise, groups, onSave }: any) =
         <div><label className="text-sm text-zinc-400 mb-1 block">Название</label><Input value={name} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)} /></div>
         <div>
           <label className="text-sm text-zinc-400 mb-1 block">Группа</label>
-          <div className="flex flex-wrap gap-2">{groups.map((g: string) => <button key={g} onClick={() => setGroup(g)} className={`px-3 py-2 rounded-xl text-sm border ${group === g ? 'bg-blue-600 border-blue-600 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-400'}`}>{g}</button>)}</div>
+          <div className="flex flex-wrap gap-2">{groups.map((g: string) => <button key={g} onClick={() => { setGroup(g); if (g === CARDIO_GROUP) setMeasure('cardio'); }} className={`px-3 py-2 rounded-xl text-sm border ${group === g ? 'bg-blue-600 border-blue-600 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-400'}`}>{g}</button>)}</div>
         </div>
         <div>
           <label className="text-sm text-zinc-400 mb-1 block">Что записывать</label>
@@ -2440,7 +2447,7 @@ const App = () => {
             <label className="text-sm text-zinc-400 mb-1 block">Что записывать</label>
             <div className="flex flex-wrap gap-2">
               {([['strength', 'Подходы и вес'], ['cardio', 'Кардио: минуты, скорость, наклон']] as const).map(([value, label]) => (
-                <button key={value} onClick={() => { setNewMeasure(value); if (value === 'cardio' && !newGroup) setNewGroup('Кардио'); }} className={newMeasure === value ? 'px-3 py-2 rounded-xl text-sm border bg-blue-600 border-blue-600 text-white' : 'px-3 py-2 rounded-xl text-sm border bg-zinc-800 border-zinc-700 text-zinc-400'}>{label}</button>
+                <button key={value} onClick={() => { setNewMeasure(value); if (value === 'cardio' && !newGroup) setNewGroup(CARDIO_GROUP); }} className={newMeasure === value ? 'px-3 py-2 rounded-xl text-sm border bg-blue-600 border-blue-600 text-white' : 'px-3 py-2 rounded-xl text-sm border bg-zinc-800 border-zinc-700 text-zinc-400'}>{label}</button>
               ))}
             </div>
           </div>
@@ -2449,7 +2456,7 @@ const App = () => {
             <div className="flex flex-wrap gap-2">
               {/* Стандартные группы доступны всегда: первое упражнение в «Кардио»
                   или «Пресс» иначе некуда было бы положить. */}
-              {sortGroups(Array.from(new Set([...groups, ...GROUP_ORDER]))).map(g => <button key={g} onClick={() => setNewGroup(g)} className={newGroup === g ? 'px-3 py-2 rounded-xl text-sm border bg-blue-600 border-blue-600 text-white' : 'px-3 py-2 rounded-xl text-sm border bg-zinc-800 border-zinc-700 text-zinc-400'}>{g}</button>)}
+              {sortGroups(Array.from(new Set([...groups, ...GROUP_ORDER]))).map(g => <button key={g} onClick={() => { setNewGroup(g); if (g === CARDIO_GROUP) setNewMeasure('cardio'); }} className={newGroup === g ? 'px-3 py-2 rounded-xl text-sm border bg-blue-600 border-blue-600 text-white' : 'px-3 py-2 rounded-xl text-sm border bg-zinc-800 border-zinc-700 text-zinc-400'}>{g}</button>)}
             </div>
           </div>
           <Button onClick={handleCreate} className="w-full h-12 mt-4">Создать</Button>
