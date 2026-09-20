@@ -19,12 +19,12 @@ echo "Frontend deployed."
 echo ""
 echo "=== 3. Деплой backend (Yandex Cloud Function) ==="
 cd "$ROOT"
-if [ -n "$SPREADSHEET_ID" ] && [ -n "$GOOGLE_CREDENTIALS_BASE64" ]; then
-  ./scripts/deploy_function.sh
-  echo "Backend deployed."
-else
-  echo "Пропуск: задайте SPREADSHEET_ID и GOOGLE_CREDENTIALS_BASE64 для деплоя бэкенда."
-fi
+# Раньше здесь стояло условие на SPREADSHEET_ID и GOOGLE_CREDENTIALS_BASE64.
+# После переезда на Supabase этих переменных не существует, и деплой бэкенда
+# молча пропускался. Конфигурацию проверяет сам deploy_function.sh: он
+# наследует окружение текущей версии и отказывается терять переменные.
+./scripts/deploy_function.sh
+echo "Backend deployed."
 
 echo ""
 echo "=== Готово ==="
