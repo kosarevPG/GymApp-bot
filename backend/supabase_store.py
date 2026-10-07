@@ -14,9 +14,10 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.error import HTTPError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request
 from zoneinfo import ZoneInfo
 
+from fast_connect import urlopen
 from workload_trend import (
     compute_workload_trend,
     format_workload_trend,

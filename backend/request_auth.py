@@ -13,8 +13,9 @@ import uuid
 from dataclasses import dataclass
 from typing import Dict
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
+from fast_connect import urlopen
 from telegram_auth import AuthenticationError, authenticate_init_data
 
 
