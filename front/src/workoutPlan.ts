@@ -25,6 +25,8 @@ export interface PlanItem extends PresetItem {
 
 /** Что подставить на экране упражнения, открытого из плана. */
 export interface PlanDefaults {
+  /** A repeat opened from the catalogue returns to the catalogue on finish. */
+  catalogue?: boolean;
   minutes?: number;
   sets?: number;
   reps?: number;
