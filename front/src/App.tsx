@@ -622,7 +622,7 @@ const ExerciseRestBanner = ({ startedAt, inExercise, onStop }: { startedAt: numb
     return () => { window.clearInterval(interval); window.removeEventListener('visibilitychange', tick); };
   }, [startedAt]);
   return (
-    <div className="mx-4 my-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-700 bg-zinc-900 p-4">
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-700 bg-zinc-900 p-4">
       <div>
         <div className="text-sm text-zinc-300">Отдых между упражнениями</div>
         <div role="timer" aria-label="Время отдыха" className="mt-1 text-2xl font-semibold tabular-nums text-zinc-50">{formatRestTime(now - startedAt)}</div>
@@ -1138,11 +1138,12 @@ const TrainerSummaryScreen = ({ onBack, notify, allExercises = [] }: any) => {
   );
 };
 
-const HomeScreen = ({ groups, workoutActive, plan = [], planDone = [], exerciseNames = {}, onOpenPlanItem, onStartWorkout, onFinishWorkout, onSearch, onSelectGroup, onAllExercises, onHistory, onAnalytics, onSummary, onSettings }: any) => (
+const HomeScreen = ({ groups, workoutActive, restBanner, plan = [], planDone = [], exerciseNames = {}, onOpenPlanItem, onStartWorkout, onFinishWorkout, onSearch, onSelectGroup, onAllExercises, onHistory, onAnalytics, onSummary, onSettings }: any) => (
   <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="px-4 pb-4 pt-safe-4 space-y-6">
     {workoutActive
       ? <Button variant="secondary" onClick={onFinishWorkout} className="w-full h-14 text-lg border border-red-900/50 text-red-400">Закончить тренировку</Button>
       : <Button variant="primary" onClick={onStartWorkout} className="w-full h-14 text-lg font-semibold shadow-xl shadow-blue-900/20">Начать тренировку</Button>}
+    {restBanner}
     {workoutActive && plan.length > 0 && (
       <Card className="p-3 space-y-2">
         <div className="px-1 text-xs text-zinc-500 uppercase font-bold tracking-wider">План</div>
@@ -1183,7 +1184,7 @@ const HomeScreen = ({ groups, workoutActive, plan = [], planDone = [], exerciseN
   </motion.div>
 );
 
-const ExercisesListScreen = ({ exercises, title, onBack, onSelectExercise, onAddExercise, onEditExercise, searchQuery, onSearch }: any) => {
+const ExercisesListScreen = ({ exercises, title, restBanner, onBack, onSelectExercise, onAddExercise, onEditExercise, searchQuery, onSearch }: any) => {
   const [infoModalEx, setInfoModalEx] = useState<Exercise | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   
@@ -1217,6 +1218,7 @@ const ExercisesListScreen = ({ exercises, title, onBack, onSelectExercise, onAdd
         </div>
         <button onClick={onAddExercise} className="p-2 text-blue-500 hover:bg-zinc-800 rounded-full active:scale-90"><Plus className="w-7 h-7" /></button>
       </div>
+      {restBanner && <div className="px-4 pt-4">{restBanner}</div>}
       <div className="p-4 space-y-2 pb-24">
         {exercises.map((ex: Exercise) => (
           <div key={ex.id} className="flex items-center p-2 rounded-2xl hover:bg-zinc-900 border border-transparent hover:border-zinc-800 transition-all">
@@ -1317,7 +1319,7 @@ const cardioRow = (minutes: unknown, like?: { minutes?: unknown; speed?: unknown
   incline: like?.incline != null && like.incline !== '' ? String(like.incline) : '',
 });
 
-const WorkoutScreen = ({ initialExercise, allExercises, planDefaults = null, onBack, onFinish, onSetStarted, sessionId, incrementOrder, ensureOrderAtLeast, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates = DEFAULT_PLATES, haptic, notify }: any) => {
+const WorkoutScreen = ({ initialExercise, allExercises, restBanner, planDefaults = null, onBack, onFinish, onSetStarted, sessionId, incrementOrder, ensureOrderAtLeast, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates = DEFAULT_PLATES, haptic, notify }: any) => {
 
   const timer = useTimer();
   const savedWorkoutRef = useRef<any>(null);
@@ -1642,6 +1644,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, planDefaults = null, onB
   return (
     <div className="min-h-screen bg-zinc-950 pb-20">
       <TimerBlock timer={timer} onToggle={() => { if (timer.isRunning) { timer.reset(); setRestTarget(null); } else { timer.start(); } }} sessionTonnage={sessionTonnage} restTarget={restTarget} />
+      {restBanner && <div className="px-4 mb-4">{restBanner}</div>}
       <div className="px-4 space-y-4">
         {activeExercises.map(exId => {
           const data = sessionData[exId];
@@ -2501,15 +2504,18 @@ const App = () => {
     );
   }
 
+  const restBanner = exerciseRest !== null
+    ? <ExerciseRestBanner startedAt={exerciseRest} inExercise={screen === 'workout'} onStop={stopExerciseRest} />
+    : null;
+
   return (
     <div className="bg-zinc-950 min-h-screen text-zinc-50 font-sans selection:bg-blue-500/30 pb-safe">
-      {exerciseRest !== null && ['home', 'exercises', 'workout'].includes(screen) && <ExerciseRestBanner startedAt={exerciseRest} inExercise={screen === 'workout'} onStop={stopExerciseRest} />}
-      {screen === 'home' && <HomeScreen groups={groups} workoutActive={workoutActive} plan={plan} planDone={planDone} exerciseNames={Object.fromEntries(allExercises.map(ex => [ex.id, ex.name]))} onOpenPlanItem={openPlanItem} onStartWorkout={startWorkout} onFinishWorkout={() => setIsFinishConfirmOpen(true)} onSearch={(q: string) => { setSearchQuery(q); if (q) setScreen('exercises'); }} onSelectGroup={(g: string) => { setSelectedGroup(g); setScreen('exercises'); }} onAllExercises={() => { setSelectedGroup(null); setScreen('exercises'); }} onHistory={() => setScreen('history')} onAnalytics={() => setScreen('analytics')} onSummary={() => setScreen('summary')} onSettings={() => { setBodyWeightInput(String(bodyWeight)); setPlatesDraft(plates); setPresetDraft(preset); setIsSettingsOpen(true); }} />}
+      {screen === 'home' && <HomeScreen restBanner={restBanner} groups={groups} workoutActive={workoutActive} plan={plan} planDone={planDone} exerciseNames={Object.fromEntries(allExercises.map(ex => [ex.id, ex.name]))} onOpenPlanItem={openPlanItem} onStartWorkout={startWorkout} onFinishWorkout={() => setIsFinishConfirmOpen(true)} onSearch={(q: string) => { setSearchQuery(q); if (q) setScreen('exercises'); }} onSelectGroup={(g: string) => { setSelectedGroup(g); setScreen('exercises'); }} onAllExercises={() => { setSelectedGroup(null); setScreen('exercises'); }} onHistory={() => setScreen('history')} onAnalytics={() => setScreen('analytics')} onSummary={() => setScreen('summary')} onSettings={() => { setBodyWeightInput(String(bodyWeight)); setPlatesDraft(plates); setPresetDraft(preset); setIsSettingsOpen(true); }} />}
       {screen === 'analytics' && <AnalyticsScreen onBack={() => setScreen('home')} />}
       {screen === 'summary' && <TrainerSummaryScreen onBack={() => setScreen('home')} notify={notify} allExercises={allExercises} />}
       {screen === 'history' && <HistoryScreen onBack={() => { setDeeplinkSession(null); setScreen('home'); }} allExercises={allExercises} bodyWeight={bodyWeight} notify={notify} haptic={haptic} focusSessionId={deeplinkSession} />}
-      {screen === 'exercises' && <ExercisesListScreen exercises={filteredExercises} title={selectedGroup || (searchQuery ? `Поиск: ${searchQuery}` : 'Все упражнения')} searchQuery={searchQuery} onSearch={(q: string) => setSearchQuery(q)} onBack={() => { setSearchQuery(''); setSelectedGroup(null); setScreen('home'); }} onSelectExercise={(ex: Exercise) => { haptic('light'); setPlanDefaults(isRepeatableTreadmill(ex) ? { append: true, catalogue: true } : null); setCurrentExercise(ex); setScreen('workout'); }} onAddExercise={() => setIsCreateModalOpen(true)} onEditExercise={(ex: Exercise) => setExerciseToEdit(ex)} />}
-      {screen === 'workout' && currentExercise && <WorkoutScreen key={currentExercise.id} onFinish={finishExercise} onSetStarted={stopExerciseRest} initialExercise={currentExercise} allExercises={allExercises} planDefaults={planDefaults} onExerciseUpdated={(id: string, updates: Partial<Exercise>) => setAllExercises(p => p.map(ex => ex.id === id ? { ...ex, ...updates } : ex))} sessionId={sessionId} incrementOrder={incrementOrder} ensureOrderAtLeast={ensureOrderAtLeast} bodyWeight={bodyWeight} plates={plates} haptic={haptic} notify={notify} onBack={() => setScreen(planDefaults && !planDefaults.catalogue ? 'home' : 'exercises')} />}
+      {screen === 'exercises' && <ExercisesListScreen restBanner={restBanner} exercises={filteredExercises} title={selectedGroup || (searchQuery ? `Поиск: ${searchQuery}` : 'Все упражнения')} searchQuery={searchQuery} onSearch={(q: string) => setSearchQuery(q)} onBack={() => { setSearchQuery(''); setSelectedGroup(null); setScreen('home'); }} onSelectExercise={(ex: Exercise) => { haptic('light'); setPlanDefaults(isRepeatableTreadmill(ex) ? { append: true, catalogue: true } : null); setCurrentExercise(ex); setScreen('workout'); }} onAddExercise={() => setIsCreateModalOpen(true)} onEditExercise={(ex: Exercise) => setExerciseToEdit(ex)} />}
+      {screen === 'workout' && currentExercise && <WorkoutScreen restBanner={restBanner} key={currentExercise.id} onFinish={finishExercise} onSetStarted={stopExerciseRest} initialExercise={currentExercise} allExercises={allExercises} planDefaults={planDefaults} onExerciseUpdated={(id: string, updates: Partial<Exercise>) => setAllExercises(p => p.map(ex => ex.id === id ? { ...ex, ...updates } : ex))} sessionId={sessionId} incrementOrder={incrementOrder} ensureOrderAtLeast={ensureOrderAtLeast} bodyWeight={bodyWeight} plates={plates} haptic={haptic} notify={notify} onBack={() => setScreen(planDefaults && !planDefaults.catalogue ? 'home' : 'exercises')} />}
       {pendingCount > 0 && (
         <button
           onClick={() => { setQueueItems(getQueue()); setIsQueueOpen(true); void api.syncOfflineQueue(); }}
