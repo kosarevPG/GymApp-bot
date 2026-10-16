@@ -42,3 +42,14 @@ export function durationSeconds(minutes: unknown): number | null {
   const value = toNumber(minutes);
   return value !== null && value > 0 ? Math.round(value * 60) : null;
 }
+/** Only the treadmill automatically offers another visit in the same workout. */
+export const isRepeatableTreadmill = (exercise: { name: string; measure?: string }): boolean =>
+  exercise.measure === 'cardio' && /дорож|treadmill/i.test(exercise.name);
+
+export function shouldAppendCardio(
+  exercise: { measure?: string },
+  rows: { completed?: boolean }[],
+  append: boolean,
+): boolean {
+  return exercise.measure === 'cardio' && append && rows.length > 0 && rows.every(row => row.completed);
+}
