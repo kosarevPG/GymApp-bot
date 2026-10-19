@@ -17,6 +17,8 @@ import { formatCardioSegments } from './cardio';
 import type { GlobalHistorySession, GlobalHistorySet } from './historyTypes';
 
 export interface ExerciseLine {
+  measuredSeconds?: number;
+  measuredSets?: number;
   exerciseId: string;
   name: string;
   /** `loadProgress` of every set: grows when the set gets harder. */
@@ -87,6 +89,8 @@ function lineOf(
   const reps = ordered.map((s) => num(s.reps));
   return {
     exerciseId,
+    measuredSeconds: ordered.reduce((sum, s) => sum + (s.timing?.duration_seconds ?? 0), 0),
+    measuredSets: ordered.filter(s => s.timing?.duration_seconds != null).length,
     name,
     weights,
     reps,
@@ -218,7 +222,8 @@ export function formatTrainerSummaryText(summary: TrainerSummary): string {
       } else if (!exercise.cardio) {
         suffix = '  (впервые)';
       }
-      lines.push(`  ${exercise.name}: ${exercise.text}${suffix}`);
+      const timed = exercise.measuredSets ? `; время подходов ${Math.floor(exercise.measuredSeconds! / 60)}:${String(exercise.measuredSeconds! % 60).padStart(2, '0')} (${exercise.measuredSets} из ${exercise.setCount})` : '';
+      lines.push(`  ${exercise.name}: ${exercise.text}${timed}${suffix}`);
     }
     lines.push('');
   }

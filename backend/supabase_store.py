@@ -99,7 +99,50 @@ def _load_rules(value: Any) -> Optional[Dict[str, Any]]:
         rules["bw"] = body_weight
     if value.get("perSide") is True:
         rules["perSide"] = True
+    mode = value.get("inputMode")
+    if mode is not None:
+        if mode not in ("total", "plates_total") or value.get("type") != ("Barbell" if mode == "total" else "Plate_Loaded"):
+            raise ValueError("invalid load inputMode")
+        if not math.isfinite(rules["mult"]) or not math.isfinite(rules["base"]) or rules["base"] < 0:
+            raise ValueError("invalid load coefficients")
+        rules["inputMode"] = mode
+        rules["v"] = 2
+        equipment_base = value.get("equipmentBase")
+        if equipment_base is not None:
+            if isinstance(equipment_base, bool) or not isinstance(equipment_base, (int, float)) or not math.isfinite(equipment_base) or equipment_base < 0:
+                raise ValueError("invalid load equipmentBase")
+            rules["equipmentBase"] = equipment_base
+        if mode == "total":
+            rules.setdefault("equipmentBase", rules["base"])
+            rules.update(mult=1, base=0)
+        else:
+            rules["mult"] = 1
     return rules
+
+
+def _set_timing(value: Any, now: datetime) -> Optional[Dict[str, Any]]:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("timing must be an object")
+    end = _aware_datetime(value.get("ended_at"), "timing.ended_at")
+    if end > now + timedelta(minutes=5):
+        raise ValueError("timing is in the future")
+    result: Dict[str, Any] = {"ended_at": end.isoformat()}
+    if value.get("started_at") is not None:
+        start = _aware_datetime(value["started_at"], "timing.started_at")
+        duration = (end - start).total_seconds()
+        if not 0 <= duration <= 86400:
+            raise ValueError("invalid set timing interval")
+        result.update(started_at=start.isoformat(), duration_seconds=math.floor(duration + 0.5))
+        if "rest_before_seconds" in value:
+            rest = value["rest_before_seconds"]
+            if isinstance(rest, bool) or not isinstance(rest, (int, float)) or not math.isfinite(rest) or not 0 <= rest <= 604800:
+                raise ValueError("invalid rest_before_seconds")
+            result["rest_before_seconds"] = round(rest)
+    elif "duration_seconds" in value or "rest_before_seconds" in value:
+        raise ValueError("timing.started_at is required for measured duration or rest")
+    return result
 
 
 def _valid_client_request_id(value: Any) -> str:
@@ -454,6 +497,59 @@ class SupabaseStore:
             raise ValueError("session metadata is required")
         return bool(self.client.update("gym_workout_sessions", values, filters={"user_id": user_id, "id": session_id}))
 
+    def save_session(self, user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Owned, repeatable start/finish command; no new tables or grants."""
+        ref = _valid_client_request_id(data.get("session_id"))
+        start = _aware_datetime(data.get("started_at"), "started_at")
+        end = _aware_datetime(data["ended_at"], "ended_at") if data.get("ended_at") else None
+        if start > self._now() + timedelta(minutes=5) or (end and (end < start or end > self._now() + timedelta(minutes=5))):
+            raise ValueError("invalid session interval")
+        location = data.get("location")
+        if location is not None and location not in ("gym", "home", "other"):
+            raise ValueError("invalid location")
+        source = data.get("repeated_from_session_id")
+        if source:
+            source = _valid_client_request_id(source)
+            owned = self._select("gym_workout_sessions", columns="id", filters={"user_id": user_id, "id": source}, limit=1)
+            if not owned:
+                owned = self._select("gym_workout_sessions", columns="id", filters={"user_id": user_id, "source": "gymapp", "source_record_id": f"live:{source}"}, limit=1)
+            if not owned:
+                raise ValueError("source session not found")
+            source = owned[0]["id"]
+        existing = self._select("gym_workout_sessions", filters={"user_id": user_id, "source": "gymapp", "source_record_id": f"live:{ref}"}, limit=1)
+        if existing:
+            session = existing[0]
+        else:
+            session = self._ensure_session(user_id, ref, start, location)
+        payload = dict(session.get("source_payload") or {})
+        if payload.get("workout_started_at") and _aware_datetime(payload["workout_started_at"], "workout_started_at") != start:
+            raise ValueError("session start cannot change")
+        if source:
+            if payload.get("repeated_from_session_id") not in (None, source):
+                raise ValueError("source session cannot change")
+            payload["repeated_from_session_id"] = source
+        # A late/retried start must never erase a previously recorded finish.
+        finished = payload.get("workout_finished_at")
+        if end:
+            if finished and _aware_datetime(finished, "workout_finished_at") != end:
+                raise ValueError("session finish cannot change")
+            payload["workout_finished_at"] = end.isoformat()
+        payload.setdefault("workout_started_at", start.isoformat())
+        values = {"source_payload": payload, "started_at": payload["workout_started_at"],
+                  "workout_date": _aware_datetime(payload["workout_started_at"], "workout_started_at").date().isoformat()}
+        if data.get("location_update") is True:
+            values["location"] = location
+        if payload.get("workout_finished_at"):
+            actual_end = _aware_datetime(payload["workout_finished_at"], "workout_finished_at")
+            minutes = (actual_end - _aware_datetime(payload["workout_started_at"], "workout_started_at")).total_seconds() / 60
+            # Keep a long resumed session's actual span without clipping it to
+            # the existing duration_minutes column's one-day constraint.
+            payload["elapsed_seconds"] = round(minutes * 60)
+            rounded_minutes = round(minutes, 2)
+            values.update(ended_at=actual_end.isoformat(), duration_minutes=rounded_minutes if 0 < rounded_minutes <= 1440 else None, duration_is_approximate=False)
+        self.client.update("gym_workout_sessions", values, filters={"user_id": user_id, "id": session["id"]})
+        return {"status": "success", "session_id": session["id"]}
+
     def _ensure_group(
         self, user_id: str, session: Dict[str, Any], session_ref: str, group_ref: str, position: int
     ) -> Dict[str, Any]:
@@ -501,11 +597,15 @@ class SupabaseStore:
         try:
             request_id = _valid_client_request_id(data.get("client_request_id") or data.get("request_id"))
             performed_at = _aware_datetime(data.get("performed_at"), "performed_at")
+            load = _load_rules(data.get("load"))
+            timing = _set_timing(data.get("timing"), self._now())
         except ValueError as error:
             return {"status": "error", "error": str(error)}
         if performed_at > self._now() + timedelta(minutes=5):
             return {"status": "error", "error": "performed_at is in the future"}
         values = self._set_values(data)
+        if load and load.get("inputMode"):
+            values["total_weight_kg"] = values["input_weight_kg"] + (load["base"] if load["inputMode"] == "plates_total" else 0)
         if values["reps"] <= 0:
             return {"status": "error", "error": "reps must be greater than zero"}
         existing = self._select(
@@ -531,6 +631,13 @@ class SupabaseStore:
                 column: value for column, value in values.items()
                 if existing[0].get(column) != value
             }
+            payload = dict(existing[0].get("source_payload") or {})
+            if load:
+                payload["load"] = load
+            if timing:
+                payload["timing"] = timing
+            if payload != (existing[0].get("source_payload") or {}):
+                changes["source_payload"] = payload
             if changes:
                 changes["updated_at"] = self._now().isoformat()
                 self.client.update(
@@ -550,7 +657,6 @@ class SupabaseStore:
         try:
             session = self._ensure_session(user_id, session_ref, performed_at, data.get("location"))
             group = self._ensure_group(user_id, session, session_ref, group_ref, position)
-            load = _load_rules(data.get("load"))
             row = {
                 "id": _stable_uuid(user_id, "set", request_id),
                 "user_id": user_id,
@@ -565,7 +671,7 @@ class SupabaseStore:
                 "source_record_id": f"live:{request_id}",
                 "client_request_id": request_id,
                 "legacy_session_id": session_ref,
-                "source_payload": {"client_group_id": group_ref, **({"load": load} if load else {})},
+                "source_payload": {"client_group_id": group_ref, **({"load": load} if load else {}), **({"timing": timing} if timing else {})},
             }
             written = self.client.upsert(
                 "gym_sets", row, on_conflict="user_id,client_request_id"
@@ -621,10 +727,21 @@ class SupabaseStore:
         if updates.get("reps", 1) <= 0 or updates.get("rest_seconds", 0) < 0:
             return False
         load = _load_rules(data.get("load"))
+        stored_rules = load or (existing.get("source_payload") or {}).get("load") or {}
+        if "input_weight" in data and stored_rules.get("inputMode") in ("total", "plates_total"):
+            updates["total_weight_kg"] = updates["input_weight_kg"] + (stored_rules.get("base", 0) if stored_rules["inputMode"] == "plates_total" else 0)
         if load:
             # A weight edit brings the rules it was computed with; the rest of
             # the payload (client group, import provenance) stays as it was.
             updates["source_payload"] = {**(existing.get("source_payload") or {}), "load": load}
+        if "timing" in data:
+            timing = _set_timing(data["timing"], self._now())
+            payload = dict(updates.get("source_payload", existing.get("source_payload") or {}))
+            if timing is None:
+                payload.pop("timing", None)
+            else:
+                payload["timing"] = timing
+            updates["source_payload"] = payload
         updates["updated_at"] = self._now().isoformat()
         return bool(self.client.update(
             "gym_sets", updates, filters={"user_id": user_id, "id": existing["id"]}
@@ -851,6 +968,9 @@ class SupabaseStore:
         load = (row.get("source_payload") or {}).get("load")
         if isinstance(load, dict):
             result["load"] = load
+        timing = (row.get("source_payload") or {}).get("timing")
+        if isinstance(timing, dict):
+            result["timing"] = timing
         return result
 
     def get_exercise_history(self, user_id: str, exercise_id: str, limit: int = 50) -> Dict[str, Any]:
@@ -967,6 +1087,8 @@ class SupabaseStore:
             ))
             result.append({
                 "id": session["id"],
+                "clientSessionId": (session.get("source_payload") or {}).get("client_session_id"),
+                "repeatedFromSessionId": (session.get("source_payload") or {}).get("repeated_from_session_id"),
                 "date": _api_date(session.get("workout_date")),
                 "muscleGroups": sorted(muscles, key=str.casefold),
                 "location": session.get("location"),
@@ -974,6 +1096,8 @@ class SupabaseStore:
                 "duration_is_approximate": session.get("duration_is_approximate", False),
                 "duration": (f"{'≈' if session.get('duration_is_approximate') else ''}{_to_float(session['duration_minutes']):g}м"
                              if session.get("duration_minutes") is not None else
+                             f"{round(_to_float((session.get('source_payload') or {})['elapsed_seconds']) / 60)}м"
+                             if 'elapsed_seconds' in (session.get('source_payload') or {}) else
                              f"{len(session_sets) * 2 + round(sum(_to_float(r.get('duration_seconds')) for r in session_cardio) / 60)}м"),
                 "exercises": exercises_api,
             })
@@ -1176,4 +1300,6 @@ def update_exercise(user_id: str, exercise_id: str, updates: Dict[str, Any]): re
 def get_global_history(user_id: str, limit_rows: int = 3000): return _store().get_global_history(user_id, limit_rows)
 def get_workout_session(user_id: str, session_id: str): return _store().get_workout_session(user_id, session_id)
 def update_session(user_id: str, data: Dict[str, Any]): return _store().update_session(user_id, data)
+
+def save_session(user_id: str, data: Dict[str, Any]): return _store().save_session(user_id, data)
 def get_analytics(user_id: str, days: int = 14): return _store().get_analytics(user_id, days)

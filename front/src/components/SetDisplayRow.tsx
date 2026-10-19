@@ -1,5 +1,6 @@
 import React from 'react';
 import type { SetType } from '../types';
+import { formatSeconds } from '../workoutTiming';
 
 export interface SetDisplayRowProps {
   /** Вес словами из `setLoadLabel`: «60 кг», «2×8 кг», «помощь 30 кг». */
@@ -10,6 +11,8 @@ export interface SetDisplayRowProps {
   rpe?: number;
   rir?: number;
   className?: string;
+  durationSeconds?: number;
+  restBeforeSeconds?: number;
 }
 
 export const SetDisplayRow: React.FC<SetDisplayRowProps> = ({
@@ -20,6 +23,8 @@ export const SetDisplayRow: React.FC<SetDisplayRowProps> = ({
   rpe,
   rir,
   className = '',
+  durationSeconds,
+  restBeforeSeconds,
 }) => {
   const r = typeof reps === 'number' ? reps : parseInt(String(reps || 0), 10);
   const restVal = typeof rest === 'number' ? rest : parseFloat(String(rest || 0));
@@ -45,6 +50,8 @@ export const SetDisplayRow: React.FC<SetDisplayRowProps> = ({
       {rir != null && Number(rir) > 0 && (
         <span className="ml-2 text-xs text-zinc-400">RIR {rir}</span>
       )}
+      {durationSeconds != null && <span className="mt-1 block text-xs text-zinc-400">Подход {formatSeconds(durationSeconds)}
+        {restBeforeSeconds != null ? ` · отдых перед ним ${formatSeconds(restBeforeSeconds)}` : ''}</span>}
     </div>
   );
 };

@@ -31,6 +31,7 @@ from supabase_store import (
     import_data,
     save_cardio,
     save_set,
+    save_session,
     update_cardio,
     update_exercise,
     update_set,
@@ -262,11 +263,19 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             except ValueError as error:
                 return response({"error": str(error)}, 400)
             return response({"status": "success" if updated else "error"}, 200 if updated else 404)
+        if endpoint == "save_session" and method == "POST":
+            try:
+                return response(save_session(user_id, _body(event)))
+            except ValueError as error:
+                return response({"error": str(error)}, 400)
         if endpoint == "save_set" and method == "POST":
             result = save_set(user_id, _body(event))
             return response(result, 200 if result.get("status") == "success" else 400)
         if endpoint == "update_set" and method == "POST":
-            return response({"status": "success" if update_set(user_id, _body(event)) else "error"})
+            try:
+                return response({"status": "success" if update_set(user_id, _body(event)) else "error"})
+            except ValueError as error:
+                return response({"error": str(error)}, 400)
         if endpoint == "delete_set" and method == "POST":
             return response({"status": "success" if delete_set(user_id, _body(event)) else "error"})
         if endpoint == "save_cardio" and method == "POST":

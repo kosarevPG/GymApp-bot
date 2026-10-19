@@ -1,4 +1,5 @@
 import type { LoadRules } from './exerciseConfig';
+import type { SetTiming } from './types';
 
 /** Shapes returned by GET /api/global_history. Shared by the summary code. */
 export interface GlobalHistorySet {
@@ -12,6 +13,7 @@ export interface GlobalHistorySet {
   rpe?: number;
   rir?: number;
   load?: LoadRules | null;
+  timing?: SetTiming;
 }
 
 export interface GlobalHistoryExercise {
@@ -24,6 +26,8 @@ export interface GlobalHistoryExercise {
 }
 
 export interface GlobalHistorySession {
+  clientSessionId?: string;
+  repeatedFromSessionId?: string;
   location?: 'gym' | 'home' | 'other' | null;
   duration?: string;
   id?: string;

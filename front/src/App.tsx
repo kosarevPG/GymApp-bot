@@ -4,6 +4,7 @@ import {
   Check, Trash2, StickyNote, ChevronDown, Dumbbell, Calendar, 
   ChevronLeft, Settings, ArrowLeft, Camera, Pencil, Trophy,
   History as HistoryIcon, Activity, Link as LinkIcon, Target
+  , Play, Repeat2, ArrowUp, ArrowDown, SkipForward, Replace
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts';
@@ -16,7 +17,11 @@ import { readSessionDeeplink, stripSessionParam } from './deeplink';
 import { lastSessionWorkingSets, formatLastSessionSets, personalBest } from './progression';
 import { buildTrainerSummary, formatTrainerSummaryText, isoDaysAgo } from './trainerSummary';
 import { SetDisplayRow } from './components/SetDisplayRow';
-import { calcEffectiveWeight, weightInputLabel, WEIGHT_TYPE_OPTIONS, USER_BODY_WEIGHT_DEFAULT, describeLoad, DEFAULT_PLATES, PLATE_CHOICES, carryOverInput, loadRulesOf, rulesAsExercise, rulesForSet, setLoadLabel } from './exerciseConfig';
+import { WorkoutClockPanel } from './components/WorkoutClockPanel';
+import { WORKOUT_CLOCK_KEY, readClock, startSetClock, cancelSetClock, completeSetTiming, nextRestClock, betweenExercises, formatSeconds, type WorkoutClock } from './workoutTiming';
+import { repeatPlan, templateSets, draftKey, replaceStep, nextStep, recordedSets } from './workoutRepeat';
+import { finishedSession, reconcileFinished } from './workoutJournal';
+import { calcEffectiveWeight, weightInputLabel, WEIGHT_TYPE_OPTIONS, USER_BODY_WEIGHT_DEFAULT, describeLoad, DEFAULT_PLATES, PLATE_CHOICES, carryOverInput, loadRulesOf, rulesAsExercise, rulesForSet, setLoadLabel, forNewEntry } from './exerciseConfig';
 import type { Exercise, WorkoutSet, HistoryItem, CardioHistoryItem, ExerciseSessionData, SetType } from './types';
 import {
   QUEUE_CHANGED_EVENT,
@@ -44,7 +49,7 @@ import {
   supabasePublishableKey,
 } from './auth';
 import { AuthRequiredError, createAuthenticatedFetch } from './authenticatedFetch';
-import { LOCATION_LABELS, pendingSessionMetadata, type WorkoutLocation } from './sessionMetadata';
+import { LOCATION_LABELS, pendingSessionMetadata, pendingTimingEdits, type WorkoutLocation } from './sessionMetadata';
 
 // --- TYPES ---
 
@@ -56,9 +61,14 @@ interface GlobalWorkoutSession {
   muscleGroups: string[];
   duration: string;
   location?: WorkoutLocation | null;
+  clientSessionId?: string;
+  repeatedFromSessionId?: string;
+  pendingLocal?: boolean;
   exercises: { 
     name: string; 
+    exerciseId?: string;
     sets: any[]; 
+    cardio?: any[];
     supersetId?: string;
   }[];
 }
@@ -120,6 +130,7 @@ const QUEUE_ENDPOINTS: Record<QueuedItem['type'], string> = {
   updateSet: 'update_set',
   deleteSet: 'delete_set',
   updateSession: 'update_session',
+  saveSession: 'save_session',
 };
 
 // Кардио идёт через ту же очередь, но в свою таблицу на сервере.
@@ -128,6 +139,7 @@ const CARDIO_ENDPOINTS: Record<QueuedItem['type'], string> = {
   updateSet: 'update_cardio',
   deleteSet: 'delete_cardio',
   updateSession: 'update_session',
+  saveSession: 'save_session',
 };
 
 const sendQueuedItem = async (item: QueuedItem): Promise<SendOutcome> => {
@@ -228,11 +240,15 @@ const api = {
   getGlobalHistory: async () => {
     const data = await api.request('global_history', {}, 28_000);
     if (data) {
-      const merged = pendingSessionMetadata<GlobalWorkoutSession>(data, getQueue());
+      let local: any[] = [];
+      try { const parsed = JSON.parse(localStorage.getItem('gym_finished_local') || '[]'); if (Array.isArray(parsed)) local = parsed; } catch { /* The durable queue remains authoritative. */ }
+      const { remaining, history: complete } = reconcileFinished(local, data, getQueue());
+      try { localStorage.setItem('gym_finished_local', JSON.stringify(remaining)); } catch { /* Readable without cache space. */ }
+      const merged = pendingTimingEdits(pendingSessionMetadata<GlobalWorkoutSession>(complete, getQueue()), getQueue());
       try { localStorage.setItem(GLOBAL_HISTORY_CACHE_KEY, JSON.stringify(merged)); } catch (_) {}
       return merged;
     }
-    try { return pendingSessionMetadata<GlobalWorkoutSession>(JSON.parse(localStorage.getItem(GLOBAL_HISTORY_CACHE_KEY) || '[]'), getQueue()); } catch { return []; }
+    try { return pendingTimingEdits(pendingSessionMetadata<GlobalWorkoutSession>(JSON.parse(localStorage.getItem(GLOBAL_HISTORY_CACHE_KEY) || '[]'), getQueue()), getQueue()); } catch { return []; }
   },
 
   getAnalytics: async (period: number = 14) => {
@@ -253,7 +269,7 @@ const api = {
   // запись не принял: вызывающий тогда не отмечает подход выполненным.
   saveSet: (data: any): string => {
     const clientRequestId = String(data.client_request_id || crypto.randomUUID());
-    const pendingId = addToQueue('saveSet', { ...data, client_request_id: clientRequestId });
+    const pendingId = upsertQueue('saveSet', { ...data, client_request_id: clientRequestId });
     queueMicrotask(() => { void api.syncOfflineQueue(); });
     return pendingId;
   },
@@ -265,6 +281,11 @@ const api = {
       const cached = JSON.parse(localStorage.getItem(GLOBAL_HISTORY_CACHE_KEY) || '[]');
       localStorage.setItem(GLOBAL_HISTORY_CACHE_KEY, JSON.stringify(pendingSessionMetadata(cached, getQueue())));
     } catch { /* Queue is already durably saved. */ }
+    queueMicrotask(() => { void api.syncOfflineQueue(); });
+  },
+
+  saveSession: (data: Record<string, unknown>): void => {
+    upsertQueue('saveSession', { ...data, client_request_id: `session:${data.session_id}` });
     queueMicrotask(() => { void api.syncOfflineQueue(); });
   },
 
@@ -419,44 +440,6 @@ const useDebounce = <T,>(value: T, delay: number): T => {
   return debouncedValue;
 };
 
-const useTimer = () => {
-  const [time, setTime] = useState(0);
-  const [isRunning, setIsRunning] = useState(false);
-  const intervalRef = useRef<any>(null);
-  useEffect(() => () => clearInterval(intervalRef.current), []);
-
-  const start = () => {
-    if (isRunning) return;
-    setIsRunning(true);
-    const startTime = Date.now() - time;
-    intervalRef.current = setInterval(() => setTime(Date.now() - startTime), 50);
-  };
-  const pause = () => {
-    setIsRunning(false);
-    clearInterval(intervalRef.current);
-  };
-  const reset = () => {
-    setIsRunning(false);
-    clearInterval(intervalRef.current);
-    setTime(0);
-  };
-  const resetAndStart = () => {
-    clearInterval(intervalRef.current);
-    setTime(0);
-    setIsRunning(true);
-    const startTime = Date.now();
-    intervalRef.current = setInterval(() => setTime(Date.now() - startTime), 50);
-  };
-  const formatTime = (ms: number) => {
-    const totalSeconds = Math.floor(ms / 1000);
-    const m = Math.floor(totalSeconds / 60).toString().padStart(2, '0');
-    const s = (totalSeconds % 60).toString().padStart(2, '0');
-    const ms2 = Math.floor((ms % 1000) / 10).toString().padStart(2, '0');
-    return `${m}:${s}.${ms2}`;
-  };
-  return { time, isRunning, start, pause, reset, resetAndStart, formatTime };
-};
-
 const useSession = () => {
   const [sessionId, setSessionId] = useState('');
   const [location, setLocation] = useState<WorkoutLocation | null>(null);
@@ -473,7 +456,7 @@ const useSession = () => {
     const savedOrder = localStorage.getItem(ORDER_COUNTER_KEY);
     const now = Date.now();
 
-    if (!lastActive || (now - parseInt(lastActive)) > 14400000 || !savedSession) {
+    if (!savedSession || (!localStorage.getItem(ACTIVE_WORKOUT_KEY) && (!lastActive || (now - parseInt(lastActive)) > 14400000))) {
       const newId = crypto.randomUUID();
       setSessionId(newId);
       setOrderCounter(0);
@@ -498,9 +481,9 @@ const useSession = () => {
     localStorage.setItem(LAST_ACTIVE_KEY, now.toString());
   }, []);
 
-  const resetSession = () => {
-    updateLocation('gym');
-    const newId = crypto.randomUUID();
+  const resetSession = (nextId?: string, nextLocation: WorkoutLocation = 'gym') => {
+    updateLocation(nextLocation);
+    const newId = nextId || crypto.randomUUID();
     setSessionId(newId);
     setOrderCounter(0);
     orderCounterRef.current = 0;
@@ -613,51 +596,6 @@ const Modal = ({ isOpen, onClose, title, children, headerAction }: any) => (
 
 // --- FEATURES ---
 
-const TimerBlock = ({ timer, onToggle, sessionTonnage = 0, restTarget = null }: any) => {
-  const minutes = timer.time / 60000;
-  const density = minutes > 0 ? Math.round(sessionTonnage / minutes) : 0;
-  const remaining = restTarget != null ? restTarget - timer.time : null;
-  const resting = remaining != null && timer.isRunning && remaining > 0;
-  const restOver = remaining != null && timer.isRunning && remaining <= 0;
-  return (
-    <div className="sticky top-0 z-40 bg-zinc-950/80 backdrop-blur-md pb-4 pt-safe-2 px-4 border-b border-zinc-800/50 mb-4">
-      <Card className="flex items-center justify-between p-3 px-5 shadow-xl shadow-black/50">
-        <div className="flex flex-col gap-0.5">
-          <div className={`font-mono text-3xl font-bold tracking-wider tabular-nums ${resting ? 'text-blue-400' : restOver ? 'text-amber-400' : 'text-zinc-50'}`}>
-            {resting ? timer.formatTime(remaining) : timer.formatTime(timer.time)}
-          </div>
-          {resting && <div className="text-xs text-blue-400/80">отдых — осталось до подхода</div>}
-          {restOver && <div className="text-xs text-amber-400/80">отдых окончен — работаем</div>}
-          {!resting && !restOver && sessionTonnage > 0 && <div className="text-xs text-zinc-500">Плотность: {density} кг/мин</div>}
-        </div>
-        <div className="flex gap-2">
-          <Button variant={timer.isRunning ? "danger" : "primary"} onClick={onToggle} className="w-20 h-10 text-sm">{timer.isRunning ? "Стоп" : "Старт"}</Button>
-        </div>
-      </Card>
-    </div>
-  );
-};
-
-const ExerciseRestBanner = ({ startedAt, inExercise, onStop }: { startedAt: number; inExercise: boolean; onStop: () => void }) => {
-  const [now, setNow] = useState(Date.now);
-  useEffect(() => {
-    const tick = () => setNow(Date.now());
-    tick();
-    const interval = window.setInterval(tick, 1000);
-    window.addEventListener('visibilitychange', tick);
-    return () => { window.clearInterval(interval); window.removeEventListener('visibilitychange', tick); };
-  }, [startedAt]);
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-700 bg-zinc-900 p-4">
-      <div>
-        <div className="text-sm text-zinc-300">Отдых между упражнениями</div>
-        <div role="timer" aria-label="Время отдыха" className="mt-1 text-2xl font-semibold tabular-nums text-zinc-50">{formatRestTime(now - startedAt)}</div>
-      </div>
-      <Button variant="secondary" onClick={onStop} className="min-h-11 px-4 text-sm">{inExercise ? 'Начать упражнение' : 'Завершить отдых'}</Button>
-    </div>
-  );
-};
-
 const NoteWidget = ({ initialValue, onChange }: any) => {
   const [isOpen, setIsOpen] = useState(false);
   const [value, setValue] = useState(initialValue);
@@ -734,8 +672,8 @@ const SyncDot = ({ mark }: { mark?: SyncMark }) => (mark ? (
 const SET_TYPE_CYCLE: SetType[] = ['warmup', 'working', 'drop', 'failure'];
 const SET_TYPE_LABELS: Record<SetType, string> = { warmup: 'W', working: 'R', drop: 'D', failure: 'F' };
 
-const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates = DEFAULT_PLATES, isActive = false, syncMark, onUpdate, onDelete, onComplete }: { set: WorkoutSet; exercise?: Exercise; bodyWeight?: number; plates?: number[]; isActive?: boolean; syncMark?: SyncMark; onUpdate: (sid: string, field: string, value: string | number) => void; onDelete: (sid: string) => void; onComplete: (sid: string) => void }) => {
-  const effectiveWeight = calcEffectiveWeight(exercise, parseFloat(set.weight || '0'), bodyWeight);
+const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates = DEFAULT_PLATES, isActive = false, syncMark, onUpdate, onDelete, onComplete, onStart }: { set: WorkoutSet; exercise?: Exercise; bodyWeight?: number; plates?: number[]; isActive?: boolean; syncMark?: SyncMark; onUpdate: (sid: string, field: string, value: string | number) => void; onDelete: (sid: string) => void; onComplete: (sid: string) => void; onStart?: (sid: string) => void }) => {
+  const effectiveWeight = calcEffectiveWeight(set.load ? rulesAsExercise(set.load) : exercise, parseFloat(set.weight || '0'), bodyWeight);
   const showTotal = set.weight !== '' && effectiveWeight !== parseFloat(set.weight || '0');
   const oneRM = set.weight && set.reps ? Math.round(effectiveWeight * (1 + parseInt(set.reps) / 30)) : 0;
   const delta = set.prevWeight ? (effectiveWeight - set.prevWeight) : 0;
@@ -748,7 +686,7 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates =
     : null;
 
   return (
-    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`mb-3 ${set.completed ? (syncMark ? 'opacity-80' : 'opacity-60 grayscale') : ''}`}>
+    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="mb-3">
       <div className="grid grid-cols-[auto_auto_1fr_1fr_1fr_auto] gap-2 items-start">
         <button
           disabled={set.completed}
@@ -767,13 +705,14 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates =
         >
           {SET_TYPE_LABELS[(set.setType || 'working') as SetType]}
         </button>
-        <button onClick={() => onComplete(set.id)} className={`relative w-12 h-12 rounded-xl border flex items-center justify-center transition-colors ${set.completed ? 'bg-green-500 border-green-500' : 'bg-zinc-900 border-zinc-700'}`}>
+        <button aria-label={set.completed ? 'Изменить выполненный подход' : 'Отметить подход выполненным'} onClick={() => onComplete(set.id)} className={`relative w-12 h-12 rounded-xl border flex items-center justify-center transition-colors ${set.completed ? 'bg-green-500 border-green-500' : 'bg-zinc-900 border-zinc-700'}`}>
           <Check className={`w-6 h-6 ${set.completed ? 'text-white' : 'text-zinc-700'}`} />
           <SyncDot mark={syncMark} />
         </button>
         <div className="flex flex-col gap-1">
           <input
             type="number"
+            aria-label="Вес подхода"
             inputMode="decimal"
             placeholder="0"
             value={set.weight}
@@ -795,6 +734,7 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates =
         </div>
         <input
           type="tel"
+          aria-label="Повторения подхода"
           inputMode="numeric"
           placeholder="0"
           value={set.reps}
@@ -805,6 +745,7 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates =
         />
         <input 
           type="number" 
+          aria-label="Отдых после подхода в минутах"
           inputMode="decimal" 
           placeholder="0" 
           value={set.rest}
@@ -815,6 +756,8 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates =
         />
         <button onClick={() => onDelete(set.id)} className="w-10 h-12 flex items-center justify-center text-zinc-600 hover:text-red-500"><Trash2 className="w-5 h-5" /></button>
       </div>
+      {set.completed && set.timing?.duration_seconds != null && <div className="ml-14 mt-1 text-xs text-zinc-300">Время подхода{set.load?.perSide ? ' (обе руки)' : ''} {formatSeconds(set.timing.duration_seconds)}</div>}
+      {isActive && onStart && <button className="ml-14 mt-1 min-h-11 text-sm text-blue-300" onClick={() => onStart(set.id)}>Начать этот подход</button>}
       {isActive && !set.completed && (
       <div className="mt-2 ml-14 space-y-2">
         {loadPlan && (
@@ -980,7 +923,7 @@ const CardioCard = ({ exerciseData, syncMarks = {}, onAddSet, onUpdateSet, onDel
   );
 };
 
-const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates = DEFAULT_PLATES, syncMarks = {}, onAddSet, onUpdateSet, onDeleteSet, onCompleteSet, onNoteChange, onAddSuperset, onRemove }: any) => {
+const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates = DEFAULT_PLATES, syncMarks = {}, onAddSet, onUpdateSet, onDeleteSet, onCompleteSet, onStartSet, onNoteChange, onAddSuperset, onRemove }: any) => {
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   // Лучший рабочий подход, записанный так же, как в истории: «2×12 кг»,
   // «помощь 20 кг». Нулевой вес рекордом не считается.
@@ -1029,6 +972,7 @@ const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plat
             onUpdate={onUpdateSet}
             onDelete={onDeleteSet}
             onComplete={onCompleteSet}
+            onStart={onStartSet}
           />
         ))}
       </div>
@@ -1118,6 +1062,7 @@ const TrainerSummaryScreen = ({ onBack, notify, allExercises = [] }: any) => {
                 <div key={exercise.exerciseId}>
                   <div className="text-xs text-zinc-300">{exercise.name}</div>
                   <div className="text-sm text-zinc-100">{exercise.text}</div>
+                  {!!exercise.measuredSets && <div className="text-xs text-zinc-300">Время подходов {formatSeconds(exercise.measuredSeconds)} · измерено {exercise.measuredSets} из {exercise.setCount}</div>}
                   {exercise.change ? (
                     <div className={`text-[11px] ${exercise.change.down ? 'text-amber-400' : 'text-zinc-500'}`}>
                       было {exercise.change.previousText}
@@ -1164,57 +1109,53 @@ const TrainerSummaryScreen = ({ onBack, notify, allExercises = [] }: any) => {
   );
 };
 
-const HomeScreen = ({ groups, workoutActive, location, onLocationChange, restBanner, plan = [], planDone = [], exerciseNames = {}, onOpenPlanItem, onStartWorkout, onFinishWorkout, onSearch, onSelectGroup, onAllExercises, onHistory, onAnalytics, onSummary, onSettings }: any) => (
-  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="px-4 pb-4 pt-safe-4 space-y-6">
-    <label className="flex items-center justify-between gap-3 text-sm text-zinc-300">
-      Место тренировки
-      <select aria-label="Место новой тренировки" value={location || ''} disabled={workoutActive} onChange={e => onLocationChange(e.target.value)} className="min-h-11 rounded-lg bg-zinc-800 px-3 text-zinc-100 disabled:opacity-70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500">
-        {!location && <option value="">Не указано</option>}
-        {Object.entries(LOCATION_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-      </select>
-    </label>
-    {workoutActive
-      ? <Button variant="secondary" onClick={onFinishWorkout} className="w-full h-14 text-lg border border-red-900/50 text-red-400">Закончить тренировку</Button>
-      : <Button variant="primary" onClick={onStartWorkout} className="w-full h-14 text-lg font-semibold shadow-xl shadow-blue-900/20">Начать тренировку</Button>}
-    {restBanner}
-    {workoutActive && plan.length > 0 && (
-      <Card className="p-3 space-y-2">
-        <div className="px-1 text-xs text-zinc-500 uppercase font-bold tracking-wider">План</div>
-        {plan.map((item: PlanItem, i: number) => (
-          <button key={item.key} onClick={() => onOpenPlanItem(item)} className="w-full flex items-center gap-3 p-3 rounded-xl bg-zinc-800/50 text-left active:bg-zinc-800">
-            <div className={`w-6 h-6 rounded-full border flex items-center justify-center flex-shrink-0 ${planDone[i] ? 'bg-green-500 border-green-500' : 'border-zinc-600'}`}>
-              {planDone[i] && <Check className="w-4 h-4 text-white" />}
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="text-sm text-zinc-200">{item.label} · {planTargetText(item)}</div>
-              <div className="text-xs text-zinc-500 truncate">{exerciseNames[item.exerciseId] || 'упражнение не найдено в каталоге'}</div>
-            </div>
-            <ChevronRight className="w-5 h-5 text-zinc-600 flex-shrink-0" />
+const HomeScreen = ({ workoutActive, location, onLocationChange, restBanner, plan = [], planDone = [], draft, onOpenPlanItem, onStartWorkout, onFinishWorkout, onAllExercises, onHistory, onAnalytics, onSummary, onSettings, onMove, onReplace, onSkip, sourceDate }: any) => (
+  <div className="px-4 pb-24 pt-safe-4 space-y-5">
+    <div className="flex items-center justify-between gap-3">
+      <h1 className="text-2xl font-bold">{workoutActive ? 'Текущая тренировка' : 'Тренировки'}</h1>
+      <button aria-label="Настройки" onClick={onSettings} className="min-h-11 min-w-11 flex items-center justify-center rounded-xl text-zinc-300 hover:bg-zinc-800"><Settings className="h-6 w-6" /></button>
+    </div>
+    {!workoutActive ? <div className="space-y-3">
+      <p className="text-sm text-zinc-300">Откройте историю и повторите подходящую тренировку.</p>
+      <Button onClick={onHistory} icon={HistoryIcon} className="w-full min-h-14 text-lg">Выбрать из истории</Button>
+      <Button onClick={onStartWorkout} variant="secondary" icon={Plus} className="w-full min-h-12">Новая тренировка</Button>
+    </div> : <>
+      {sourceDate && <p className="text-sm text-zinc-300">Повторение тренировки {sourceDate}</p>}
+      <label className="flex items-center justify-between gap-3 text-sm text-zinc-300">Место тренировки
+        <select aria-label="Место новой тренировки" value={location || ''} onChange={e => onLocationChange(e.target.value)} className="min-h-11 rounded-lg bg-zinc-800 px-3 text-zinc-100">
+          {!location && <option value="">Не указано</option>}
+          {Object.entries(LOCATION_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+        </select>
+      </label>
+      {restBanner}
+      <div className="flex items-center justify-between gap-3"><span className="text-sm text-zinc-300">{plan.filter((p: PlanItem, i: number) => p.status === 'done' || planDone[i]).length} из {plan.length} завершено{plan.some((p: PlanItem) => p.status === 'skipped') ? ` · ${plan.filter((p: PlanItem) => p.status === 'skipped').length} пропущено` : ''}</span>
+        <button onClick={onAllExercises} className="min-h-11 text-sm text-blue-300">Добавить упражнение</button></div>
+      <div className="divide-y divide-zinc-800">
+        {plan.map((item: PlanItem, i: number) => <div key={item.key} className="py-3">
+          <button onClick={() => onOpenPlanItem(item)} className="flex min-h-12 w-full items-center gap-3 text-left">
+            <span className="w-6 shrink-0 text-center text-sm text-zinc-400">{item.status === 'skipped' ? '—' : planDone[i] ? <Check className="h-5 w-5 text-green-400" /> : i + 1}</span>
+            <span className="flex-1 min-w-0"><span className="block font-medium text-zinc-100">{item.label}</span>
+              <span className="block text-sm text-zinc-300">{(item.templates?.length || 0) > 1 ? item.templates!.map(t => t.name).join(' · ') + ' · ' : ''}{planTargetText(item)}{item.blockId ? ` ранее · ${recordedSets(item, draft)} сегодня` : ''}{item.status === 'skipped' ? ' · оставшееся пропущено' : ''}</span></span>
+            <ChevronRight className="h-5 w-5 shrink-0 text-zinc-400" />
           </button>
-        ))}
-      </Card>
-    )}
-    <div className="flex items-center gap-2">
-      <div className="relative flex-1">
-        <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-500" />
-        <Input placeholder="Найти..." onChange={(e: React.ChangeEvent<HTMLInputElement>) => onSearch(e.target.value)} className="pl-12 bg-zinc-900 w-full" />
+          <div className="ml-9 flex flex-wrap items-center gap-1">
+            <button aria-label={`Поднять ${item.label}`} disabled={i === 0} onClick={() => onMove(i, -1)} className="min-h-11 min-w-11 text-zinc-300 disabled:opacity-30"><ArrowUp className="mx-auto h-4 w-4" /></button>
+            <button aria-label={`Опустить ${item.label}`} disabled={i === plan.length - 1} onClick={() => onMove(i, 1)} className="min-h-11 min-w-11 text-zinc-300 disabled:opacity-30"><ArrowDown className="mx-auto h-4 w-4" /></button>
+            <button onClick={() => onReplace(item.key)} className="min-h-11 px-2 text-sm text-blue-300">Заменить</button>
+            {!item.status && <button onClick={() => onSkip(item.key)} className="min-h-11 px-2 text-sm text-zinc-300">Пропустить</button>}
+          </div>
+        </div>)}
       </div>
-      <button onClick={onHistory} className="p-3 bg-zinc-900 rounded-xl text-zinc-400 hover:text-blue-500"><HistoryIcon className="w-6 h-6" /></button>
-      <button onClick={onSummary} title="Сводка для тренера" className="p-3 bg-zinc-900 rounded-xl text-zinc-400 hover:text-blue-500"><Target className="w-6 h-6" /></button>
-      <button onClick={onAnalytics} className="p-3 bg-zinc-900 rounded-xl text-zinc-400 hover:text-blue-500"><Activity className="w-6 h-6" /></button>
-      <button onClick={onSettings} className="p-3 bg-zinc-900 rounded-xl text-zinc-400 hover:text-blue-500"><Settings className="w-6 h-6" /></button>
+      {!plan.length && <p className="text-sm text-zinc-400">Добавьте первое упражнение из справочника.</p>}
+      <Button onClick={onFinishWorkout} variant="secondary" className="w-full min-h-12">Завершить тренировку</Button>
+      <Button onClick={onHistory} variant="ghost" className="w-full min-h-11">История тренировок</Button>
+    </>}
+    <div className="flex flex-wrap gap-x-4 border-t border-zinc-800 pt-3">
+      <button onClick={onSummary} className="min-h-11 text-sm text-zinc-300">Сводка для тренера</button>
+      <button onClick={onAnalytics} className="min-h-11 text-sm text-zinc-300">Статистика</button>
+      {!workoutActive && <button onClick={onAllExercises} className="min-h-11 text-sm text-zinc-300">Справочник упражнений</button>}
     </div>
-    <div className="flex flex-col space-y-2">
-      {groups.map((group: string) => (
-        <Card key={group} onClick={() => onSelectGroup(group)} className="flex items-center p-4 hover:bg-zinc-800 transition-colors active:scale-95 cursor-pointer">
-          <div className="w-12 h-12 rounded-xl bg-zinc-800 flex items-center justify-center text-zinc-500 flex-shrink-0"><Dumbbell className="w-6 h-6" /></div>
-          <span className="font-medium text-zinc-200 text-lg ml-4 flex-1">{group}</span>
-          <ChevronRight className="w-6 h-6 text-zinc-600" />
-        </Card>
-      ))}
-    </div>
-    <Button onClick={onAllExercises} variant="secondary" className="w-full h-14 text-lg">Все упражнения</Button>
-  </motion.div>
+  </div>
 );
 
 const ExercisesListScreen = ({ exercises, title, restBanner, onBack, onSelectExercise, onAddExercise, onEditExercise, searchQuery, onSearch }: any) => {
@@ -1283,7 +1224,7 @@ const ExercisesListScreen = ({ exercises, title, restBanner, onBack, onSelectExe
 const readSavedWorkout = () => {
   try {
     const saved = JSON.parse(localStorage.getItem(WORKOUT_STORAGE_KEY) || 'null');
-    if (saved && saved.timestamp && Date.now() - saved.timestamp < 86400000) return saved;
+    if (saved && saved.timestamp && (localStorage.getItem(ACTIVE_WORKOUT_KEY) || Date.now() - saved.timestamp < 86400000)) return saved;
   } catch (_) {}
   return null;
 };
@@ -1352,9 +1293,8 @@ const cardioRow = (minutes: unknown, like?: { minutes?: unknown; speed?: unknown
   incline: like?.incline != null && like.incline !== '' ? String(like.incline) : '',
 });
 
-const WorkoutScreen = ({ initialExercise, allExercises, restBanner, planDefaults = null, onBack, onFinish, onSetStarted, sessionId, location, incrementOrder, ensureOrderAtLeast, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates = DEFAULT_PLATES, haptic, notify }: any) => {
-
-  const timer = useTimer();
+const WorkoutScreen = ({ initialExercise, allExercises, clock, onClockChange, stepTitle, onReplace, onSkip, onWorkoutOverview, onResumeRunning, onGroupChange, planDefaults = null, onBack, onFinish, sessionId, location, incrementOrder, ensureOrderAtLeast, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates = DEFAULT_PLATES, haptic, notify }: any) => {
+  const blockKey = (id: string) => draftKey(id, planDefaults?.blockId);
   const savedWorkoutRef = useRef<any>(null);
   if (savedWorkoutRef.current === null) {
     savedWorkoutRef.current = readSavedWorkout() || false;
@@ -1362,20 +1302,22 @@ const WorkoutScreen = ({ initialExercise, allExercises, restBanner, planDefaults
   const savedWorkout = savedWorkoutRef.current || null;
   // Блок упражнения переживает переход к другому упражнению и обратно: сохранёнка
   // держит всю тренировку, а не только последний открытый экран.
-  const savedBlock = savedWorkout?.exercises?.[initialExercise.id] || null;
+  const savedBlock = savedWorkout?.exercises?.[blockKey(initialExercise.id)] || null;
   const savedGroupId: string | null =
-    savedBlock?.setGroupId ||
+    planDefaults?.blockId || savedBlock?.setGroupId ||
     (Array.isArray(savedWorkout?.activeExercises) && savedWorkout.activeExercises.includes(initialExercise.id)
       ? savedWorkout?.setGroupId || null
       : null);
 
   const [setGroupId] = useState(() => savedGroupId || crypto.randomUUID());
   const [activeExercises, setActiveExercises] = useState<string[]>(() => {
+    if (planDefaults?.templates?.length) return planDefaults.templates.map((t: any) => t.exerciseId);
     const saved = savedWorkout?.activeExercises;
     // Суперсет восстанавливаем целиком — он делит один setGroupId.
     if (savedGroupId && Array.isArray(saved) && saved.length > 1 && saved.includes(initialExercise.id)) return saved;
     return [initialExercise.id];
   });
+  useEffect(() => { if (planDefaults?.blockId) onGroupChange?.(activeExercises); }, [activeExercises]);
   const dirtyExercises = useRef(new Set<string>());
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [supersetSearchQuery, setSupersetSearchQuery] = useState('');
@@ -1393,20 +1335,27 @@ const WorkoutScreen = ({ initialExercise, allExercises, restBanner, planDefaults
     const exercise = allExercises.find((e: Exercise) => e.id === exId);
     // Значения плана — только для упражнения, с которого экран открыли.
     const plan: PlanDefaults | null = exId === initialExercise.id ? planDefaults : null;
-    const savedEx = savedWorkoutRef.current?.exercises?.[exId];
+    const savedEx = savedWorkoutRef.current?.exercises?.[blockKey(exId)];
+    // An unfinished draft from an older build keeps its input units.
+    const entryExercise = savedEx ? { ...exercise, ...(savedEx.entryRules ? rulesAsExercise(savedEx.entryRules) : { inputMode: undefined }) } as Exercise : forNewEntry(exercise!);
     if (savedEx && Array.isArray(savedEx.sets) && savedEx.sets.length > 0) {
       let sets: WorkoutSet[] = savedEx.sets;
       // Заминка на тренажёре разминки: разминка уже отмечена — к ней
       // добавляется новый отрезок, а не открывается она же ещё раз.
       if (shouldAppendCardio(exercise!, sets, !!plan?.append)) sets = [...sets, cardioRow(plan?.minutes, sets[sets.length - 1])];
-      return { exercise: exercise!, note: savedEx.note ?? note ?? '', history, cardioHistory: cardio, sets, sessionId };
+      return { exercise: entryExercise, note: savedEx.note ?? note ?? '', history, cardioHistory: cardio, sets, sessionId };
+    }
+    const template = planDefaults?.templates?.find((t: any) => t.exerciseId === exId);
+    if (template) {
+      const sets = templateSets(template, entryExercise, bodyWeight);
+      return { exercise: entryExercise, note: note || '', history, cardioHistory: cardio, sets: sets.length ? sets : [blankSet()], sessionId };
     }
     if (exercise?.measure === 'cardio') {
       const last = lastCardioSession(cardio);
       const initialSegments = plan?.minutes
         ? [cardioRow(plan.minutes, plan.append ? last[last.length - 1] : last[0])]
         : [cardioRow(null, last[0])];
-      return { exercise, note: note || '', history, cardioHistory: cardio, sets: initialSegments, sessionId };
+      return { exercise: entryExercise, note: note || '', history, cardioHistory: cardio, sets: initialSegments, sessionId };
     }
     let initialSets: WorkoutSet[] = [];
     // Шаблон берём с прошлой тренировки. Сегодняшние подходы уже в журнале:
@@ -1422,14 +1371,13 @@ const WorkoutScreen = ({ initialExercise, allExercises, restBanner, planDefaults
         id: crypto.randomUUID(),
         // Если настройки упражнения с тех пор менялись, прошлый итог
         // переводится в нынешние единицы ввода, а не копируется число.
-        weight: String(carryOverInput(h, allExercises.find((e: Exercise) => e.id === exId), bodyWeight)),
+        weight: String(carryOverInput(h, entryExercise, bodyWeight)),
         reps: h.reps.toString(),
         rest: h.rest.toString(),
         completed: false,
         prevWeight: h.weight,
         setType: (h.set_type as SetType) || 'working',
-        rpe: h.rpe,
-        rir: h.rir
+        load: loadRulesOf(entryExercise, bodyWeight),
       }));
     } else {
       initialSets = [blankSet()];
@@ -1441,7 +1389,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, restBanner, planDefaults
         ...blankSet(), weight: like?.weight ?? '0', reps: String(plan.reps ?? like?.reps ?? ''), rest: like?.rest ?? '', setType: 'working' as SetType,
       }));
     }
-    return { exercise: exercise!, note: note || '', history, sets: initialSets, sessionId };
+    return { exercise: entryExercise, note: note || '', history, sets: initialSets, sessionId };
   };
 
   const [sessionData, setSessionData] = useState<Record<string, ExerciseSessionData>>(() =>
@@ -1452,7 +1400,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, restBanner, planDefaults
     activeExercises.forEach(id => {
       const cached = historyLoader.peek(id);
       setSessionData(prev => prev[id] ? prev : { ...prev, [id]: buildExerciseData(id, cached) });
-      const restored = savedWorkoutRef.current?.exercises?.[id];
+      const restored = savedWorkoutRef.current?.exercises?.[blockKey(id)];
       if (Array.isArray(restored?.sets)) ensureOrderAtLeast?.(Math.max(0, ...restored.sets.map((s: WorkoutSet) => s.order || 0)));
       void api.getHistory(id).then(fresh => {
         if (!active) return;
@@ -1481,12 +1429,14 @@ const WorkoutScreen = ({ initialExercise, allExercises, restBanner, planDefaults
       // должны пережить переход к следующему упражнению и обратно.
       const blocks: Record<string, unknown> = { ...(readSavedWorkout()?.exercises || {}) };
       Object.entries(sessionData).forEach(([id, d]) => {
-        blocks[id] = { sets: d.sets, note: d.note, setGroupId };
+        blocks[blockKey(id)] = { exerciseId: id, sets: d.sets, note: d.note, setGroupId, entryRules: loadRulesOf(d.exercise, bodyWeight) };
       });
       localStorage.setItem(WORKOUT_STORAGE_KEY, JSON.stringify({
         timestamp: Date.now(),
         setGroupId,
         activeExercises,
+        activeBlockId: planDefaults?.blockId,
+        sessionId,
         exercises: blocks,
       }));
       // Открытое упражнение = тренировка де-факто идёт: отмечаем её активной,
@@ -1511,17 +1461,16 @@ const WorkoutScreen = ({ initialExercise, allExercises, restBanner, planDefaults
     return total;
   }, [sessionData, activeExercises, allExercises, bodyWeight]);
 
-  const [restTarget, setRestTarget] = useState<number | null>(null);
-  const restAlerted = useRef(false);
-
-  useEffect(() => {
-    if (!restTarget || !timer.isRunning || restAlerted.current) return;
-    if (timer.time >= restTarget) {
-      restAlerted.current = true;
-      haptic('heavy');
-      notify('warning');
-    }
-  }, [timer.time, restTarget, timer.isRunning]);
+  const runningSet = clock?.kind === 'set' && activeExercises.includes(clock.exerciseId)
+    && clock.blockKey === blockKey(clock.exerciseId)
+    ? { exId: clock.exerciseId, set: sessionData[clock.exerciseId]?.sets.find((s: WorkoutSet) => s.id === clock.setId && !s.completed) } : null;
+  const nextSet = activeExercises.map(exId => ({ exId, set: sessionData[exId]?.sets.find(s => !s.completed) }))
+    .find(item => item.set && !isCardio(item.exId));
+  const beginSet = (exId: string, setId: string) => {
+    if (clock?.kind === 'set') { notify('warning'); return; }
+    onClockChange(startSetClock(clock, sessionId, blockKey(exId), exId, setId));
+    haptic('light');
+  };
 
   const handleCompleteSet = (exId: string, setId: string) => {
     dirtyExercises.current.add(exId);
@@ -1534,12 +1483,14 @@ const WorkoutScreen = ({ initialExercise, allExercises, restBanner, planDefaults
       setSessionData(prev => ({ ...prev, [exId]: { ...prev[exId], sets: prev[exId].sets.map(s => s.id === setId ? { ...s, completed: false } : s) } }));
       return;
     }
-    const exercise = allExercises.find((e: Exercise) => e.id === exId);
+    const exercise = sessionData[exId].exercise;
     const cardio = exercise?.measure === 'cardio';
     const seconds = cardio ? durationSeconds(set.minutes) : null;
     if (cardio ? seconds === null : (!set.weight || !set.reps)) { notify('error'); return; }
 
     const isEdit = !!set.requestId;
+    const ended = Date.now();
+    const timing = cardio ? undefined : isEdit ? set.timing : completeSetTiming(clock, sessionId, blockKey(exId), setId, ended);
     const inputWeight = parseFloat(set.weight);
     const payload = { ...(location ? { location } : {}), ...(cardio ? {
       kind: 'cardio',
@@ -1554,7 +1505,9 @@ const WorkoutScreen = ({ initialExercise, allExercises, restBanner, planDefaults
       exercise_name: exercise?.name,
       input_weight: inputWeight,
       weight: calcEffectiveWeight(exercise, inputWeight, bodyWeight),
-      load: loadRulesOf(exercise, bodyWeight),
+      load: set.load || loadRulesOf(exercise, bodyWeight),
+      ...(timing ? { timing } : {}),
+      ...(!isEdit ? { performed_at: new Date(ended).toISOString() } : {}),
       reps: parseInt(set.reps),
       rest: parseFloat(set.rest) || 0,
       note: sessionData[exId].note,
@@ -1570,11 +1523,11 @@ const WorkoutScreen = ({ initialExercise, allExercises, restBanner, planDefaults
     try {
       if (isEdit) {
         api.updateSet({ ...payload, client_request_id: set.requestId, order: set.order });
-        saved = { ...set, completed: true };
+        saved = { ...set, completed: true, timing, load: set.load || loadRulesOf(exercise, bodyWeight) };
       } else {
         const order = incrementOrder();
-        const requestId = api.saveSet({ ...payload, order });
-        saved = { ...set, completed: true, requestId, order };
+        const requestId = api.saveSet({ ...payload, order, client_request_id: set.id });
+        saved = { ...set, completed: true, requestId, order, timing, load: loadRulesOf(exercise, bodyWeight) };
       }
     } catch (e) {
       notify('error');
@@ -1583,16 +1536,12 @@ const WorkoutScreen = ({ initialExercise, allExercises, restBanner, planDefaults
     // Черновик переписываем сразу, не дожидаясь рендера: закрытие приложения
     // между очередью и эффектом оставило бы подход без requestId, и повторная
     // галочка записала бы его второй раз.
-    writeDraftSet(exId, saved);
-    setSessionData(prev => ({ ...prev, [exId]: { ...prev[exId], sets: prev[exId].sets.map(s => s.id === setId ? { ...s, completed: true, requestId: saved.requestId, order: saved.order } : s) } }));
+    writeDraftSet(blockKey(exId), saved);
+    setSessionData(prev => ({ ...prev, [exId]: { ...prev[exId], sets: prev[exId].sets.map(s => s.id === setId ? saved : s) } }));
 
     haptic('medium');
-    onSetStarted?.();
     if (!isEdit && !cardio) {
-      const restMs = (parseFloat(set.rest) || 0) * 60_000;
-      setRestTarget(restMs > 0 ? restMs : null);
-      restAlerted.current = false;
-      timer.resetAndStart();
+      onClockChange(nextRestClock(sessionId, parseFloat(set.rest) || 0, ended));
     }
     notify('success');
   };
@@ -1626,7 +1575,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, restBanner, planDefaults
         return;
       }
       patchDraft((draft) => {
-        const block = draft.exercises[exId];
+        const block = draft.exercises[blockKey(exId)];
         if (block && Array.isArray(block.sets)) block.sets = block.sets.filter((s: WorkoutSet) => s.id !== setId);
       });
       haptic('medium');
@@ -1639,6 +1588,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, restBanner, planDefaults
         : filteredSets;
       return { ...prev, [exId]: { ...prev[exId], sets: finalSets } };
     });
+    if (clock?.setId === setId && clock.blockKey === blockKey(exId)) onClockChange(cancelSetClock(clock));
   };
 
   // Упражнение, которое просят убрать из тренировки, пока ждёт подтверждения.
@@ -1653,9 +1603,10 @@ const WorkoutScreen = ({ initialExercise, allExercises, restBanner, planDefaults
       return;
     }
     patchDraft((draft) => {
-      delete draft.exercises[exId];
+      delete draft.exercises[blockKey(exId)];
       if (Array.isArray(draft.activeExercises)) draft.activeExercises = draft.activeExercises.filter((id: string) => id !== exId);
     });
+    if (clock?.exerciseId === exId && clock.blockKey === blockKey(exId)) onClockChange(cancelSetClock(clock));
     setRemoveTarget(null);
     haptic('medium');
     const remaining = activeExercises.filter(id => id !== exId);
@@ -1676,17 +1627,28 @@ const WorkoutScreen = ({ initialExercise, allExercises, restBanner, planDefaults
 
   return (
     <div className="min-h-screen bg-zinc-950 pb-20">
-      <TimerBlock timer={timer} onToggle={() => { if (timer.isRunning) { timer.reset(); setRestTarget(null); } else { timer.start(); } }} sessionTonnage={sessionTonnage} restTarget={restTarget} />
-      {restBanner && <div className="px-4 mb-4">{restBanner}</div>}
+      <div className="sticky top-0 z-40 bg-zinc-950 px-4 pb-3 pt-safe-2">
+        <div className="flex items-center justify-between gap-3 py-3 text-sm text-zinc-300"><span>{stepTitle || 'Тренировка'}</span><button onClick={onWorkoutOverview} className="min-h-11 text-blue-300">Вся тренировка</button></div>
+        {(nextSet || runningSet?.set || clock) && <WorkoutClockPanel clock={clock} runningHere={!!runningSet?.set}
+          perSide={!!runningSet && sessionData[runningSet.exId]?.exercise.unilateral}
+          onStart={nextSet && clock?.kind !== 'set' ? () => beginSet(nextSet.exId, nextSet.set!.id) : undefined}
+          onContinue={clock?.kind === 'set' && !runningSet?.set ? onResumeRunning : undefined}
+          onComplete={runningSet?.set ? () => handleCompleteSet(runningSet.exId, runningSet.set!.id) : undefined}
+          onCancel={() => onClockChange(cancelSetClock(clock))} notify={() => { haptic('heavy'); notify('warning'); }} />}
+      </div>
       <div className="px-4 space-y-4">
         {activeExercises.map(exId => {
           const data = sessionData[exId];
           if (!data) return <div key={exId} className="h-40 bg-zinc-900 rounded-2xl animate-pulse" />;
           if (isCardio(exId)) return <CardioCard key={exId} exerciseData={data} syncMarks={syncMarks} onAddSet={() => handleAddSet(exId)} onUpdateSet={(sid: string, f: string, v: string) => handleUpdateSet(exId, sid, f, v)} onDeleteSet={(sid: string) => handleDeleteSet(exId, sid)} onCompleteSet={(sid: string) => handleCompleteSet(exId, sid)} onRemove={() => requestRemoveExercise(exId)} />;
-          return <WorkoutCard key={exId} exerciseData={data} bodyWeight={bodyWeight} plates={plates} syncMarks={syncMarks} onAddSet={() => handleAddSet(exId)} onUpdateSet={(sid: string, f: string, v: string) => handleUpdateSet(exId, sid, f, v)} onDeleteSet={(sid: string) => handleDeleteSet(exId, sid)} onCompleteSet={(sid: string) => handleCompleteSet(exId, sid)} onNoteChange={(val: string) => { dirtyExercises.current.add(exId); setSessionData(p => ({...p, [exId]: {...p[exId], note: val}})); }} onAddSuperset={() => setIsAddModalOpen(true)} onRemove={() => requestRemoveExercise(exId)} />;
+          return <WorkoutCard key={exId} exerciseData={data} bodyWeight={bodyWeight} plates={plates} syncMarks={syncMarks} onAddSet={() => handleAddSet(exId)} onUpdateSet={(sid: string, f: string, v: string) => handleUpdateSet(exId, sid, f, v)} onDeleteSet={(sid: string) => handleDeleteSet(exId, sid)} onCompleteSet={(sid: string) => handleCompleteSet(exId, sid)} onStartSet={activeExercises.length > 1 ? (sid: string) => beginSet(exId, sid) : undefined} onNoteChange={(val: string) => { dirtyExercises.current.add(exId); setSessionData(p => ({...p, [exId]: {...p[exId], note: val}})); }} onAddSuperset={() => setIsAddModalOpen(true)} onRemove={() => requestRemoveExercise(exId)} />;
         })}
       </div>
-      <div className="px-4 mt-8 mb-20"><Button variant="primary" onClick={onFinish} className="w-full h-14 text-lg font-semibold shadow-xl shadow-blue-900/20">Завершить упражнение</Button></div>
+      <div className="px-4 mt-6 mb-20 space-y-2">
+        <Button variant="primary" onClick={onFinish} className="w-full h-14 text-lg font-semibold">{stepTitle ? 'Завершить и перейти дальше' : 'Завершить упражнение'}</Button>
+        {onReplace && <Button variant="secondary" onClick={onReplace} icon={Replace} className="w-full min-h-12">Заменить упражнение</Button>}
+        {onSkip && <Button variant="ghost" onClick={onSkip} className="w-full min-h-12">Пропустить оставшееся</Button>}
+      </div>
       <Modal isOpen={!!removeTarget} onClose={() => setRemoveTarget(null)} title="Убрать упражнение?">
         {removeTarget && (
           <div className="space-y-4">
@@ -1733,12 +1695,11 @@ const WorkoutScreen = ({ initialExercise, allExercises, restBanner, planDefaults
           </div>
         </div>
       </Modal>
-      <div className="fixed bottom-6 left-6 z-20"><button onClick={onBack} className="w-12 h-12 rounded-full bg-zinc-800 text-zinc-400 flex items-center justify-center border border-zinc-700 shadow-lg hover:text-white"><ArrowLeft className="w-6 h-6" /></button></div>
     </div>
   );
 };
 
-const HistoryScreen = ({ onBack, allExercises = [], bodyWeight = USER_BODY_WEIGHT_DEFAULT, notify, haptic, focusSessionId = null }: any) => {
+const HistoryScreen = ({ onBack, onRepeat, allExercises = [], bodyWeight = USER_BODY_WEIGHT_DEFAULT, notify, haptic, focusSessionId = null }: any) => {
   const [history, setHistory] = useState<GlobalWorkoutSession[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [editTarget, setEditTarget] = useState<any>(null);
@@ -1751,8 +1712,16 @@ const HistoryScreen = ({ onBack, allExercises = [], bodyWeight = USER_BODY_WEIGH
   const [focusState, setFocusState] = useState<'idle' | 'searching' | 'missing'>('idle');
   const focusRef = useRef<HTMLDivElement | null>(null);
 
-  const refresh = () => api.getGlobalHistory().then(data => setHistory(data));
-  useEffect(() => { refresh(); }, []);
+  const refresh = () => api.getGlobalHistory().then(data => {
+    setHistory(data);
+    setExpandedId(previous => data.find(row => row.id === previous || row.clientSessionId === previous)?.id || previous);
+  });
+  useEffect(() => {
+    refresh();
+    const afterSync = () => { if (getPendingCount() === 0) void refresh(); };
+    window.addEventListener(QUEUE_CHANGED_EVENT, afterSync);
+    return () => window.removeEventListener(QUEUE_CHANGED_EVENT, afterSync);
+  }, []);
 
   // Deep link from HealthOS. The backend is asked first — that call, not the
   // presence of the id in the local list, is what establishes ownership.
@@ -1826,6 +1795,15 @@ const HistoryScreen = ({ onBack, allExercises = [], bodyWeight = USER_BODY_WEIGH
     if (res && res.status === 'success') { haptic?.('medium'); notify?.('success'); setEditTarget(null); refresh(); }
     else { notify?.('error'); }
   };
+  const excludeTiming = () => {
+    if (!editTarget) return;
+    try {
+      api.updateSet({ ...locator(editTarget), timing: null });
+      const next = pendingTimingEdits(history, getQueue());
+      localStorage.setItem(GLOBAL_HISTORY_CACHE_KEY, JSON.stringify(next));
+      setHistory(next); setEditTarget(null); notify?.('success');
+    } catch { notify?.('error'); }
+  };
 
   const deleteDayConfirmed = async () => {
     if (!deleteDay || busy) return;
@@ -1862,7 +1840,7 @@ const HistoryScreen = ({ onBack, allExercises = [], bodyWeight = USER_BODY_WEIGH
               </div>
               <div className="flex items-center gap-1">
                 {expandedId === w.id && (
-                  <button onClick={(e) => { e.stopPropagation(); setDeleteDay({ date: w.date, sessionId: w.id }); }} className="p-2 text-zinc-600 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>
+                  <button disabled={w.pendingLocal} aria-label="Удалить тренировку" onClick={(e) => { e.stopPropagation(); setDeleteDay({ date: w.date, sessionId: w.id }); }} className="min-h-11 min-w-11 text-zinc-400 disabled:opacity-30 hover:text-red-400"><Trash2 className="mx-auto w-4 h-4" /></button>
                 )}
                 <ChevronDown className={`w-5 h-5 text-zinc-500 transition-transform ${expandedId === w.id ? 'rotate-180' : ''}`} />
               </div>
@@ -1872,7 +1850,7 @@ const HistoryScreen = ({ onBack, allExercises = [], bodyWeight = USER_BODY_WEIGH
                 <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }} className="border-t border-zinc-800 bg-zinc-900/30 overflow-hidden">
                   <label className="flex items-center justify-between gap-3 p-4 text-sm text-zinc-300">
                     Место тренировки
-                    <select aria-label={`Место тренировки ${w.date}`} value={w.location || ''} className="min-h-11 rounded-lg bg-zinc-800 px-3 text-zinc-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500" onChange={e => {
+                    <select disabled={w.pendingLocal} aria-label={`Место тренировки ${w.date}`} value={w.location || ''} className="min-h-11 rounded-lg bg-zinc-800 px-3 text-zinc-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500" onChange={e => {
                       const location = (e.target.value || null) as WorkoutLocation | null;
                       try {
                         api.updateSession(w.id, location);
@@ -1884,6 +1862,9 @@ const HistoryScreen = ({ onBack, allExercises = [], bodyWeight = USER_BODY_WEIGH
                       {Object.entries(LOCATION_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                     </select>
                   </label>
+                  <div className="px-4 pb-4"><Button onClick={() => onRepeat(w)} icon={Repeat2} className="w-full min-h-12">Повторить тренировку</Button>
+                    {w.pendingLocal && <p className="mt-2 text-sm text-zinc-300">Сохранено на устройстве. Изменение истории станет доступно после синхронизации.</p>}
+                  </div>
                   {w.exercises && w.exercises.length > 0 ? (
                     w.exercises.map((ex: any, i: number) => {
                       const isSuperset = !!ex.supersetId;
@@ -1911,7 +1892,7 @@ const HistoryScreen = ({ onBack, allExercises = [], bodyWeight = USER_BODY_WEIGH
                           ) : ex.sets && Array.isArray(ex.sets) && ex.sets.length > 0 ? (
                             <div className="space-y-1">
                               {ex.sets.map((s: any, j: number) => (
-                                <button key={j} onClick={() => openEdit(s, ex)} className="w-full px-2 py-1 bg-zinc-800/30 rounded flex items-center justify-between text-left active:bg-zinc-800/60">
+                                <button key={j} disabled={w.pendingLocal} onClick={() => openEdit(s, ex)} className="w-full min-h-11 px-2 py-1 bg-zinc-800/30 rounded flex items-center justify-between text-left active:bg-zinc-800/60">
                                   <SetDisplayRow
                                     weightText={setLoadLabel(s, allExercises.find((e: Exercise) => e.id === ex.exerciseId), bodyWeight)}
                                     reps={s.reps}
@@ -1919,6 +1900,8 @@ const HistoryScreen = ({ onBack, allExercises = [], bodyWeight = USER_BODY_WEIGH
                                     setType={s.set_type}
                                     rpe={s.rpe}
                                     rir={s.rir}
+                                    durationSeconds={s.timing?.duration_seconds}
+                                    restBeforeSeconds={s.timing?.rest_before_seconds}
                                   />
                                   <Pencil className="w-3.5 h-3.5 text-zinc-600 flex-shrink-0 ml-2" />
                                 </button>
@@ -1946,6 +1929,7 @@ const HistoryScreen = ({ onBack, allExercises = [], bodyWeight = USER_BODY_WEIGH
               <div><label className="text-[10px] text-zinc-500 mb-1 block uppercase">Мин</label><Input type="number" inputMode="decimal" value={editRest} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditRest(e.target.value)} /></div>
             </div>
             <Button className="w-full h-12" onClick={saveEdit}>{busy ? 'Сохраняю…' : 'Сохранить'}</Button>
+            {editTarget.set.timing?.duration_seconds != null && <Button variant="secondary" className="w-full min-h-12" onClick={excludeTiming}>Исключить замер времени</Button>}
             <Button variant="secondary" className="w-full h-12 text-red-400" onClick={deleteEditSet}>Удалить подход</Button>
           </div>
         )}
@@ -2181,7 +2165,7 @@ const EditExerciseModal = ({ isOpen, onClose, exercise, groups, onSave }: any) =
             <Input type="number" step="0.01" value={weightMultiplier} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setWeightMultiplier(e.target.value)} placeholder="1" />
           </div>
         </div>
-        <div className="text-xs text-zinc-500 -mt-3">Множитель 2 — ввод «блины на сторону» или вес одной гантели. Для «Свой вес» — доля веса тела (0.68 для отжиманий).</div>
+        <div className="text-xs text-zinc-400 -mt-3">В новых подходах штанга вводится целиком с грифом, блиновый тренажёр — суммой всех блинов без каретки. Множитель 2 у гантелей учитывает пару. Старые подходы сохраняют свои правила.</div>
         </>)}
         <div>
           <label className="text-sm text-zinc-400 mb-1 block">Вторичные мышцы</label>
@@ -2236,30 +2220,32 @@ const App = () => {
   ));
 
   const [workoutActive, setWorkoutActive] = useState(() => !!localStorage.getItem(ACTIVE_WORKOUT_KEY));
-  const [exerciseRest, setExerciseRest] = useState<number | null>(() => {
-    try { return readExerciseRest(localStorage.getItem(EXERCISE_REST_KEY), localStorage.getItem(SESSION_ID_KEY) || '')?.startedAt ?? null; }
-    catch { return null; }
+  const [clock, setClock] = useState<WorkoutClock | null>(() => {
+    const sid = localStorage.getItem(SESSION_ID_KEY) || '';
+    const saved = readClock(localStorage.getItem(WORKOUT_CLOCK_KEY), sid);
+    if (saved) return saved;
+    const legacy = readExerciseRest(localStorage.getItem(EXERCISE_REST_KEY), sid);
+    return legacy ? { sessionId: sid, kind: 'rest', since: legacy.startedAt, betweenExercises: true } : null;
   });
-  const stopExerciseRest = () => {
-    setExerciseRest(null);
-    try { localStorage.removeItem(EXERCISE_REST_KEY); } catch { /* storage unavailable */ }
+  const [activeStepKey, setActiveStepKey] = useState<string | undefined>(() => {
+    try { return JSON.parse(localStorage.getItem(ACTIVE_WORKOUT_KEY) || 'null')?.currentStepKey; } catch { return undefined; }
+  });
+  const [selection, setSelection] = useState<{ kind: 'add' | 'replace'; key?: string } | null>(null);
+  const [pendingRepeat, setPendingRepeat] = useState<GlobalWorkoutSession | null>(null);
+  const [workoutError, setWorkoutError] = useState('');
+  const changeClock = (value: WorkoutClock | null) => {
+    try {
+      if (value) localStorage.setItem(WORKOUT_CLOCK_KEY, JSON.stringify(value));
+      else localStorage.removeItem(WORKOUT_CLOCK_KEY);
+      localStorage.removeItem(EXERCISE_REST_KEY);
+      setClock(value);
+    } catch { setWorkoutError('Не удалось сохранить таймер на устройстве. Освободите место и повторите.'); }
   };
+  const stopExerciseRest = () => changeClock(null);
   useEffect(() => {
-    if (!sessionId) return;
-    try {
-      if (!readExerciseRest(localStorage.getItem(EXERCISE_REST_KEY), sessionId)) stopExerciseRest();
-    } catch { stopExerciseRest(); }
+    if (sessionId && clock && clock.sessionId !== sessionId) changeClock(null);
   }, [sessionId]);
-  const finishExercise = () => {
-    const startedAt = Date.now();
-    setExerciseRest(startedAt);
-    try {
-      localStorage.setItem(EXERCISE_REST_KEY, JSON.stringify({ startedAt, sessionId }));
-      // Do not reopen a finished exercise when the app is launched again.
-      patchDraft(draft => { draft.activeExercises = []; });
-    } catch { /* the timer still works in memory */ }
-    setScreen(planDefaults && !planDefaults.catalogue ? 'home' : 'exercises');
-  };
+  const finishExercise = () => finishStep(activeStepKey, 'done');
   const [preset, setPreset] = useState<WorkoutPreset>(readPreset);
   const [presetDraft, setPresetDraft] = useState<any>(preset);
   const [plan, setPlan] = useState<PlanItem[]>(readPlan);
@@ -2332,43 +2318,130 @@ const App = () => {
     }
   }, [screen]);
 
-  const startWorkout = () => {
-    stopExerciseRest();
-    // Пресет только строит план: результаты появятся, когда их отметят.
-    const next = planFromPreset(preset);
-    localStorage.setItem(ACTIVE_WORKOUT_KEY, JSON.stringify({ startedAt: Date.now(), plan: next }));
+  const persistPlan = (next: PlanItem[]) => {
+    const active = JSON.parse(localStorage.getItem(ACTIVE_WORKOUT_KEY) || 'null');
+    if (!active) throw new Error('Тренировка не начата');
+    localStorage.setItem(ACTIVE_WORKOUT_KEY, JSON.stringify({ ...active, plan: next }));
     setPlan(next);
-    setPlanDone(next.map(() => false));
-    setWorkoutActive(true);
-    haptic('medium');
+    setPlanDone(next.map(item => planItemDone(item, next, readSavedWorkout())));
   };
 
   const openPlanItem = (item: PlanItem) => {
     const exercise = allExercises.find(ex => ex.id === item.exerciseId);
-    if (!exercise) { notify('error'); return; }
-    haptic('light');
-    const defaults = planDefaultsFor(item, plan);
-    setPlanDefaults(planItemDone(item, plan, readSavedWorkout()) ? { ...defaults, append: false } : defaults);
+    if (!exercise) { setWorkoutError('Упражнения больше нет в справочнике. Замените его в списке тренировки.'); setScreen('home'); return; }
+    const active = JSON.parse(localStorage.getItem(ACTIVE_WORKOUT_KEY) || 'null');
+    if (active) localStorage.setItem(ACTIVE_WORKOUT_KEY, JSON.stringify({ ...active, currentStepKey: item.key }));
+    setActiveStepKey(item.key);
+    setPlanDefaults(planDefaultsFor(item, plan));
     setCurrentExercise(exercise);
     setScreen('workout');
+    haptic('light');
   };
 
+  const finishStep = (key: string | undefined, status: 'done' | 'skipped') => {
+    if (clock?.kind === 'set') { setWorkoutError('Завершите начатый подход или отмените его замер.'); return; }
+    changeClock(betweenExercises(clock));
+    patchDraft(draft => { draft.activeExercises = []; draft.activeBlockId = undefined; });
+    const next = plan.map(item => item.key === key ? { ...item, status } : item);
+    if (localStorage.getItem(ACTIVE_WORKOUT_KEY)) persistPlan(next);
+    const following = nextStep(next, key);
+    if (following) openPlanItem(following);
+    else { setCurrentExercise(null); setScreen('home'); }
+  };
+
+  const beginWorkout = (source?: GlobalWorkoutSession, bypassActive = false) => {
+    if ((workoutActive || localStorage.getItem(ACTIVE_WORKOUT_KEY)) && !bypassActive) { if (source) setPendingRepeat(source); return; }
+    try {
+      const next = source ? repeatPlan(source) : planFromPreset(preset);
+      if (source && !next.length) throw new Error('В этой тренировке нет упражнений для повторения.');
+      const id = crypto.randomUUID();
+      const place = source?.location || 'gym';
+      const startedAt = Date.now();
+      const active = { sessionId: id, startedAt, plan: next, sourceDate: source?.date,
+        sourceSessionId: source?.id, currentStepKey: next[0]?.key };
+      // Persist the new draft before exposing it or attempting a network request.
+      localStorage.setItem(WORKOUT_STORAGE_KEY, JSON.stringify({ sessionId: id, timestamp: startedAt, activeExercises: [], exercises: {} }));
+      localStorage.setItem(ACTIVE_WORKOUT_KEY, JSON.stringify(active));
+      resetSession(id, place);
+      api.saveSession({ session_id: id, started_at: new Date(startedAt).toISOString(), location: place,
+        ...(source?.id ? { repeated_from_session_id: source.id } : {}) });
+      changeClock(null); setPlan(next); setPlanDone(next.map(() => false)); setWorkoutActive(true);
+      setPendingRepeat(null); setWorkoutError('');
+      if (next[0]) openPlanItem(next[0]); else setScreen('home');
+    } catch (error) { setWorkoutError(error instanceof Error ? error.message : 'Не удалось начать тренировку.'); }
+  };
+  const startWorkout = () => beginWorkout();
+
+  const chooseExercise = (kind: 'add' | 'replace', key?: string) => {
+    if (kind === 'replace' && clock?.kind === 'set') { setWorkoutError('Завершите начатый подход или отмените его замер перед заменой.'); return; }
+    setSelection({ kind, key }); setSearchQuery(''); setSelectedGroup(null); setScreen('exercises');
+  };
+  const selectExercise = (exercise: Exercise) => {
+    if (selection || workoutActive) {
+      try {
+        const history = historyLoader.peek(exercise.id);
+        const date = history.history[0]?.date || history.cardio[0]?.date;
+        const item = repeatPlan({ date, exercises: [{ exerciseId: exercise.id, name: exercise.name,
+          sets: history.history.filter(s => s.date === date), cardio: history.cardio.filter(s => s.date === date) }] })[0];
+        const next = selection?.kind === 'replace' && selection.key
+          ? replaceStep(plan, selection.key, item, readSavedWorkout()) : [...plan, item];
+        persistPlan(next); setSelection(null); openPlanItem(item);
+      } catch { setWorkoutError('Не удалось добавить упражнение.'); }
+      return;
+    }
+    setPlanDefaults(isRepeatableTreadmill(exercise) ? { append: true, catalogue: true } : null);
+    setCurrentExercise(exercise); setScreen('workout');
+  };
+  const moveStep = (index: number, direction: number) => {
+    const next = [...plan]; const target = index + direction;
+    if (target < 0 || target >= next.length) return;
+    [next[index], next[target]] = [next[target], next[index]]; persistPlan(next);
+  };
+  const changeGroup = (ids: string[]) => {
+    if (!activeStepKey) return;
+    const step = plan.find(p => p.key === activeStepKey);
+    if (!step?.blockId) return;
+    const templates = ids.map(id => step.templates?.find(t => t.exerciseId === id)
+      || { exerciseId: id, name: allExercises.find(e => e.id === id)?.name || '', sets: [] });
+    if (JSON.stringify(templates) === JSON.stringify(step.templates)) return;
+    persistPlan(plan.map(p => p.key === activeStepKey ? { ...p, exerciseId: ids[0], templates,
+      label: ids.length > 1 ? 'Суперсет' : templates[0]?.name || p.label } : p));
+  };
+  const changeWorkoutLocation = (value: WorkoutLocation) => {
+    try {
+      const active = JSON.parse(localStorage.getItem(ACTIVE_WORKOUT_KEY) || 'null');
+      if (active) api.saveSession({ session_id: sessionId, started_at: new Date(active.startedAt).toISOString(), location: value, location_update: true,
+        ...(active.sourceSessionId ? { repeated_from_session_id: active.sourceSessionId } : {}) });
+      updateLocation(value);
+    } catch { setWorkoutError('Не удалось сохранить место тренировки.'); }
+  };
   const savePreset = (next: WorkoutPreset) => {
     setPreset(next);
     try { localStorage.setItem(WORKOUT_PRESET_KEY, JSON.stringify(next)); } catch (_) {}
   };
 
-  const finishWorkoutConfirmed = () => {
-    stopExerciseRest();
-    localStorage.removeItem(ACTIVE_WORKOUT_KEY);
-    localStorage.removeItem(WORKOUT_STORAGE_KEY);
-    setPlan([]);
-    setPlanDone([]);
-    resetSession();
-    setWorkoutActive(false);
-    setIsFinishConfirmOpen(false);
-    setCurrentExercise(null);
-    notify('success');
+  const finishWorkoutConfirmed = (thenRepeat?: GlobalWorkoutSession) => {
+    if (clock?.kind === 'set') { setWorkoutError('Завершите начатый подход или отмените его замер.'); setIsFinishConfirmOpen(false); return; }
+    try {
+      const active = JSON.parse(localStorage.getItem(ACTIVE_WORKOUT_KEY) || 'null');
+      const endedAt = active?.finishedAt || Date.now();
+      if (active) {
+        localStorage.setItem(ACTIVE_WORKOUT_KEY, JSON.stringify({ ...active, finishedAt: endedAt }));
+        api.saveSession({ session_id: sessionId, started_at: new Date(active.startedAt).toISOString(), ended_at: new Date(endedAt).toISOString(),
+          ...(active.sourceSessionId ? { repeated_from_session_id: active.sourceSessionId } : {}) });
+        const local = finishedSession(readSavedWorkout(), allExercises, sessionId, location, active.startedAt, endedAt, bodyWeight);
+        if (local) {
+          const saved = JSON.parse(localStorage.getItem('gym_finished_local') || '[]');
+          localStorage.setItem('gym_finished_local', JSON.stringify([{ ...local, repeatedFromSessionId: active.sourceSessionId }, ...saved.filter((s: any) => s.clientSessionId !== sessionId)]));
+          const cached = JSON.parse(localStorage.getItem(GLOBAL_HISTORY_CACHE_KEY) || '[]');
+          localStorage.setItem(GLOBAL_HISTORY_CACHE_KEY, JSON.stringify([local, ...cached.filter((s: any) => s.clientSessionId !== sessionId)]));
+        }
+      }
+      stopExerciseRest(); localStorage.removeItem(ACTIVE_WORKOUT_KEY); localStorage.removeItem(WORKOUT_STORAGE_KEY);
+      setPlan([]); setPlanDone([]); resetSession(); setWorkoutActive(false); setIsFinishConfirmOpen(false);
+      setCurrentExercise(null); setActiveStepKey(undefined); setPlanDefaults(null); setScreen('history'); notify('success');
+      if (thenRepeat) beginWorkout(thenRepeat, true);
+    } catch { setWorkoutError('Не удалось сохранить завершение. Тренировка остаётся открытой.'); }
   };
 
   const handleExport = async () => {
@@ -2435,11 +2508,15 @@ const App = () => {
     if (saved) {
       try {
         const session = JSON.parse(saved);
-        const isFresh = session.timestamp && (Date.now() - session.timestamp) < 86400000;
+        const isFresh = !!localStorage.getItem(ACTIVE_WORKOUT_KEY) || (session.timestamp && (Date.now() - session.timestamp) < 86400000);
         if (isFresh && session.activeExercises && session.activeExercises.length > 0) {
           const exId = session.activeExercises[0];
           const ex = allExercises.find((e: Exercise) => e.id === exId);
-          if (ex) { setCurrentExercise(ex); setScreen('workout'); }
+          if (ex) {
+            const item = readPlan().find(p => p.blockId === session.activeBlockId && p.blockId);
+            if (item) { setPlanDefaults(planDefaultsFor(item, readPlan())); setActiveStepKey(item.key); }
+            setCurrentExercise(ex); setScreen('workout');
+          }
         } else if (!isFresh) { localStorage.removeItem(WORKOUT_STORAGE_KEY); }
       } catch { localStorage.removeItem(WORKOUT_STORAGE_KEY); }
     }
@@ -2555,18 +2632,32 @@ const App = () => {
     );
   }
 
-  const restBanner = exerciseRest !== null
-    ? <ExerciseRestBanner startedAt={exerciseRest} inExercise={screen === 'workout'} onStop={stopExerciseRest} />
-    : null;
-
+  const resumeClock = () => {
+    if (clock?.kind === 'set') {
+      const step = plan.find(p => p.blockId && draftKey(clock.exerciseId || '', p.blockId) === clock.blockKey);
+      if (step) { openPlanItem(step); return; }
+      const exercise = allExercises.find(ex => ex.id === clock.exerciseId);
+      if (exercise) { setCurrentExercise(exercise); setScreen('workout'); return; }
+    }
+    const item = nextStep(plan); if (item) openPlanItem(item); else setScreen('home');
+  };
+  const restBanner = clock ? <WorkoutClockPanel clock={clock} onContinue={clock.kind === 'set' || nextStep(plan) ? resumeClock : undefined}
+    notify={() => { haptic('heavy'); notify('warning'); }} /> : null;
+  const activeStep = plan.find(p => p.key === activeStepKey);
   return (
     <div className="bg-zinc-950 min-h-screen text-zinc-50 font-sans selection:bg-blue-500/30 pb-safe">
-      {screen === 'home' && <HomeScreen location={location} onLocationChange={updateLocation} restBanner={restBanner} groups={groups} workoutActive={workoutActive} plan={plan} planDone={planDone} exerciseNames={Object.fromEntries(allExercises.map(ex => [ex.id, ex.name]))} onOpenPlanItem={openPlanItem} onStartWorkout={startWorkout} onFinishWorkout={() => setIsFinishConfirmOpen(true)} onSearch={(q: string) => { setSearchQuery(q); if (q) setScreen('exercises'); }} onSelectGroup={(g: string) => { setSelectedGroup(g); setScreen('exercises'); }} onAllExercises={() => { setSelectedGroup(null); setScreen('exercises'); }} onHistory={() => setScreen('history')} onAnalytics={() => setScreen('analytics')} onSummary={() => setScreen('summary')} onSettings={() => { setBodyWeightInput(String(bodyWeight)); setPlatesDraft(plates); setPresetDraft(preset); setIsSettingsOpen(true); }} />}
+      {workoutError && <div role="alert" className="mx-4 flex items-center gap-3 rounded-xl border border-amber-700 bg-zinc-900 p-3 text-sm text-amber-200"><span className="flex-1">{workoutError}</span><button aria-label="Закрыть сообщение" onClick={() => setWorkoutError('')} className="min-h-11 min-w-11"><X className="mx-auto h-5 w-5" /></button></div>}
+      {screen === 'home' && <HomeScreen location={location} onLocationChange={changeWorkoutLocation} restBanner={restBanner} workoutActive={workoutActive} plan={plan} planDone={planDone} draft={readSavedWorkout()} onOpenPlanItem={openPlanItem} onStartWorkout={startWorkout} onFinishWorkout={() => setIsFinishConfirmOpen(true)} onAllExercises={() => workoutActive ? chooseExercise('add') : setScreen('exercises')} onHistory={() => setScreen('history')} onAnalytics={() => setScreen('analytics')} onSummary={() => setScreen('summary')} onMove={moveStep} onReplace={(key: string) => chooseExercise('replace', key)} onSkip={(key: string) => finishStep(key, 'skipped')} sourceDate={plan.find(p => p.sourceDate)?.sourceDate} onSettings={() => { setBodyWeightInput(String(bodyWeight)); setPlatesDraft(plates); setPresetDraft(preset); setIsSettingsOpen(true); }} />}
       {screen === 'analytics' && <AnalyticsScreen onBack={() => setScreen('home')} />}
       {screen === 'summary' && <TrainerSummaryScreen onBack={() => setScreen('home')} notify={notify} allExercises={allExercises} />}
-      {screen === 'history' && <HistoryScreen onBack={() => { setDeeplinkSession(null); setScreen('home'); }} allExercises={allExercises} bodyWeight={bodyWeight} notify={notify} haptic={haptic} focusSessionId={deeplinkSession} />}
-      {screen === 'exercises' && <ExercisesListScreen restBanner={restBanner} exercises={filteredExercises} title={selectedGroup || (searchQuery ? `Поиск: ${searchQuery}` : 'Все упражнения')} searchQuery={searchQuery} onSearch={(q: string) => setSearchQuery(q)} onBack={() => { setSearchQuery(''); setSelectedGroup(null); setScreen('home'); }} onSelectExercise={(ex: Exercise) => { haptic('light'); setPlanDefaults(isRepeatableTreadmill(ex) ? { append: true, catalogue: true } : null); setCurrentExercise(ex); setScreen('workout'); }} onAddExercise={() => setIsCreateModalOpen(true)} onEditExercise={(ex: Exercise) => setExerciseToEdit(ex)} />}
-      {screen === 'workout' && currentExercise && <WorkoutScreen restBanner={restBanner} key={currentExercise.id} onFinish={finishExercise} onSetStarted={stopExerciseRest} initialExercise={currentExercise} allExercises={allExercises} planDefaults={planDefaults} onExerciseUpdated={(id: string, updates: Partial<Exercise>) => setAllExercises(p => p.map(ex => ex.id === id ? { ...ex, ...updates } : ex))} sessionId={sessionId} location={location} incrementOrder={incrementOrder} ensureOrderAtLeast={ensureOrderAtLeast} bodyWeight={bodyWeight} plates={plates} haptic={haptic} notify={notify} onBack={() => setScreen(planDefaults && !planDefaults.catalogue ? 'home' : 'exercises')} />}
+      {screen === 'history' && <HistoryScreen onRepeat={(source: GlobalWorkoutSession) => beginWorkout(source)} onBack={() => { setDeeplinkSession(null); setScreen('home'); }} allExercises={allExercises} bodyWeight={bodyWeight} notify={notify} haptic={haptic} focusSessionId={deeplinkSession} />}
+      {screen === 'exercises' && <ExercisesListScreen restBanner={restBanner} exercises={filteredExercises} title={selection?.kind === 'replace' ? 'Заменить упражнение' : selection ? 'Добавить упражнение' : 'Упражнения'} searchQuery={searchQuery} onSearch={(q: string) => setSearchQuery(q)} onBack={() => { setSelection(null); setSearchQuery(''); setSelectedGroup(null); setScreen('home'); }} onSelectExercise={selectExercise} onAddExercise={() => setIsCreateModalOpen(true)} onEditExercise={(ex: Exercise) => setExerciseToEdit(ex)} />}
+      {screen === 'workout' && currentExercise && <WorkoutScreen clock={clock} onClockChange={changeClock} onResumeRunning={resumeClock} onGroupChange={changeGroup} key={`${planDefaults?.blockId || ''}:${currentExercise.id}`} stepTitle={activeStep ? `Упражнение ${plan.indexOf(activeStep) + 1} из ${plan.length}` : undefined} onWorkoutOverview={() => setScreen('home')} onReplace={activeStep ? () => chooseExercise('replace', activeStep.key) : undefined} onSkip={activeStep ? () => finishStep(activeStep.key, 'skipped') : undefined} onFinish={finishExercise} initialExercise={currentExercise} allExercises={allExercises} planDefaults={planDefaults} sessionId={sessionId} location={location} incrementOrder={incrementOrder} ensureOrderAtLeast={ensureOrderAtLeast} bodyWeight={bodyWeight} plates={plates} haptic={haptic} notify={notify} onBack={() => setScreen('home')} />}
+      <Modal isOpen={!!pendingRepeat} onClose={() => setPendingRepeat(null)} title="Текущая тренировка ещё идёт">
+        <p className="mb-4 text-sm text-zinc-300">Выполненные подходы будут сохранены перед началом выбранной тренировки.</p>
+        <Button className="mb-2 w-full min-h-12" onClick={() => pendingRepeat && finishWorkoutConfirmed(pendingRepeat)}>Завершить текущую и повторить</Button>
+        <Button variant="secondary" className="w-full min-h-12" onClick={() => { setPendingRepeat(null); setScreen('home'); }}>Продолжить текущую</Button>
+      </Modal>
       {pendingCount > 0 && (
         <button
           onClick={() => { setQueueItems(getQueue()); setIsQueueOpen(true); void api.syncOfflineQueue(); }}
@@ -2680,7 +2771,7 @@ const App = () => {
             ? <p className="text-sm text-amber-300">Не отправлено на сервер: {pendingCount}. Эти подходы останутся в очереди на телефоне и уйдут сами, когда будет связь, — счётчик внизу экрана.</p>
             : <p className="text-sm text-zinc-400">Все выполненные подходы уже на сервере.</p>}
           <p className="text-sm text-zinc-400">Незавершённые строки и восстановление сессии будут очищены.</p>
-          <Button className="w-full h-12" onClick={finishWorkoutConfirmed}>Да, закончить</Button>
+          <Button className="w-full h-12" onClick={() => finishWorkoutConfirmed()}>Да, закончить</Button>
           <Button variant="secondary" className="w-full h-12" onClick={() => setIsFinishConfirmOpen(false)}>Отмена</Button>
         </div>
       </Modal>
@@ -2690,8 +2781,8 @@ const App = () => {
           {queueItems.map(item => (
             <div key={item.id} className="flex items-center gap-3 p-3 bg-zinc-800/50 rounded-xl border border-zinc-800">
               <div className="flex-1 min-w-0">
-                <div className="text-sm text-zinc-200 truncate">{item.type === 'updateSession' ? 'Место тренировки' : String(item.data.exercise_name || 'Подход')}</div>
-                <div className="text-xs text-zinc-500">{item.type === 'updateSession' ? (LOCATION_LABELS[item.data.location as WorkoutLocation] || 'Не указано') : item.data.kind === 'cardio'
+                <div className="text-sm text-zinc-200 truncate">{item.type === 'updateSession' ? 'Место тренировки' : item.type === 'saveSession' ? 'Тренировка' : String(item.data.exercise_name || 'Подход')}</div>
+                <div className="text-xs text-zinc-500">{item.type === 'saveSession' ? (item.data.ended_at ? 'Завершение тренировки' : 'Начало тренировки') : item.type === 'updateSession' ? (LOCATION_LABELS[item.data.location as WorkoutLocation] || 'Не указано') : item.data.kind === 'cardio'
                   ? formatCardioSegment({ minutes: Number(item.data.duration_seconds || 0) / 60, speed: item.data.speed_kmh as number | null, incline: item.data.incline_pct as number | null })
                   : `${item.data.input_weight != null || item.data.weight != null ? setLoadLabel(item.data as any, null) : '?'} × ${String(item.data.reps ?? '?')}`} · {item.type === 'saveSet' ? 'новый подход' : item.type === 'deleteSet' ? 'удаление' : 'правка'}</div>
                 {item.id === inFlightId

@@ -59,6 +59,25 @@ const SET_A = '22222222-2222-4222-8222-222222222222';
 const SET_B = '33333333-3333-4333-8333-333333333333';
 const SET_C = '44444444-4444-4444-8444-444444444444';
 
+test('a finish queued during an in-flight session start retains its own type, source and stable timestamps', async () => {
+  installEnv();
+  const id = `session:${SET_C}`;
+  const start = {client_request_id:id, session_id:SET_C, started_at:'2026-10-20T10:00:00Z', repeated_from_session_id:SET_B};
+  offlineSync.upsertQueue('saveSession',start);
+  const sent=[];
+  await offlineSync.syncQueue(async item=>{
+    sent.push(structuredClone(item));
+    if(!item.data.ended_at) offlineSync.upsertQueue('saveSession',{...start,ended_at:'2026-10-20T11:00:00Z'});
+    return {ok:true};
+  });
+  assert.equal(sent.length,2);
+  assert.deepEqual(sent.map(s=>s.type),['saveSession','saveSession']);
+  assert.equal(sent[1].data.started_at,start.started_at);
+  assert.equal(sent[1].data.repeated_from_session_id,SET_B);
+  assert.equal(sent[1].data.performed_at,sent[0].data.performed_at);
+  assert.equal(offlineSync.getPendingCount(),0);
+});
+
 test('session location survives offline reload, lost response and an in-flight correction', async () => {
   installEnv();
   offlineSync.addToQueue('saveSet', { client_request_id: SET_A, location: 'home', session_id: SET_C });

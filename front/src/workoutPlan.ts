@@ -19,12 +19,19 @@ export interface PresetItem {
 export type WorkoutPreset = Partial<Record<PlanKey, PresetItem>>;
 
 export interface PlanItem extends PresetItem {
-  key: PlanKey;
+  key: string;
   label: string;
+  blockId?: string;
+  templates?: import('./workoutRepeat').RepeatTemplate[];
+  sourceDate?: string;
+  status?: 'done' | 'skipped';
 }
 
 /** Что подставить на экране упражнения, открытого из плана. */
 export interface PlanDefaults {
+  blockId?: string;
+  templates?: import('./workoutRepeat').RepeatTemplate[];
+  sourceDate?: string;
   /** A repeat opened from the catalogue returns to the catalogue on finish. */
   catalogue?: boolean;
   minutes?: number;
@@ -88,12 +95,18 @@ const sharesWarmup = (item: PlanItem, plan: PlanItem[]) =>
   item.key === 'cooldown' && plan.some((p) => p.key === 'warmup' && p.exerciseId === item.exerciseId);
 
 export function planDefaultsFor(item: PlanItem, plan: PlanItem[]): PlanDefaults {
+  if (item.blockId) return { blockId: item.blockId, templates: item.templates, sourceDate: item.sourceDate };
   if (item.key === 'abs') return { sets: item.sets, reps: item.reps };
   return { minutes: item.minutes, ...(sharesWarmup(item, plan) ? { append: true } : {}) };
 }
 
 /** «10 мин», «3×20». */
 export function planTargetText(item: PlanItem): string {
+  if (item.templates) {
+    const cardio = item.templates.flatMap(t => t.cardio || []);
+    return cardio.length ? `${cardio.reduce((n, s) => n + (s.minutes || 0), 0)} мин`
+      : `${item.templates.reduce((n, t) => n + t.sets.length, 0)} подх.`;
+  }
   return item.key === 'abs' ? `${item.sets}×${item.reps}` : `${item.minutes} мин`;
 }
 
@@ -102,6 +115,8 @@ export function planTargetText(item: PlanItem): string {
  * тренажёре, что и разминка, засчитывается вторым отмеченным отрезком.
  */
 export function planItemDone(item: PlanItem, plan: PlanItem[], draft: DraftLike | null | undefined): boolean {
+  if (item.status) return item.status === 'done';
+  if (item.blockId) return false;
   const rows = draft?.exercises?.[item.exerciseId]?.sets || [];
   const done = rows.filter((row) => row?.completed).length;
   if (item.key === 'abs') return done >= (item.sets || 1);

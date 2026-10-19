@@ -11,3 +11,11 @@ export function pendingSessionMetadata<T extends { id: string }>(
     return updates.reduce((row, item) => ({ ...row, location: item.data.location }), session);
   });
 }
+
+/** Timing corrections use the same durable queue and remain visible offline. */
+export function pendingTimingEdits<T>(history: T[], queue: { type: string; data: Record<string, any> }[]): T[] {
+  const updates = queue.filter(q => ['saveSet', 'updateSet'].includes(q.type) && Object.prototype.hasOwnProperty.call(q.data, 'timing'));
+  return history.map((raw: any) => ({ ...raw, exercises: raw.exercises?.map((ex: any) => ({ ...ex,
+    sets: ex.sets?.map((set: any) => updates.reduce((row, q) => q.data.client_request_id === set.id
+      ? { ...row, timing: q.data.timing ?? undefined } : row, set)) })) }));
+}

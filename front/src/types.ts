@@ -13,6 +13,7 @@ export interface Exercise {
   baseWeight?: number;
   weightMultiplier?: number;
   unilateral?: boolean;
+  inputMode?: 'total' | 'plates_total';
   /** Как записывается результат: подходы с весом или отрезки кардио. */
   measure?: 'strength' | 'cardio';
   /* Release B progression targets. Null/undefined means "not configured" —
@@ -37,10 +38,19 @@ export interface WorkoutSet {
   isLowConfidence?: boolean;
   requestId?: string;
   order?: number;
+  load?: LoadRules;
+  timing?: SetTiming;
   /** Поля отрезка кардио; у силовых подходов пустые. */
   minutes?: string;
   speed?: string;
   incline?: string;
+}
+
+export interface SetTiming {
+  ended_at: string;
+  started_at?: string;
+  duration_seconds?: number;
+  rest_before_seconds?: number;
 }
 
 export interface CardioHistoryItem {
@@ -65,6 +75,7 @@ export interface HistoryItem {
   rir?: number;
   /** Правила расчёта веса на момент подхода; у старых подходов нет. */
   load?: LoadRules | null;
+  timing?: SetTiming;
 }
 
 export interface ExerciseSessionData {

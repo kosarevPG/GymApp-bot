@@ -22,6 +22,15 @@ export interface ExerciseForWeight {
   baseWeight?: number;
   weightMultiplier?: number;
   unilateral?: boolean;
+  /** New-entry units; absent on legacy snapshots and existing drafts. */
+  inputMode?: 'total' | 'plates_total';
+}
+
+/** Only new entries adopt these units. Catalogue settings remain historical truth. */
+export function forNewEntry<T extends ExerciseForWeight>(exercise: T): T {
+  const type = (exercise.weightType || '').toLowerCase();
+  return { ...exercise, ...(type === 'barbell' ? { inputMode: 'total' as const }
+    : type === 'plate_loaded' ? { inputMode: 'plates_total' as const } : {}) };
 }
 
 const normType = (exercise: ExerciseForWeight | null | undefined): string =>
@@ -42,6 +51,8 @@ export function calcEffectiveWeight(
   const base = exercise.baseWeight ?? 0;
   const mult = exercise.weightMultiplier ?? 1;
   const type = normType(exercise);
+  if (exercise.inputMode === 'total') return round1(inputWeight);
+  if (exercise.inputMode === 'plates_total') return round1(inputWeight + base);
   if (type === 'bodyweight') return round1(bodyWeight * mult + inputWeight + base);
   if (type === 'assisted') return round1(bodyWeight - inputWeight);
   return round1(inputWeight * mult + base);
@@ -59,6 +70,8 @@ export function toInputWeight(
   const base = exercise.baseWeight ?? 0;
   const mult = exercise.weightMultiplier ?? 1;
   const type = normType(exercise);
+  if (exercise.inputMode === 'total') return round1(effectiveWeight);
+  if (exercise.inputMode === 'plates_total') return round1(effectiveWeight - base);
   if (type === 'bodyweight') return round1(effectiveWeight - bodyWeight * mult - base);
   if (type === 'assisted') return round1(bodyWeight - effectiveWeight);
   return round1(mult ? (effectiveWeight - base) / mult : effectiveWeight - base);
@@ -68,6 +81,8 @@ export function toInputWeight(
  * Подпись колонки веса: подсказывает, ЧТО вводить для этого упражнения.
  */
 export function weightInputLabel(exercise: ExerciseForWeight | null | undefined): string {
+  if (exercise?.inputMode === 'total') return 'ВСЕГО, КГ';
+  if (exercise?.inputMode === 'plates_total') return 'БЛИНЫ ВСЕГО, КГ';
   if (exercise?.unilateral) return 'КГ/РУКА';
   const mult = exercise?.weightMultiplier ?? 1;
   const base = exercise?.baseWeight ?? 0;
@@ -194,6 +209,12 @@ export function describeLoad(
     };
   }
   if (type === 'barbell' || type === 'plate_loaded') {
+    if (exercise?.inputMode) {
+      const plateWeight = exercise.inputMode === 'total' ? Math.max(0, inputWeight - base) : inputWeight;
+      return { total, plates: splitIntoPlates(plateWeight / 2, available), summary: exercise.inputMode === 'total'
+        ? `Всего ${n(inputWeight)} кг с грифом${base > 0 ? ` ${n(base)} кг` : ''}`
+        : `${n(inputWeight)} кг блинами всего${base > 0 ? `; с базой ${n(base)} = ${n(total)} кг` : ''}` };
+    }
     // Штанга и блиновый тренажёр всегда грузятся с двух сторон: при mult=2
     // вводят вес одной стороны, при mult=1 — все блины, и на сторону идёт
     // половина. Снаряд, который держат целиком, к этим типам не относится:
@@ -234,6 +255,9 @@ export interface LoadRules {
   bw?: number;
   /** One row contains the given repetitions on EACH side; mult counts sides. */
   perSide?: boolean;
+  inputMode?: 'total' | 'plates_total';
+  /** Bar mass for plate advice; v2 coefficients remain readable by v1 clients. */
+  equipmentBase?: number;
 }
 
 /** Подход в том виде, в каком его отдаёт история. */
@@ -260,21 +284,30 @@ export function loadRulesOf(
 ): LoadRules {
   const type = (exercise?.weightType ?? '').trim() || 'Other';
   const rules: LoadRules = {
-    v: LOAD_RULES_VERSION,
+    v: exercise?.inputMode ? 2 : LOAD_RULES_VERSION,
     type,
     mult: exercise?.weightMultiplier ?? 1,
     base: exercise?.baseWeight ?? 0,
   };
   if (usesBodyWeight(type.toLowerCase())) rules.bw = bodyWeight;
   if (exercise?.unilateral) rules.perSide = true;
+  if (exercise?.inputMode) rules.inputMode = exercise.inputMode;
+  if (exercise?.inputMode === 'total') {
+    rules.equipmentBase = rules.base;
+    rules.mult = 1;
+    rules.base = 0;
+  } else if (exercise?.inputMode === 'plates_total') {
+    rules.mult = 1;
+  }
   return rules;
 }
 
 export const rulesAsExercise = (rules: LoadRules): ExerciseForWeight => ({
   weightType: rules.type,
   weightMultiplier: rules.mult,
-  baseWeight: rules.base,
+  baseWeight: rules.equipmentBase ?? rules.base,
   unilateral: rules.perSide,
+  inputMode: rules.inputMode,
 });
 
 /** Одинаково ли толкуется введённое число. Вес тела не в счёт — он меняется сам. */
@@ -282,6 +315,7 @@ export function sameLoadRules(a: LoadRules, b: LoadRules): boolean {
   return a.type.trim().toLowerCase() === b.type.trim().toLowerCase()
     && Number(a.mult) === Number(b.mult)
     && Boolean(a.perSide) === Boolean(b.perSide)
+    && a.inputMode === b.inputMode
     && Number(a.base) === Number(b.base);
 }
 
@@ -293,7 +327,7 @@ export function rulesForSet(
 ): LoadRules {
   return set?.load && typeof set.load === 'object' && set.load.type
     ? set.load
-    : loadRulesOf(exercise, bodyWeight);
+    : loadRulesOf({ ...exercise, inputMode: undefined }, bodyWeight);
 }
 
 /** Введённое число и итог подхода; недостающее досчитывается по правилам. */
@@ -384,6 +418,9 @@ export function carryOverInput(
   const input = toNum(set?.input_weight);
   const total = toNum(set?.weight);
   const snapshot = set?.load && typeof set.load === 'object' && set.load.type ? set.load : null;
+  if (!snapshot && exercise?.inputMode && total !== null) {
+    return Math.max(0, toInputWeight(exercise, total, bodyWeight));
+  }
   if (!snapshot || sameLoadRules(snapshot, loadRulesOf(exercise, bodyWeight))) {
     return input ?? (total !== null ? toInputWeight(exercise, total, bodyWeight) : 0);
   }
