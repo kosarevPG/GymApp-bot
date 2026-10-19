@@ -977,10 +977,16 @@ class SupabaseStore:
         exercise = self._resolve_exercise(user_id, exercise_id)
         if not exercise:
             return {"history": [], "note": ""}
-        sessions, groups, sets, _ = self._data(user_id)
+        # Opening one exercise must not download every set and the catalogue.
+        # The extra pages made this route exceed the function's 30s limit on
+        # a slow Data API response, even when global history was still readable.
+        sessions = self._select("gym_workout_sessions", filters={"user_id": user_id})
+        groups = self._select("gym_set_groups", filters={"user_id": user_id})
+        matching = self._select(
+            "gym_sets", filters={"user_id": user_id, "exercise_id": exercise["id"]}
+        )
         session_by_id = {row["id"]: row for row in sessions}
         group_by_id = {row["id"]: row for row in groups}
-        matching = [row for row in sets if row.get("exercise_id") == exercise["id"]]
         cardio = [
             row for row in self._select(
                 CARDIO_TABLE, filters={"user_id": user_id, "exercise_id": exercise["id"]}

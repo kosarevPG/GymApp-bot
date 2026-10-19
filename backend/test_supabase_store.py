@@ -367,6 +367,25 @@ class SupabaseStoreTests(unittest.TestCase):
         self.assertEqual(result["history"][0]["sets"][0]["id"], REQUEST_1)
         self.assertEqual(result["history"][0]["sets"][0]["rest"], 1.5)
 
+    def test_exercise_history_filters_sets_in_data_api_and_keeps_owner_scope(self):
+        self.store.save_set(USER_ID, self.payload())
+        unrelated = copy.deepcopy(self.client.tables["gym_sets"][0])
+        unrelated.update(id=str(uuid.uuid4()), exercise_id=str(uuid.uuid4()))
+        self.client.tables["gym_sets"].extend(copy.deepcopy(unrelated) for _ in range(20))
+        foreign = copy.deepcopy(self.client.tables["gym_sets"][0])
+        foreign.update(id=str(uuid.uuid4()), user_id=str(uuid.uuid4()))
+        self.client.tables["gym_sets"].append(foreign)
+        with patch.object(self.client, "select", wraps=self.client.select) as read:
+            result = self.store.get_exercise_history(USER_ID, EXERCISE_ID)
+        self.assertEqual(len(result["history"][0]["sets"]), 1)
+        set_reads = [call for call in read.call_args_list if call.args[0] == "gym_sets"]
+        self.assertTrue(set_reads)
+        for call in set_reads:
+            self.assertEqual(call.kwargs["filters"], {"user_id": USER_ID, "exercise_id": EXERCISE_ID})
+        catalogue_reads = [call for call in read.call_args_list if call.args[0] == "gym_exercises"]
+        self.assertTrue(all(call.kwargs["filters"].get("id", call.kwargs["filters"].get("source_key")) == EXERCISE_ID
+                            and call.kwargs["filters"]["user_id"] == USER_ID for call in catalogue_reads))
+
     def test_two_identical_workouts_on_same_day_remain_distinct(self):
         self.store.save_set(USER_ID, self.payload(REQUEST_1, "session-morning", 40))
         self.current = datetime(2026, 8, 22, 20, 0, tzinfo=ZoneInfo("Europe/Moscow"))
