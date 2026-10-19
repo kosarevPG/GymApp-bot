@@ -730,6 +730,17 @@ class WorkoutSessionLookupTests(unittest.TestCase):
         self.assertEqual(found["id"], self.SESSION_ID)
         self.assertEqual(found["exercises"][0]["name"], "Жим")
 
+    def test_session_matches_global_shape_without_reading_unrelated_results(self):
+        expected = next(row for row in self.store.get_global_history(USER_ID) if row["id"] == self.SESSION_ID)
+        with patch.object(self.client, "select", wraps=self.client.select) as read:
+            actual = self.store.get_workout_session(USER_ID, self.SESSION_ID)
+        self.assertEqual(actual, expected)
+        result_reads = [call for call in read.call_args_list if call.args[0] in
+                        ("gym_sets", "gym_set_groups", "gym_cardio_segments")]
+        self.assertTrue(result_reads)
+        for call in result_reads:
+            self.assertEqual(call.kwargs["filters"], {"user_id": USER_ID, "session_id": self.SESSION_ID})
+
     def test_another_users_session_is_indistinguishable_from_missing(self):
         foreign = self.store.get_workout_session(USER_ID, self.FOREIGN_SESSION_ID)
         absent = self.store.get_workout_session(USER_ID, "11111111-2222-4333-8444-555555555555")

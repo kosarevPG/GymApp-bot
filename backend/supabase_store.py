@@ -1038,6 +1038,11 @@ class SupabaseStore:
 
     def get_global_history(self, user_id: str, limit_rows: int = 3000) -> List[Dict[str, Any]]:
         sessions, groups, sets, exercises = self._data(user_id)
+        cardio = self._select(CARDIO_TABLE, filters={"user_id": user_id})
+        return self._history_from_rows(sessions, groups, sets, exercises, cardio, limit_rows)
+
+    def _history_from_rows(self, sessions, groups, sets, exercises, cardio, limit_rows=3000):
+        """Shared history shape for the full journal and an owned session."""
         exercise_by_id = {row["id"]: row for row in exercises}
         group_by_id = {row["id"]: row for row in groups}
         session_by_id = {row["id"]: row for row in sessions}
@@ -1049,7 +1054,7 @@ class SupabaseStore:
         for row in sets:
             sets_by_session.setdefault(row["session_id"], []).append(row)
         cardio_by_session: Dict[str, List[Dict[str, Any]]] = {}
-        for row in self._select(CARDIO_TABLE, filters={"user_id": user_id}):
+        for row in cardio:
             cardio_by_session.setdefault(row["session_id"], []).append(row)
         result: List[Dict[str, Any]] = []
         for session in sorted(sessions, key=lambda row: (str(row.get("workout_date")), str(row.get("started_at") or "")), reverse=True):
@@ -1126,15 +1131,18 @@ class SupabaseStore:
             return None
         owned = self._select(
             "gym_workout_sessions",
-            columns="id",
             filters={"user_id": user_id, "id": session_id},
             limit=1,
         )
         if not owned:
             return None
-        for item in self.get_global_history(user_id):
-            if str(item.get("id")) == session_id:
-                return item
+        filters = {"user_id": user_id, "session_id": session_id}
+        groups = self._select("gym_set_groups", filters=filters)
+        sets = self._select("gym_sets", filters=filters)
+        cardio = self._select(CARDIO_TABLE, filters=filters)
+        history = self._history_from_rows(owned, groups, sets, self._exercises(user_id), cardio)
+        if history:
+            return history[0]
         # Owned, but it carries no sets — real, and legitimately empty.
         return {"id": session_id, "date": "", "muscleGroups": [], "duration": "", "exercises": []}
 

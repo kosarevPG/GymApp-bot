@@ -1714,7 +1714,7 @@ const HistoryScreen = ({ onBack, onRepeat, allExercises = [], bodyWeight = USER_
 
   const refresh = () => api.getGlobalHistory().then(data => {
     setHistory(data);
-    setExpandedId(previous => data.find(row => row.id === previous || row.clientSessionId === previous)?.id || previous);
+    setExpandedId(previous => previous ? data.find(row => row.id === previous || row.clientSessionId === previous)?.id || previous : null);
   });
   useEffect(() => {
     refresh();
