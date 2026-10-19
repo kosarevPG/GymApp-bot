@@ -44,6 +44,8 @@ export interface ExerciseLine {
 
 export interface SessionSummary {
   date: string;
+  location?: GlobalHistorySession['location'];
+  duration?: string;
   exercises: ExerciseLine[];
   totalSets: number;
 }
@@ -175,7 +177,7 @@ export function buildTrainerSummary(
       lines.push(line);
     }
     if (lines.length) {
-      out.push({ date: session.iso, exercises: lines, totalSets: lines.reduce((a, l) => a + l.setCount, 0) });
+      out.push({ date: session.iso, location: session.location, duration: session.duration, exercises: lines, totalSets: lines.reduce((a, l) => a + l.setCount, 0) });
     }
   }
 
@@ -199,7 +201,8 @@ export function formatTrainerSummaryText(summary: TrainerSummary): string {
   lines.push('');
 
   for (const session of summary.sessions) {
-    lines.push(`${short(session.date)} · ${session.totalSets} подх.`);
+    const location = session.location ? ({ home: 'Дома', gym: 'Зал', other: 'Другое' }[session.location]) : '';
+    lines.push(`${short(session.date)} · ${session.totalSets} подх.${location ? ` · ${location}` : ''}${session.duration ? ` · ${session.duration}` : ''}`);
     for (const exercise of session.exercises) {
       let suffix = '';
       if (exercise.change) {

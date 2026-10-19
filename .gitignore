@@ -30,5 +30,7 @@ Thumbs.db
 
 # Frontend
 front/node_modules/
+scripts/tests/node_modules/
+supabase/.temp/
 front/dist/
 backend-deploy.zip

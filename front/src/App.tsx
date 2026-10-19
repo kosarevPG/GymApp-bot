@@ -44,6 +44,7 @@ import {
   supabasePublishableKey,
 } from './auth';
 import { AuthRequiredError, createAuthenticatedFetch } from './authenticatedFetch';
+import { LOCATION_LABELS, pendingSessionMetadata, type WorkoutLocation } from './sessionMetadata';
 
 // --- TYPES ---
 
@@ -54,6 +55,7 @@ interface GlobalWorkoutSession {
   date: string;
   muscleGroups: string[];
   duration: string;
+  location?: WorkoutLocation | null;
   exercises: { 
     name: string; 
     sets: any[]; 
@@ -117,6 +119,7 @@ const QUEUE_ENDPOINTS: Record<QueuedItem['type'], string> = {
   saveSet: 'save_set',
   updateSet: 'update_set',
   deleteSet: 'delete_set',
+  updateSession: 'update_session',
 };
 
 // Кардио идёт через ту же очередь, но в свою таблицу на сервере.
@@ -124,6 +127,7 @@ const CARDIO_ENDPOINTS: Record<QueuedItem['type'], string> = {
   saveSet: 'save_cardio',
   updateSet: 'update_cardio',
   deleteSet: 'delete_cardio',
+  updateSession: 'update_session',
 };
 
 const sendQueuedItem = async (item: QueuedItem): Promise<SendOutcome> => {
@@ -224,10 +228,11 @@ const api = {
   getGlobalHistory: async () => {
     const data = await api.request('global_history', {}, 28_000);
     if (data) {
-      try { localStorage.setItem(GLOBAL_HISTORY_CACHE_KEY, JSON.stringify(data)); } catch (_) {}
-      return data;
+      const merged = pendingSessionMetadata<GlobalWorkoutSession>(data, getQueue());
+      try { localStorage.setItem(GLOBAL_HISTORY_CACHE_KEY, JSON.stringify(merged)); } catch (_) {}
+      return merged;
     }
-    try { return JSON.parse(localStorage.getItem(GLOBAL_HISTORY_CACHE_KEY) || '[]'); } catch { return []; }
+    try { return pendingSessionMetadata<GlobalWorkoutSession>(JSON.parse(localStorage.getItem(GLOBAL_HISTORY_CACHE_KEY) || '[]'), getQueue()); } catch { return []; }
   },
 
   getAnalytics: async (period: number = 14) => {
@@ -251,6 +256,16 @@ const api = {
     const pendingId = addToQueue('saveSet', { ...data, client_request_id: clientRequestId });
     queueMicrotask(() => { void api.syncOfflineQueue(); });
     return pendingId;
+  },
+
+  updateSession: (sessionId: string, location: WorkoutLocation | null): void => {
+    upsertQueue('updateSession', { session_id: sessionId, location, client_request_id: sessionId });
+    // Keep the optimistic value after queue acknowledgement while offline.
+    try {
+      const cached = JSON.parse(localStorage.getItem(GLOBAL_HISTORY_CACHE_KEY) || '[]');
+      localStorage.setItem(GLOBAL_HISTORY_CACHE_KEY, JSON.stringify(pendingSessionMetadata(cached, getQueue())));
+    } catch { /* Queue is already durably saved. */ }
+    queueMicrotask(() => { void api.syncOfflineQueue(); });
   },
 
   updateSet: (data: any): string => {
@@ -444,6 +459,11 @@ const useTimer = () => {
 
 const useSession = () => {
   const [sessionId, setSessionId] = useState('');
+  const [location, setLocation] = useState<WorkoutLocation | null>(null);
+  const updateLocation = (value: WorkoutLocation) => {
+    localStorage.setItem('gym_session_location', value);
+    setLocation(value);
+  };
   const [orderCounter, setOrderCounter] = useState(0);
   const orderCounterRef = useRef(0);
 
@@ -460,6 +480,7 @@ const useSession = () => {
       orderCounterRef.current = 0;
       localStorage.setItem(SESSION_ID_KEY, newId);
       localStorage.setItem(ORDER_COUNTER_KEY, '0');
+      updateLocation('gym');
       // Тренировка не может пережить свою сессию: иначе восстановленный
       // setGroupId встретится с обнулённым Order, и подходы уйдут в дубли.
       localStorage.removeItem(WORKOUT_STORAGE_KEY);
@@ -469,11 +490,16 @@ const useSession = () => {
       const restoredOrder = parseInt(savedOrder || '0');
       setOrderCounter(restoredOrder);
       orderCounterRef.current = restoredOrder;
+      const savedLocation = localStorage.getItem('gym_session_location');
+      const restoredLocation = savedLocation === 'gym' || savedLocation === 'home' || savedLocation === 'other' ? savedLocation : restoredOrder > 0 ? null : 'gym';
+      setLocation(restoredLocation);
+      if (restoredLocation) localStorage.setItem('gym_session_location', restoredLocation);
     }
     localStorage.setItem(LAST_ACTIVE_KEY, now.toString());
   }, []);
 
   const resetSession = () => {
+    updateLocation('gym');
     const newId = crypto.randomUUID();
     setSessionId(newId);
     setOrderCounter(0);
@@ -531,7 +557,7 @@ const useSession = () => {
     localStorage.setItem(platesKey, JSON.stringify(value));
   };
 
-  return { sessionId, incrementOrder, ensureOrderAtLeast, bodyWeight, updateBodyWeight, plates, updatePlates, resetSession };
+  return { sessionId, location, updateLocation, incrementOrder, ensureOrderAtLeast, bodyWeight, updateBodyWeight, plates, updatePlates, resetSession };
 };
 
 // --- UI COMPONENTS ---
@@ -986,7 +1012,7 @@ const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plat
         <div className="w-8" />
         <div className="w-10" />
         <div className="text-[10px] text-center text-zinc-500 font-bold uppercase">{weightInputLabel(exerciseData.exercise)}</div>
-        <div className="text-[10px] text-center text-zinc-500 font-bold uppercase">ПОВТ</div>
+        <div className="text-[10px] text-center text-zinc-500 font-bold uppercase">{exerciseData.exercise.unilateral ? 'ПОВТ/РУКА' : 'ПОВТ'}</div>
         <div className="text-[10px] text-center text-zinc-500 font-bold uppercase">МИН</div>
         <div className="w-8" />
       </div>
@@ -1084,7 +1110,7 @@ const TrainerSummaryScreen = ({ onBack, notify, allExercises = [] }: any) => {
         {summary && summary.sessions.map((session: any) => (
           <Card key={session.date} className="p-4">
             <div className="flex items-baseline justify-between">
-              <div className="text-sm font-semibold text-zinc-100">{session.date.slice(8)}.{session.date.slice(5, 7)}</div>
+              <div className="text-sm font-semibold text-zinc-100">{session.date.slice(8)}.{session.date.slice(5, 7)}{session.location && ` · ${LOCATION_LABELS[session.location as WorkoutLocation]}`}{session.duration && ` · ${session.duration}`}</div>
               <div className="text-[11px] text-zinc-500">{session.totalSets} подх.</div>
             </div>
             <div className="mt-2 space-y-2">
@@ -1138,8 +1164,15 @@ const TrainerSummaryScreen = ({ onBack, notify, allExercises = [] }: any) => {
   );
 };
 
-const HomeScreen = ({ groups, workoutActive, restBanner, plan = [], planDone = [], exerciseNames = {}, onOpenPlanItem, onStartWorkout, onFinishWorkout, onSearch, onSelectGroup, onAllExercises, onHistory, onAnalytics, onSummary, onSettings }: any) => (
+const HomeScreen = ({ groups, workoutActive, location, onLocationChange, restBanner, plan = [], planDone = [], exerciseNames = {}, onOpenPlanItem, onStartWorkout, onFinishWorkout, onSearch, onSelectGroup, onAllExercises, onHistory, onAnalytics, onSummary, onSettings }: any) => (
   <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="px-4 pb-4 pt-safe-4 space-y-6">
+    <label className="flex items-center justify-between gap-3 text-sm text-zinc-300">
+      Место тренировки
+      <select aria-label="Место новой тренировки" value={location || ''} disabled={workoutActive} onChange={e => onLocationChange(e.target.value)} className="min-h-11 rounded-lg bg-zinc-800 px-3 text-zinc-100 disabled:opacity-70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500">
+        {!location && <option value="">Не указано</option>}
+        {Object.entries(LOCATION_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+      </select>
+    </label>
     {workoutActive
       ? <Button variant="secondary" onClick={onFinishWorkout} className="w-full h-14 text-lg border border-red-900/50 text-red-400">Закончить тренировку</Button>
       : <Button variant="primary" onClick={onStartWorkout} className="w-full h-14 text-lg font-semibold shadow-xl shadow-blue-900/20">Начать тренировку</Button>}
@@ -1319,7 +1352,7 @@ const cardioRow = (minutes: unknown, like?: { minutes?: unknown; speed?: unknown
   incline: like?.incline != null && like.incline !== '' ? String(like.incline) : '',
 });
 
-const WorkoutScreen = ({ initialExercise, allExercises, restBanner, planDefaults = null, onBack, onFinish, onSetStarted, sessionId, incrementOrder, ensureOrderAtLeast, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates = DEFAULT_PLATES, haptic, notify }: any) => {
+const WorkoutScreen = ({ initialExercise, allExercises, restBanner, planDefaults = null, onBack, onFinish, onSetStarted, sessionId, location, incrementOrder, ensureOrderAtLeast, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates = DEFAULT_PLATES, haptic, notify }: any) => {
 
   const timer = useTimer();
   const savedWorkoutRef = useRef<any>(null);
@@ -1508,7 +1541,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, restBanner, planDefaults
 
     const isEdit = !!set.requestId;
     const inputWeight = parseFloat(set.weight);
-    const payload = cardio ? {
+    const payload = { ...(location ? { location } : {}), ...(cardio ? {
       kind: 'cardio',
       exercise_id: exId,
       exercise_name: exercise?.name,
@@ -1530,7 +1563,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, restBanner, planDefaults
       set_type: set.setType || 'working',
       rpe: set.rpe != null && set.rpe !== '' ? parseFloat(String(set.rpe)) : undefined,
       rir: set.rir != null && set.rir !== '' ? parseInt(String(set.rir), 10) : undefined
-    };
+    }) };
     // Галочка ставится только после того, как подход лёг в очередь на
     // устройстве. Не лёг — строка остаётся открытой с введёнными числами.
     let saved: WorkoutSet;
@@ -1822,6 +1855,10 @@ const HistoryScreen = ({ onBack, allExercises = [], bodyWeight = USER_BODY_WEIGH
             <div onClick={() => setExpandedId(expandedId === w.id ? null : w.id)} className="p-4 flex items-center justify-between cursor-pointer active:bg-zinc-800/50">
               <div>
                 <div className="flex items-center gap-2 text-zinc-400 text-sm"><Calendar className="w-3 h-3" />{w.date} {w.muscleGroups.join(' • ')}</div>
+                <div className="mt-1 flex flex-wrap gap-2 text-xs text-zinc-300">
+                  {w.location && <span className="rounded bg-zinc-800 px-2 py-1">{LOCATION_LABELS[w.location]}</span>}
+                  <span className="py-1">{w.duration} · {w.exercises.length} упр. · {w.exercises.reduce((n, ex) => n + (ex.sets?.length || 0), 0)} подх.</span>
+                </div>
               </div>
               <div className="flex items-center gap-1">
                 {expandedId === w.id && (
@@ -1833,6 +1870,20 @@ const HistoryScreen = ({ onBack, allExercises = [], bodyWeight = USER_BODY_WEIGH
             <AnimatePresence>
               {expandedId === w.id && (
                 <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }} className="border-t border-zinc-800 bg-zinc-900/30 overflow-hidden">
+                  <label className="flex items-center justify-between gap-3 p-4 text-sm text-zinc-300">
+                    Место тренировки
+                    <select aria-label={`Место тренировки ${w.date}`} value={w.location || ''} className="min-h-11 rounded-lg bg-zinc-800 px-3 text-zinc-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500" onChange={e => {
+                      const location = (e.target.value || null) as WorkoutLocation | null;
+                      try {
+                        api.updateSession(w.id, location);
+                        setHistory(rows => rows.map(row => row.id === w.id ? { ...row, location } : row));
+                        notify?.('success');
+                      } catch { notify?.('error'); }
+                    }}>
+                      <option value="">Не указано</option>
+                      {Object.entries(LOCATION_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                    </select>
+                  </label>
                   {w.exercises && w.exercises.length > 0 ? (
                     w.exercises.map((ex: any, i: number) => {
                       const isSuperset = !!ex.supersetId;
@@ -2146,7 +2197,7 @@ const EditExerciseModal = ({ isOpen, onClose, exercise, groups, onSave }: any) =
 
 const App = () => {
   const { haptic, notify } = useHaptics();
-  const { sessionId, incrementOrder, ensureOrderAtLeast, bodyWeight, updateBodyWeight, plates, updatePlates, resetSession } = useSession();
+  const { sessionId, location, updateLocation, incrementOrder, ensureOrderAtLeast, bodyWeight, updateBodyWeight, plates, updatePlates, resetSession } = useSession();
   const [screen, setScreen] = useState<Screen>('home');
   const [groups, setGroups] = useState<string[]>([]);
   const [allExercises, setAllExercises] = useState<Exercise[]>([]);
@@ -2510,12 +2561,12 @@ const App = () => {
 
   return (
     <div className="bg-zinc-950 min-h-screen text-zinc-50 font-sans selection:bg-blue-500/30 pb-safe">
-      {screen === 'home' && <HomeScreen restBanner={restBanner} groups={groups} workoutActive={workoutActive} plan={plan} planDone={planDone} exerciseNames={Object.fromEntries(allExercises.map(ex => [ex.id, ex.name]))} onOpenPlanItem={openPlanItem} onStartWorkout={startWorkout} onFinishWorkout={() => setIsFinishConfirmOpen(true)} onSearch={(q: string) => { setSearchQuery(q); if (q) setScreen('exercises'); }} onSelectGroup={(g: string) => { setSelectedGroup(g); setScreen('exercises'); }} onAllExercises={() => { setSelectedGroup(null); setScreen('exercises'); }} onHistory={() => setScreen('history')} onAnalytics={() => setScreen('analytics')} onSummary={() => setScreen('summary')} onSettings={() => { setBodyWeightInput(String(bodyWeight)); setPlatesDraft(plates); setPresetDraft(preset); setIsSettingsOpen(true); }} />}
+      {screen === 'home' && <HomeScreen location={location} onLocationChange={updateLocation} restBanner={restBanner} groups={groups} workoutActive={workoutActive} plan={plan} planDone={planDone} exerciseNames={Object.fromEntries(allExercises.map(ex => [ex.id, ex.name]))} onOpenPlanItem={openPlanItem} onStartWorkout={startWorkout} onFinishWorkout={() => setIsFinishConfirmOpen(true)} onSearch={(q: string) => { setSearchQuery(q); if (q) setScreen('exercises'); }} onSelectGroup={(g: string) => { setSelectedGroup(g); setScreen('exercises'); }} onAllExercises={() => { setSelectedGroup(null); setScreen('exercises'); }} onHistory={() => setScreen('history')} onAnalytics={() => setScreen('analytics')} onSummary={() => setScreen('summary')} onSettings={() => { setBodyWeightInput(String(bodyWeight)); setPlatesDraft(plates); setPresetDraft(preset); setIsSettingsOpen(true); }} />}
       {screen === 'analytics' && <AnalyticsScreen onBack={() => setScreen('home')} />}
       {screen === 'summary' && <TrainerSummaryScreen onBack={() => setScreen('home')} notify={notify} allExercises={allExercises} />}
       {screen === 'history' && <HistoryScreen onBack={() => { setDeeplinkSession(null); setScreen('home'); }} allExercises={allExercises} bodyWeight={bodyWeight} notify={notify} haptic={haptic} focusSessionId={deeplinkSession} />}
       {screen === 'exercises' && <ExercisesListScreen restBanner={restBanner} exercises={filteredExercises} title={selectedGroup || (searchQuery ? `Поиск: ${searchQuery}` : 'Все упражнения')} searchQuery={searchQuery} onSearch={(q: string) => setSearchQuery(q)} onBack={() => { setSearchQuery(''); setSelectedGroup(null); setScreen('home'); }} onSelectExercise={(ex: Exercise) => { haptic('light'); setPlanDefaults(isRepeatableTreadmill(ex) ? { append: true, catalogue: true } : null); setCurrentExercise(ex); setScreen('workout'); }} onAddExercise={() => setIsCreateModalOpen(true)} onEditExercise={(ex: Exercise) => setExerciseToEdit(ex)} />}
-      {screen === 'workout' && currentExercise && <WorkoutScreen restBanner={restBanner} key={currentExercise.id} onFinish={finishExercise} onSetStarted={stopExerciseRest} initialExercise={currentExercise} allExercises={allExercises} planDefaults={planDefaults} onExerciseUpdated={(id: string, updates: Partial<Exercise>) => setAllExercises(p => p.map(ex => ex.id === id ? { ...ex, ...updates } : ex))} sessionId={sessionId} incrementOrder={incrementOrder} ensureOrderAtLeast={ensureOrderAtLeast} bodyWeight={bodyWeight} plates={plates} haptic={haptic} notify={notify} onBack={() => setScreen(planDefaults && !planDefaults.catalogue ? 'home' : 'exercises')} />}
+      {screen === 'workout' && currentExercise && <WorkoutScreen restBanner={restBanner} key={currentExercise.id} onFinish={finishExercise} onSetStarted={stopExerciseRest} initialExercise={currentExercise} allExercises={allExercises} planDefaults={planDefaults} onExerciseUpdated={(id: string, updates: Partial<Exercise>) => setAllExercises(p => p.map(ex => ex.id === id ? { ...ex, ...updates } : ex))} sessionId={sessionId} location={location} incrementOrder={incrementOrder} ensureOrderAtLeast={ensureOrderAtLeast} bodyWeight={bodyWeight} plates={plates} haptic={haptic} notify={notify} onBack={() => setScreen(planDefaults && !planDefaults.catalogue ? 'home' : 'exercises')} />}
       {pendingCount > 0 && (
         <button
           onClick={() => { setQueueItems(getQueue()); setIsQueueOpen(true); void api.syncOfflineQueue(); }}
@@ -2639,8 +2690,8 @@ const App = () => {
           {queueItems.map(item => (
             <div key={item.id} className="flex items-center gap-3 p-3 bg-zinc-800/50 rounded-xl border border-zinc-800">
               <div className="flex-1 min-w-0">
-                <div className="text-sm text-zinc-200 truncate">{String(item.data.exercise_name || 'Подход')}</div>
-                <div className="text-xs text-zinc-500">{item.data.kind === 'cardio'
+                <div className="text-sm text-zinc-200 truncate">{item.type === 'updateSession' ? 'Место тренировки' : String(item.data.exercise_name || 'Подход')}</div>
+                <div className="text-xs text-zinc-500">{item.type === 'updateSession' ? (LOCATION_LABELS[item.data.location as WorkoutLocation] || 'Не указано') : item.data.kind === 'cardio'
                   ? formatCardioSegment({ minutes: Number(item.data.duration_seconds || 0) / 60, speed: item.data.speed_kmh as number | null, incline: item.data.incline_pct as number | null })
                   : `${item.data.input_weight != null || item.data.weight != null ? setLoadLabel(item.data as any, null) : '?'} × ${String(item.data.reps ?? '?')}`} · {item.type === 'saveSet' ? 'новый подход' : item.type === 'deleteSet' ? 'удаление' : 'правка'}</div>
                 {item.id === inFlightId

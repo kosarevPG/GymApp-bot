@@ -59,6 +59,24 @@ const SET_A = '22222222-2222-4222-8222-222222222222';
 const SET_B = '33333333-3333-4333-8333-333333333333';
 const SET_C = '44444444-4444-4444-8444-444444444444';
 
+test('session location survives offline reload, lost response and an in-flight correction', async () => {
+  installEnv();
+  offlineSync.addToQueue('saveSet', { client_request_id: SET_A, location: 'home', session_id: SET_C });
+  offlineSync.upsertQueue('updateSession', { client_request_id: SET_C, session_id: SET_C, location: 'other' });
+  await offlineSync.syncQueue(async () => ({ ok: false, error: 'offline', stop: true }));
+  assert.equal(offlineSync.getQueue()[0].data.location, 'home');
+  const sent = [];
+  await offlineSync.syncQueue(async item => {
+    sent.push([item.type, item.data.location, item.id]);
+    if (item.type === 'updateSession' && item.data.location === 'other') {
+      offlineSync.upsertQueue('updateSession', { client_request_id: SET_C, session_id: SET_C, location: 'home' });
+    }
+    return { ok: true };
+  });
+  assert.deepEqual(sent, [['saveSet','home',SET_A],['updateSession','other',SET_C],['updateSession','home',SET_C]]);
+  assert.equal(offlineSync.getPendingCount(), 0);
+});
+
 
 test('performed_at is created once and survives a next-day queue update', () => {
   const realDate = Date;

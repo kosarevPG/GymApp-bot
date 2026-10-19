@@ -17,6 +17,13 @@ const {
   carryOverInput, formatLoad, loadRulesOf, sameLoadRules, setLoadLabel,
 } = await load('../src/exerciseConfig.ts');
 
+test('unilateral rounds show weight per arm and retain both arms in load rules', () => {
+  const rules = loadRulesOf({ weightType: 'Dumbbell', weightMultiplier: 2, baseWeight: 0, unilateral: true });
+  assert.equal(rules.perSide,true);
+  assert.equal(setLoadLabel({ input_weight: 8, weight: 16, load: rules },null), '8 кг/рука');
+  assert.equal(sameLoadRules(rules,{ ...rules, perSide: false }),false);
+});
+
 test('splitIntoPlates набирает вес точно', () => {
   assert.deepEqual(splitIntoPlates(40).items, [25, 15]);
   assert.equal(splitIntoPlates(40).remainder, 0);

@@ -12,6 +12,7 @@ export interface Exercise {
   weightType?: string;
   baseWeight?: number;
   weightMultiplier?: number;
+  unilateral?: boolean;
   /** Как записывается результат: подходы с весом или отрезки кардио. */
   measure?: 'strength' | 'cardio';
   /* Release B progression targets. Null/undefined means "not configured" —

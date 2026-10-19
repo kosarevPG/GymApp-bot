@@ -21,6 +21,7 @@ export interface ExerciseForWeight {
   weightType?: string;
   baseWeight?: number;
   weightMultiplier?: number;
+  unilateral?: boolean;
 }
 
 const normType = (exercise: ExerciseForWeight | null | undefined): string =>
@@ -67,6 +68,7 @@ export function toInputWeight(
  * Подпись колонки веса: подсказывает, ЧТО вводить для этого упражнения.
  */
 export function weightInputLabel(exercise: ExerciseForWeight | null | undefined): string {
+  if (exercise?.unilateral) return 'КГ/РУКА';
   const mult = exercise?.weightMultiplier ?? 1;
   const base = exercise?.baseWeight ?? 0;
   switch (normType(exercise)) {
@@ -93,6 +95,7 @@ export const WEIGHT_TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: 'Plate_Loaded', label: 'Блины' },
   { value: 'Bodyweight', label: 'Свой вес' },
   { value: 'Assisted', label: 'Гравитрон' },
+  { value: 'Other', label: 'Гиря / другой снаряд' },
 ];
 
 /**
@@ -166,6 +169,10 @@ export function describeLoad(
   const total = calcEffectiveWeight(exercise, inputWeight, bodyWeight);
   const n = (value: number): string => String(round1(value));
 
+  if (exercise?.unilateral) {
+    return { summary: `${n(inputWeight)} кг на руку; повторения на каждую руку. Обе руки учтены в нагрузке.`, total, plates: null };
+  }
+
   if (type === 'assisted') {
     return { summary: `Противовес ${n(inputWeight)} → рабочий вес ${n(total)} кг`, total, plates: null };
   }
@@ -225,6 +232,8 @@ export interface LoadRules {
   base: number;
   /** Вес тела — только там, где он входит в итог: свой вес и гравитрон. */
   bw?: number;
+  /** One row contains the given repetitions on EACH side; mult counts sides. */
+  perSide?: boolean;
 }
 
 /** Подход в том виде, в каком его отдаёт история. */
@@ -257,6 +266,7 @@ export function loadRulesOf(
     base: exercise?.baseWeight ?? 0,
   };
   if (usesBodyWeight(type.toLowerCase())) rules.bw = bodyWeight;
+  if (exercise?.unilateral) rules.perSide = true;
   return rules;
 }
 
@@ -264,12 +274,14 @@ export const rulesAsExercise = (rules: LoadRules): ExerciseForWeight => ({
   weightType: rules.type,
   weightMultiplier: rules.mult,
   baseWeight: rules.base,
+  unilateral: rules.perSide,
 });
 
 /** Одинаково ли толкуется введённое число. Вес тела не в счёт — он меняется сам. */
 export function sameLoadRules(a: LoadRules, b: LoadRules): boolean {
   return a.type.trim().toLowerCase() === b.type.trim().toLowerCase()
     && Number(a.mult) === Number(b.mult)
+    && Boolean(a.perSide) === Boolean(b.perSide)
     && Number(a.base) === Number(b.base);
 }
 
@@ -300,6 +312,7 @@ function inputAndTotal(set: LoggedLoad | null | undefined, rules: LoadRules, bod
  * числа не зависят.
  */
 export function formatLoad(rules: LoadRules, input: number, total: number): string {
+  if (rules.perSide) return `${fmtKg(input)} кг/рука`;
   switch (rules.type.trim().toLowerCase()) {
     case 'dumbbell':
       return Number(rules.mult) === 1 ? `${fmtKg(input)} кг` : `${fmtKg(Number(rules.mult))}×${fmtKg(input)} кг`;

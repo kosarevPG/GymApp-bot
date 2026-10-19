@@ -34,6 +34,19 @@ const build = (history, since, until) => buildTrainerSummary(history, since, unt
 const E = (id, sets, name) => ({ exerciseId: id, name: name || `Упр ${id}`, sets });
 const S = (date, entries) => ({ id: `s-${date}`, date, exercises: entries });
 
+test('home restoration reports 21 sets and twelve reps per arm in trainer text', () => {
+  const counts = [5,4,4,4,4];
+  const entries = counts.map((count,i) => ({ exerciseId: String(i), name: i === 4 ? 'Концентрированный подъём' : `Упражнение ${i}`,
+    sets: Array.from({length:count},(_,j) => ({ input_weight:8,weight:16,reps:i===4?12:15,order:j+1,
+      load:{v:1,type:'Dumbbell',mult:2,base:0,...(i===4?{perSide:true}:{})} })) }));
+  const summary = buildTrainerSummary([{ id:'restored',date:'2026.10.12',location:'home',duration:'≈60м',exercises:entries }], '2026-10-12','2026-10-12');
+  assert.equal(summary.sessionCount,1);
+  assert.equal(summary.sessions[0].totalSets,21);
+  const text = formatTrainerSummaryText(summary);
+  assert.match(text,/Дома · ≈60м/);
+  assert.match(text,/8 кг\/рука × 12\/12\/12\/12/);
+});
+
 /* ── dates ─────────────────────────────────────────────────────────────── */
 
 test('dotted and ISO dates both normalise', () => {

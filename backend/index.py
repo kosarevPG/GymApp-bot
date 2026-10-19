@@ -27,6 +27,7 @@ from supabase_store import (
     get_global_history,
     get_init,
     get_workout_session,
+    update_session,
     import_data,
     save_cardio,
     save_set,
@@ -255,6 +256,12 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             return response(found)
         if endpoint == "analytics" and method == "GET":
             return response(get_analytics(user_id, int(params.get("period", "14"))))
+        if endpoint == "update_session" and method == "POST":
+            try:
+                updated = update_session(user_id, _body(event))
+            except ValueError as error:
+                return response({"error": str(error)}, 400)
+            return response({"status": "success" if updated else "error"}, 200 if updated else 404)
         if endpoint == "save_set" and method == "POST":
             result = save_set(user_id, _body(event))
             return response(result, 200 if result.get("status") == "success" else 400)

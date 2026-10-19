@@ -18,7 +18,7 @@ const QUEUE_KEY = 'gym_offline_queue_v2';
 const LEGACY_QUEUE_KEY = 'gym_offline_queue';
 export const QUEUE_CHANGED_EVENT = 'gym-offline-queue-changed';
 
-export type QueueItemType = 'saveSet' | 'updateSet' | 'deleteSet';
+export type QueueItemType = 'saveSet' | 'updateSet' | 'deleteSet' | 'updateSession';
 
 export interface QueuedItem {
   id: string;

@@ -24,6 +24,8 @@ export interface GlobalHistoryExercise {
 }
 
 export interface GlobalHistorySession {
+  location?: 'gym' | 'home' | 'other' | null;
+  duration?: string;
   id?: string;
   /** `_api_date` emits YYYY.MM.DD, but ISO shows up too. Both are handled. */
   date?: string;

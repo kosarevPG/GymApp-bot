@@ -8,6 +8,7 @@ though the backend secret bypasses RLS.
 from __future__ import annotations
 
 import json
+import math
 import os
 import uuid
 from datetime import datetime, timedelta
@@ -96,6 +97,8 @@ def _load_rules(value: Any) -> Optional[Dict[str, Any]]:
     body_weight = _optional_float(value.get("bw"))
     if body_weight is not None and body_weight > 0:
         rules["bw"] = body_weight
+    if value.get("perSide") is True:
+        rules["perSide"] = True
     return rules
 
 
@@ -374,6 +377,7 @@ class SupabaseStore:
             "measure": "cardio" if record.get("measure") == "cardio" else "strength",
             "baseWeight": _to_float(record.get("base_weight_kg")),
             "weightMultiplier": _to_float(record.get("multiplier"), 1.0),
+            "unilateral": source_payload.get("reps_per_side") is True,
             "secondaryMuscles": str(source_payload.get("secondary_muscles") or ""),
             # None rather than 0 — the difference between "no target" and "a
             # target of zero" is the whole point of these being nullable.
@@ -392,9 +396,11 @@ class SupabaseStore:
         groups = sorted({row["muscleGroup"] for row in exercises if row["muscleGroup"]}, key=str.casefold)
         return {"groups": groups, "exercises": exercises}
 
-    def _ensure_session(self, user_id: str, session_ref: str, performed_at: datetime) -> Dict[str, Any]:
+    def _ensure_session(self, user_id: str, session_ref: str, performed_at: datetime, location: Any = None) -> Dict[str, Any]:
         if not session_ref:
             raise ValueError("session_id is required")
+        if location is not None and location not in ("gym", "home", "other"):
+            raise ValueError("location must be gym, home or other")
         source_record_id = f"live:{session_ref}"
         existing = self._select(
             "gym_workout_sessions",
@@ -416,12 +422,37 @@ class SupabaseStore:
             "ended_at": ended_at.isoformat(),
             "source": "gymapp",
             "source_record_id": source_record_id,
-            "source_payload": {"client_session_id": session_ref},
+            "source_payload": {**(existing[0].get("source_payload") or {}), "client_session_id": session_ref} if existing else {"client_session_id": session_ref},
         }
+        # Never put metadata in a repeated set upsert: a saved-session edit wins
+        # over stale offline set payloads. Old clients leave location unknown.
+        if not existing and location is not None:
+            row["location"] = location
         result = self.client.upsert(
             "gym_workout_sessions", row, on_conflict="user_id,source,source_record_id"
         )
         return result[0] if result else row
+
+    def update_session(self, user_id: str, data: Dict[str, Any]) -> bool:
+        session_id = str(uuid.UUID(str(data.get("session_id") or "")))
+        values: Dict[str, Any] = {}
+        if "location" in data:
+            if data["location"] is not None and data["location"] not in ("gym", "home", "other"):
+                raise ValueError("location must be gym, home, other or null")
+            values["location"] = data["location"]
+        if "duration_minutes" in data:
+            duration = data["duration_minutes"]
+            if duration is not None:
+                if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or not 0 < duration <= 1440:
+                    raise ValueError("duration_minutes must be between 0 and 1440")
+            values["duration_minutes"] = duration
+        if "duration_is_approximate" in data:
+            if not isinstance(data["duration_is_approximate"], bool):
+                raise ValueError("duration_is_approximate must be boolean")
+            values["duration_is_approximate"] = data["duration_is_approximate"]
+        if not values:
+            raise ValueError("session metadata is required")
+        return bool(self.client.update("gym_workout_sessions", values, filters={"user_id": user_id, "id": session_id}))
 
     def _ensure_group(
         self, user_id: str, session: Dict[str, Any], session_ref: str, group_ref: str, position: int
@@ -517,7 +548,7 @@ class SupabaseStore:
         session_ref = str(data.get("session_id") or "").strip()
         group_ref = str(data.get("set_group_id") or session_ref).strip()
         try:
-            session = self._ensure_session(user_id, session_ref, performed_at)
+            session = self._ensure_session(user_id, session_ref, performed_at, data.get("location"))
             group = self._ensure_group(user_id, session, session_ref, group_ref, position)
             load = _load_rules(data.get("load"))
             row = {
@@ -717,7 +748,7 @@ class SupabaseStore:
             return {"status": "error", "error": "order must be greater than zero"}
         try:
             session = self._ensure_session(
-                user_id, str(data.get("session_id") or "").strip(), performed_at
+                user_id, str(data.get("session_id") or "").strip(), performed_at, data.get("location")
             )
         except ValueError as error:
             return {"status": "error", "error": str(error)}
@@ -861,7 +892,9 @@ class SupabaseStore:
                 )
                 group["cardio"].append(self._cardio_to_api(row))
                 group["latest"] = max(group["latest"], str(row.get("performed_at") or ""))
-        history = sorted(grouped.values(), key=lambda group: group["latest"], reverse=True)
+        # Date-only restorations intentionally have no performed_at. They still
+        # belong in chronological history rather than after every timed session.
+        history = sorted(grouped.values(), key=lambda group: (group["date"], group["latest"]), reverse=True)
         history = history[: max(1, min(limit, 100))]
         return {
             "history": [
@@ -881,7 +914,11 @@ class SupabaseStore:
         sessions, groups, sets, exercises = self._data(user_id)
         exercise_by_id = {row["id"]: row for row in exercises}
         group_by_id = {row["id"]: row for row in groups}
-        sets = sorted(sets, key=lambda row: str(row.get("performed_at") or ""), reverse=True)[:limit_rows]
+        session_by_id = {row["id"]: row for row in sessions}
+        sets = sorted(sets, key=lambda row: (
+            str(session_by_id.get(row.get("session_id"), {}).get("workout_date") or ""),
+            str(row.get("performed_at") or ""), _to_int(row.get("position")),
+        ), reverse=True)[:limit_rows]
         sets_by_session: Dict[str, List[Dict[str, Any]]] = {}
         for row in sets:
             sets_by_session.setdefault(row["session_id"], []).append(row)
@@ -932,7 +969,12 @@ class SupabaseStore:
                 "id": session["id"],
                 "date": _api_date(session.get("workout_date")),
                 "muscleGroups": sorted(muscles, key=str.casefold),
-                "duration": f"{len(session_sets) * 2 + round(sum(_to_float(r.get('duration_seconds')) for r in session_cardio) / 60)}м",
+                "location": session.get("location"),
+                "duration_minutes": session.get("duration_minutes"),
+                "duration_is_approximate": session.get("duration_is_approximate", False),
+                "duration": (f"{'≈' if session.get('duration_is_approximate') else ''}{_to_float(session['duration_minutes']):g}м"
+                             if session.get("duration_minutes") is not None else
+                             f"{len(session_sets) * 2 + round(sum(_to_float(r.get('duration_seconds')) for r in session_cardio) / 60)}м"),
                 "exercises": exercises_api,
             })
         return result
@@ -1133,4 +1175,5 @@ def create_exercise(user_id: str, name: str, group: str, measure: str = "strengt
 def update_exercise(user_id: str, exercise_id: str, updates: Dict[str, Any]): return _store().update_exercise(user_id, exercise_id, updates)
 def get_global_history(user_id: str, limit_rows: int = 3000): return _store().get_global_history(user_id, limit_rows)
 def get_workout_session(user_id: str, session_id: str): return _store().get_workout_session(user_id, session_id)
+def update_session(user_id: str, data: Dict[str, Any]): return _store().update_session(user_id, data)
 def get_analytics(user_id: str, days: int = 14): return _store().get_analytics(user_id, days)
