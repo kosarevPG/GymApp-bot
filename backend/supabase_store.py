@@ -13,7 +13,7 @@ import os
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request
 from zoneinfo import ZoneInfo
@@ -218,15 +218,27 @@ class SupabaseRestClient:
             headers=headers,
             method=method,
         )
-        try:
-            with urlopen(request, timeout=20) as result:
-                raw = result.read().decode("utf-8")
-                # Заголовки читаем только по запросу: их нет у части заглушек,
-                # а обычным вызовам они и не нужны.
-                response_headers = dict(result.headers) if with_headers else {}
-        except HTTPError as error:
-            detail = error.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Supabase Data API returned {error.code}: {detail}") from error
+        # A stalled read must not consume most of the 30s function budget.
+        # Retry only GET: repeating a write after an ambiguous timeout could
+        # overwrite a newer edit. Writes retain their existing queue semantics.
+        attempts = 2 if method == "GET" else 1
+        for attempt in range(attempts):
+            try:
+                with urlopen(request, timeout=4 if method == "GET" else 20) as result:
+                    raw = result.read().decode("utf-8")
+                    # Headers are optional for older test clients.
+                    response_headers = dict(result.headers) if with_headers else {}
+                break
+            except HTTPError as error:
+                if attempt + 1 < attempts and error.code in (502, 503, 504):
+                    error.close()
+                    continue
+                detail = error.read().decode("utf-8", errors="replace")
+                error.close()
+                raise RuntimeError(f"Supabase Data API returned {error.code}: {detail}") from error
+            except (URLError, TimeoutError):
+                if attempt + 1 == attempts:
+                    raise
         payload = json.loads(raw) if raw else []
         return (payload, response_headers) if with_headers else payload
 

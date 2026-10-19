@@ -1,9 +1,11 @@
 import copy
+import io
 import json
 import unittest
 import uuid
 from datetime import datetime, timedelta
 from unittest.mock import patch
+from urllib.error import HTTPError
 from zoneinfo import ZoneInfo
 
 from supabase_store import ConflictError, SupabaseRestClient, SupabaseStore
@@ -100,6 +102,43 @@ class FakeResponse:
 
 
 class SupabaseRestClientTests(unittest.TestCase):
+    def test_get_retries_timeout_with_a_bounded_read_timeout(self):
+        client = SupabaseRestClient("https://example.supabase.co", "sb_secret_example")
+        with patch("supabase_store.urlopen", side_effect=[TimeoutError(), FakeResponse()]) as send:
+            self.assertEqual(client.select("gym_sets", filters={"user_id": USER_ID}), [])
+        self.assertEqual(send.call_count, 2)
+        self.assertTrue(all(call.kwargs["timeout"] == 4 for call in send.call_args_list))
+
+    def test_get_retry_is_bounded(self):
+        client = SupabaseRestClient("https://example.supabase.co", "sb_secret_example")
+        with patch("supabase_store.urlopen", side_effect=TimeoutError()) as send:
+            with self.assertRaises(TimeoutError):
+                client.select("gym_sets")
+        self.assertEqual(send.call_count, 2)
+
+    def test_get_retries_temporary_gateway_error(self):
+        client = SupabaseRestClient("https://example.supabase.co", "sb_secret_example")
+        failure = HTTPError("https://example.supabase.co", 503, "Unavailable", {}, io.BytesIO(b"unavailable"))
+        with patch("supabase_store.urlopen", side_effect=[failure, FakeResponse()]) as send:
+            self.assertEqual(client.select("gym_sets"), [])
+        self.assertEqual(send.call_count, 2)
+
+    def test_get_does_not_retry_permission_errors(self):
+        client = SupabaseRestClient("https://example.supabase.co", "sb_secret_example")
+        failure = HTTPError("https://example.supabase.co", 403, "Forbidden", {}, io.BytesIO(b"forbidden"))
+        with patch("supabase_store.urlopen", side_effect=failure) as send:
+            with self.assertRaisesRegex(RuntimeError, "403"):
+                client.select("gym_sets")
+        self.assertEqual(send.call_count, 1)
+
+    def test_post_timeout_is_never_retried_by_transport(self):
+        client = SupabaseRestClient("https://example.supabase.co", "sb_secret_example")
+        with patch("supabase_store.urlopen", side_effect=TimeoutError()) as send:
+            with self.assertRaises(TimeoutError):
+                client.upsert("gym_sets", {"id": REQUEST_1}, on_conflict="id")
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(send.call_args.kwargs["timeout"], 20)
+
     def test_new_secret_key_is_sent_only_as_apikey(self):
         client = SupabaseRestClient("https://example.supabase.co", "sb_secret_example")
         with patch("supabase_store.urlopen", return_value=FakeResponse()) as send:
