@@ -520,15 +520,6 @@ const useHaptics = () => {
   return { haptic, notify };
 };
 
-const useDebounce = <T,>(value: T, delay: number): T => {
-  const [debouncedValue, setDebouncedValue] = useState(value);
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedValue(value), delay);
-    return () => clearTimeout(t);
-  }, [value, delay]);
-  return debouncedValue;
-};
-
 const useSession = () => {
   const [sessionId, setSessionId] = useState('');
   const [location, setLocation] = useState<WorkoutLocation | null>(null);
@@ -1242,50 +1233,49 @@ const HomeScreen = ({ workoutActive, location, onLocationChange, restBanner, pla
   );
 };
 
-const ExercisesListScreen = ({ exercises, title, restBanner, onBack, onSelectExercise, onAddExercise, onEditExercise, searchQuery, onSearch }: any) => {
+const ExercisesListScreen = ({ exercises, groups, selectedGroup, onSelectGroup, title, restBanner, onBack, onSelectExercise, onAddExercise, onEditExercise, searchQuery, onSearch }: any) => {
   const [infoModalEx, setInfoModalEx] = useState<Exercise | null>(null);
-  const searchInputRef = useRef<HTMLInputElement>(null);
-  
-  useEffect(() => {
-    if (searchQuery && searchInputRef.current) {
-      searchInputRef.current.focus();
-      const length = searchInputRef.current.value.length;
-      searchInputRef.current.setSelectionRange(length, length);
-    }
-  }, [searchQuery]);
+  const visibleGroups = sortGroups([...new Set<string>(exercises.map((ex: Exercise) => ex.muscleGroup || 'Другое'))]);
   
   return (
     <motion.div initial={{ x: 50, opacity: 0 }} animate={{ x: 0, opacity: 1 }} className="flex flex-col h-full">
-      <ScreenHeader title={title} onBack={onBack} action={<button aria-label="Создать упражнение" onClick={onAddExercise} className="flex min-h-11 min-w-11 items-center justify-center rounded-xl text-blue-400 hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500"><Plus className="h-6 w-6" /></button>}>
-          {searchQuery && (
-            <div className="relative">
-              <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
-              <Input 
-                ref={searchInputRef}
-                placeholder="Найти..." 
-                aria-label="Поиск упражнений"
-                value={searchQuery}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) => onSearch(e.target.value)} 
-                className="pl-8 bg-zinc-900 w-full text-sm"
-              />
-            </div>
-          )}
-      </ScreenHeader>
+      <ScreenHeader title={title} onBack={onBack} action={<button aria-label="Создать упражнение" onClick={onAddExercise} className="flex min-h-11 min-w-11 items-center justify-center rounded-xl text-blue-400 hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500"><Plus className="h-6 w-6" /></button>} />
+      <ScreenContent className="space-y-3 pt-4">
+        <div role="search" className="relative">
+          <Search aria-hidden="true" className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-zinc-400" />
+          <Input role="searchbox" inputMode="search" enterKeyHint="search" placeholder="Название упражнения" aria-label="Поиск упражнений"
+            value={searchQuery} onChange={(e: React.ChangeEvent<HTMLInputElement>) => onSearch(e.target.value)} className="pl-10 pr-12 text-base" />
+          {searchQuery && <button type="button" aria-label="Очистить поиск" onClick={() => onSearch('')}
+            className="absolute right-0 top-0 flex h-12 min-w-11 items-center justify-center rounded-xl text-zinc-300 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500"><X className="h-5 w-5" /></button>}
+        </div>
+        <div role="group" aria-label="Группы мышц" className="flex flex-wrap gap-2">
+          {[null, ...groups].map((group: string | null) => <button key={group || 'all'} type="button" aria-pressed={selectedGroup === group}
+            onClick={() => onSelectGroup(group)} className={`min-h-11 rounded-xl px-3 text-sm font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500 ${selectedGroup === group ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'}`}>
+            {group || 'Все'}
+          </button>)}
+        </div>
+      </ScreenContent>
       {restBanner && <ScreenContent className="pt-4">{restBanner}</ScreenContent>}
-      <ScreenContent className="space-y-2 py-4 pb-24">
-        {exercises.map((ex: Exercise) => (
+      <ScreenContent className="space-y-5 py-4 pb-24">
+        {!exercises.length && <div role="status" className="space-y-2 py-3 text-sm text-zinc-300">
+          <p>Упражнения не найдены. Измените название или выберите другую группу.</p>
+          <button type="button" onClick={() => { onSearch(''); onSelectGroup(null); }} className="min-h-11 text-blue-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500">Сбросить поиск и группу</button>
+        </div>}
+        {visibleGroups.map(group => <section key={group} aria-label={`Упражнения: ${group}`} className="space-y-2">
+          <h2 className="text-sm font-semibold text-zinc-300">{group}</h2>
+          {exercises.filter((ex: Exercise) => (ex.muscleGroup || 'Другое') === group).map((ex: Exercise) => (
           <div key={ex.id} className="flex items-center p-2 rounded-2xl hover:bg-zinc-900 border border-transparent hover:border-zinc-800 transition-all">
-            <div onClick={(e) => { e.stopPropagation(); setInfoModalEx(ex); }} className="w-14 h-14 rounded-xl bg-zinc-800 flex-shrink-0 overflow-hidden cursor-pointer active:scale-90 transition-transform relative group">
+            <button type="button" aria-label={`Техника упражнения: ${ex.name}`} onClick={() => setInfoModalEx(ex)} className="w-14 h-14 rounded-xl bg-zinc-800 flex-shrink-0 overflow-hidden active:scale-90 transition-transform relative group focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500">
               {ex.imageUrl ? <img src={ex.imageUrl} className="w-full h-full object-cover" alt="" /> : <div className="w-full h-full flex items-center justify-center text-zinc-600"><Info /></div>}
               <div className="absolute inset-0 bg-black/30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><Settings className="w-5 h-5 text-white" /></div>
-            </div>
-            <div onClick={() => onSelectExercise(ex)} className="flex-1 px-4 cursor-pointer">
-              <div className="font-medium text-zinc-100 text-[17px]">{ex.name}</div>
-              <div className="text-xs text-zinc-400">{ex.muscleGroup}</div>
-            </div>
-            <button onClick={() => onSelectExercise(ex)} className="p-2 text-zinc-600"><ChevronRight className="w-5 h-5" /></button>
+            </button>
+            <button type="button" onClick={() => onSelectExercise(ex)} className="flex min-h-14 min-w-0 flex-1 items-center gap-2 rounded-xl py-2 pl-4 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500">
+              <span className="min-w-0 flex-1"><span className="block font-medium text-zinc-100 text-[17px]">{ex.name}</span><span className="block text-xs text-zinc-400">{ex.muscleGroup}</span></span>
+              <ChevronRight aria-hidden="true" className="h-5 w-5 shrink-0 text-zinc-400" />
+            </button>
           </div>
-        ))}
+          ))}
+        </section>)}
       </ScreenContent>
       <Modal isOpen={!!infoModalEx} onClose={() => setInfoModalEx(null)} title={infoModalEx?.name} headerAction={<button onClick={() => { if (infoModalEx) { onEditExercise(infoModalEx); setInfoModalEx(null); } }} className="p-2 bg-zinc-800 rounded-full text-zinc-400 hover:text-blue-400"><Pencil className="w-5 h-5" /></button>}>
         {infoModalEx && (
@@ -2673,13 +2663,13 @@ const App = () => {
     }
   }, [isAuthenticated, remoteAuthenticated, ownerKey]);
 
-  const debouncedSearchQuery = useDebounce(searchQuery, 300);
   const filteredExercises = useMemo(() => {
+    const query = searchQuery.trim().toLocaleLowerCase('ru');
     let list = allExercises;
     if (selectedGroup) list = list.filter(ex => ex.muscleGroup === selectedGroup);
-    if (debouncedSearchQuery) list = list.filter(ex => ex.name.toLowerCase().includes(debouncedSearchQuery.toLowerCase()));
+    if (query) list = list.filter(ex => ex.name.toLocaleLowerCase('ru').includes(query));
     return [...list].sort((a, b) => a.name.localeCompare(b.name, 'ru', { sensitivity: 'base' }));
-  }, [allExercises, selectedGroup, debouncedSearchQuery]);
+  }, [allExercises, selectedGroup, searchQuery]);
 
   const handleCreate = async () => {
     if (!newName || !newGroup) return;
@@ -2761,7 +2751,7 @@ const App = () => {
       {screen === 'analytics' && <AnalyticsScreen onBack={() => setScreen('home')} onSummary={() => setScreen('summary')} period={analyticsPeriod} onPeriodChange={setAnalyticsPeriod} />}
       {screen === 'summary' && <TrainerSummaryScreen onBack={() => setScreen('analytics')} notify={notify} allExercises={allExercises} period={analyticsPeriod} onPeriodChange={setAnalyticsPeriod} />}
       {screen === 'history' && <HistoryScreen onRepeat={(source: GlobalWorkoutSession) => beginWorkout(source)} onBack={() => { setDeeplinkSession(null); setScreen('home'); }} allExercises={allExercises} bodyWeight={bodyWeight} notify={notify} haptic={haptic} focusSessionId={deeplinkSession} />}
-      {screen === 'exercises' && <ExercisesListScreen restBanner={restBanner} exercises={filteredExercises} title={selection?.kind === 'replace' ? 'Заменить упражнение' : selection ? 'Добавить упражнение' : 'Упражнения'} searchQuery={searchQuery} onSearch={(q: string) => setSearchQuery(q)} onBack={() => { setSelection(null); setSearchQuery(''); setSelectedGroup(null); setScreen('home'); }} onSelectExercise={selectExercise} onAddExercise={() => setIsCreateModalOpen(true)} onEditExercise={(ex: Exercise) => setExerciseToEdit(ex)} />}
+      {screen === 'exercises' && <ExercisesListScreen restBanner={restBanner} exercises={filteredExercises} groups={groups} selectedGroup={selectedGroup} onSelectGroup={setSelectedGroup} title={selection?.kind === 'replace' ? 'Заменить упражнение' : selection ? 'Добавить упражнение' : 'Упражнения'} searchQuery={searchQuery} onSearch={(q: string) => setSearchQuery(q)} onBack={() => { setSelection(null); setSearchQuery(''); setSelectedGroup(null); setScreen('home'); }} onSelectExercise={selectExercise} onAddExercise={() => setIsCreateModalOpen(true)} onEditExercise={(ex: Exercise) => setExerciseToEdit(ex)} />}
       {screen === 'workout' && currentExercise && <WorkoutScreen clock={clock} onClockChange={changeClock} onResumeRunning={resumeClock} onGroupChange={changeGroup} key={`${planDefaults?.blockId || ''}:${currentExercise.id}`} stepTitle={activeStep ? `Упражнение ${plan.indexOf(activeStep) + 1} из ${plan.length}` : undefined} onWorkoutOverview={() => setScreen('home')} onReplace={activeStep ? () => chooseExercise('replace', activeStep.key) : undefined} onSkip={activeStep ? () => finishStep(activeStep.key, 'skipped') : undefined} onFinish={finishExercise} initialExercise={currentExercise} allExercises={allExercises} planDefaults={planDefaults} sessionId={sessionId} location={location} incrementOrder={incrementOrder} ensureOrderAtLeast={ensureOrderAtLeast} bodyWeight={bodyWeight} plates={plates} haptic={haptic} notify={notify} onBack={() => setScreen('home')} />}
       <Modal isOpen={!!pendingRepeat} onClose={() => setPendingRepeat(null)} title="Текущая тренировка ещё идёт">
         <p className="mb-4 text-sm text-zinc-300">Выполненные подходы будут сохранены перед началом выбранной тренировки.</p>
