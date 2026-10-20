@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useSyncExternalStore } from 'react';
 import { 
   Search, ChevronRight, Plus, X, Info, 
   Check, Trash2, StickyNote, ChevronDown, Dumbbell, Calendar, 
   ChevronLeft, Settings, ArrowLeft, Camera, Pencil, Trophy,
   History as HistoryIcon, Activity, Link as LinkIcon, Target
-  , Play, Repeat2, ArrowUp, ArrowDown, SkipForward, Replace
+  , Play, Repeat2, ArrowUp, ArrowDown, SkipForward, Replace, ClipboardList
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts';
@@ -21,6 +21,10 @@ import { WorkoutClockPanel } from './components/WorkoutClockPanel';
 import { WORKOUT_CLOCK_KEY, readClock, startSetClock, cancelSetClock, completeSetTiming, nextRestClock, betweenExercises, formatSeconds, type WorkoutClock } from './workoutTiming';
 import { repeatPlan, templateSets, draftKey, replaceStep, nextStep, recordedSets } from './workoutRepeat';
 import { finishedSession, reconcileFinished } from './workoutJournal';
+import { createLocalResource } from './localResource';
+import { readLocalCache, writeLocalCache } from './cacheStorage';
+import { LocalDataStatus } from './components/LocalDataStatus';
+import { BottomNavigation } from './components/BottomNavigation';
 import { calcEffectiveWeight, weightInputLabel, WEIGHT_TYPE_OPTIONS, USER_BODY_WEIGHT_DEFAULT, describeLoad, DEFAULT_PLATES, PLATE_CHOICES, carryOverInput, loadRulesOf, rulesAsExercise, rulesForSet, setLoadLabel, forNewEntry } from './exerciseConfig';
 import type { Exercise, WorkoutSet, HistoryItem, CardioHistoryItem, ExerciseSessionData, SetType } from './types';
 import {
@@ -69,7 +73,7 @@ interface GlobalWorkoutSession {
     exerciseId?: string;
     sets: any[]; 
     cardio?: any[];
-    supersetId?: string;
+    supersetId?: string | null;
   }[];
 }
 
@@ -85,22 +89,29 @@ const authenticatedFetch = createAuthenticatedFetch({
 const getApiBaseUrl = () => getTelegramInitData() ? API_BASE_URL : STANDALONE_API_BASE_URL;
 const getApiUrl = (endpoint: string) => `${getApiBaseUrl()}?url=/api/${endpoint}`;
 
+const telegramCacheOwner = () => {
+  if (!getTelegramInitData()) return '';
+  try { return `telegram:${JSON.parse(new URLSearchParams(getTelegramInitData()).get('user') || '{}').id || 'unknown'}`; }
+  catch { return 'telegram:unknown'; }
+};
+let cacheOwner = telegramCacheOwner();
+
 const cacheExercises = (data: any) => {
+  try { writeLocalCache(localStorage, cacheOwner, 'catalogue', { data, updatedAt: Date.now() }); } catch { /* Network data remains usable. */ }
   try { localStorage.setItem('gym_exercises_cache', JSON.stringify(data)); } catch (_) {}
 };
 
 const getCachedExercises = () => {
-  try { return JSON.parse(localStorage.getItem('gym_exercises_cache') || 'null'); } catch { return null; }
+  const saved = readLocalCache<any>(localStorage, cacheOwner, 'catalogue');
+  return saved?.data || null;
 };
 
-const historyCacheKey = (exerciseId: string) => `gym_history_cache_${exerciseId}`;
-
 const cacheHistory = (exerciseId: string, data: any) => {
-  try { localStorage.setItem(historyCacheKey(exerciseId), JSON.stringify(data)); } catch (_) {}
+  try { writeLocalCache(localStorage, cacheOwner, `exercise:${exerciseId}`, { data, updatedAt: Date.now() }); } catch (_) {}
 };
 
 const getCachedHistory = (exerciseId: string) => {
-  try { return JSON.parse(localStorage.getItem(historyCacheKey(exerciseId)) || 'null'); } catch { return null; }
+  return readLocalCache<any>(localStorage, cacheOwner, `exercise:${exerciseId}`)?.data || null;
 };
 
 const GLOBAL_HISTORY_CACHE_KEY = 'gym_global_history_cache';
@@ -110,15 +121,79 @@ const historyLoader = createHistoryLoader({
   read: (id) => {
     const cached = getCachedHistory(id);
     if (cached) return decodeHistory(cached);
-    try {
-      const journal = JSON.parse(localStorage.getItem(GLOBAL_HISTORY_CACHE_KEY) || '[]');
-      return historyFromJournal(id, Array.isArray(journal) ? journal : []);
-    } catch { return decodeHistory(null); }
+    return historyFromJournal(id, localJournal());
   },
-  fetch: (id) => api.request(`history?exercise_id=${encodeURIComponent(id)}`),
+  fetch: async (id) => { const owner = cacheOwner; const data = await api.request(`history?exercise_id=${encodeURIComponent(id)}`); return owner === cacheOwner ? data : null; },
   write: cacheHistory,
   online: () => navigator.onLine,
 });
+
+const validJournal = (value: unknown): value is GlobalWorkoutSession[] => Array.isArray(value)
+  && value.every(row => row && typeof row.id === 'string' && Array.isArray(row.exercises));
+const readLocalFinished = (): GlobalWorkoutSession[] => {
+  const scoped = readLocalCache<GlobalWorkoutSession[]>(localStorage, cacheOwner, 'finished');
+  if (scoped && validJournal(scoped.data)) return scoped.data;
+  const previousOwner = localStorage.getItem('gym_read_cache_owner');
+  if (previousOwner && previousOwner !== cacheOwner) return [];
+  try { const data = JSON.parse(localStorage.getItem('gym_finished_local') || '[]'); return validJournal(data) ? data : []; }
+  catch { return []; }
+};
+const writeLocalFinished = (data: GlobalWorkoutSession[]) => {
+  writeLocalCache(localStorage, cacheOwner, 'finished', { data, updatedAt: Date.now() });
+  try { localStorage.setItem('gym_finished_local', JSON.stringify(data)); } catch { /* The scoped copy is saved. */ }
+};
+const journals = new Map<string, ReturnType<typeof createLocalResource<GlobalWorkoutSession[]>>>();
+const journalResource = () => {
+  const owner = cacheOwner;
+  if (!journals.has(owner)) journals.set(owner, createLocalResource<GlobalWorkoutSession[]>({
+    read: () => readLocalCache(localStorage, owner, 'journal'),
+    write: saved => {
+      writeLocalCache(localStorage, owner, 'journal', saved);
+      if (owner === cacheOwner) try {
+        localStorage.setItem(GLOBAL_HISTORY_CACHE_KEY, JSON.stringify(saved.data));
+        localStorage.setItem('gym_read_cache_owner', owner);
+      } catch { /* The account-scoped copy is already saved. */ }
+    },
+    fetch: async () => {
+      const data = await api.request('global_history', {}, 28_000);
+      if (owner !== cacheOwner || !validJournal(data)) return null;
+      const { remaining, history } = reconcileFinished(readLocalFinished(), data, getQueue());
+      try { writeLocalFinished(remaining); } catch { /* Keep the durable queue. */ }
+      return pendingTimingEdits(pendingSessionMetadata<GlobalWorkoutSession>(history, getQueue()), getQueue());
+    },
+    valid: validJournal, online: () => navigator.onLine && !!owner && owner === cacheOwner, ttl: 300_000,
+  }));
+  return journals.get(owner)!;
+};
+function localJournal(): GlobalWorkoutSession[] {
+  const cached = journalResource().getSnapshot().data || [];
+  const { history } = reconcileFinished(readLocalFinished(), cached, getQueue());
+  return pendingTimingEdits(pendingSessionMetadata<GlobalWorkoutSession>(history, getQueue()), getQueue());
+}
+type AnalyticsData = { volume?: number; workloadTrend?: WorkloadTrend; muscleVolume?: Record<string, number>; muscleSets?: Record<string, number> };
+const analyticsResources = new Map<string, ReturnType<typeof createLocalResource<AnalyticsData>>>();
+const analyticsResource = (period: number) => {
+  const owner = cacheOwner, key = `${owner}:${period}`;
+  if (!analyticsResources.has(key)) analyticsResources.set(key, createLocalResource<AnalyticsData>({
+    read: () => readLocalCache(localStorage, owner, `analytics:${period}`),
+    write: saved => writeLocalCache(localStorage, owner, `analytics:${period}`, saved),
+    fetch: async () => { const data = await api.request(`analytics?period=${period}`, {}, 28_000); return owner === cacheOwner ? data : null; },
+    valid: value => !!value && typeof value === 'object' && !Array.isArray(value) && 'muscleSets' in value,
+    online: () => navigator.onLine && !!owner && owner === cacheOwner, ttl: 300_000,
+  }));
+  return analyticsResources.get(key)!;
+};
+const refreshJournal = (force = false) => { const resource = journalResource(); if (force) resource.invalidate(); return resource.refresh(); };
+function useJournal() {
+  const resource = journalResource();
+  const snapshot = useSyncExternalStore(resource.subscribe, resource.getSnapshot);
+  const [queueVersion, setQueueVersion] = useState(0);
+  useEffect(() => { const changed = () => setQueueVersion(n => n + 1); window.addEventListener(QUEUE_CHANGED_EVENT, changed);
+    return () => window.removeEventListener(QUEUE_CHANGED_EVENT, changed); }, []);
+  useEffect(() => { void resource.refresh(); }, [resource]);
+  const history = useMemo(localJournal, [snapshot.data, queueVersion, resource]);
+  return { ...snapshot, history };
+}
 
 // Дольше, чем живёт вызов функции (--execution-timeout=30s в deploy_function.sh):
 // к моменту, когда клиент бросает запрос, сервер его уже не допишет, и повтор
@@ -174,12 +249,18 @@ const sendQueuedItem = async (item: QueuedItem): Promise<SendOutcome> => {
 };
 
 const initNetworkListeners = () => {
-  const sync = () => { void api.syncOfflineQueue(); };
+  const sync = () => {
+    void api.syncOfflineQueue(); void refreshJournal();
+    for (const resource of analyticsResources.values()) if (resource.observed()) void resource.refresh();
+  };
+  const resume = () => { if (document.visibilityState === 'visible') sync(); };
   window.addEventListener('online', sync);
+  document.addEventListener('visibilitychange', resume);
   const interval = window.setInterval(sync, 30_000);
   sync();
   return () => {
     window.removeEventListener('online', sync);
+    document.removeEventListener('visibilitychange', resume);
     window.clearInterval(interval);
   };
 };
@@ -218,7 +299,9 @@ const api = {
   // refresh=1 обходит кэш каталога на бэкенде — нужен сразу после правки,
   // иначе ответ может прийти с данными до неё и затереть изменение в UI.
   getInit: async (refresh = false) => {
+    const owner = cacheOwner;
     const data = await api.request(refresh ? 'init?refresh=1' : 'init');
+    if (owner !== cacheOwner) return null;
     if (data && data.exercises) {
       cacheExercises(data);
       return data;
@@ -237,26 +320,9 @@ const api = {
     return data && data.id ? data : null;
   },
 
-  getGlobalHistory: async () => {
-    const data = await api.request('global_history', {}, 28_000);
-    if (data) {
-      let local: any[] = [];
-      try { const parsed = JSON.parse(localStorage.getItem('gym_finished_local') || '[]'); if (Array.isArray(parsed)) local = parsed; } catch { /* The durable queue remains authoritative. */ }
-      const { remaining, history: complete } = reconcileFinished(local, data, getQueue());
-      try { localStorage.setItem('gym_finished_local', JSON.stringify(remaining)); } catch { /* Readable without cache space. */ }
-      const merged = pendingTimingEdits(pendingSessionMetadata<GlobalWorkoutSession>(complete, getQueue()), getQueue());
-      try { localStorage.setItem(GLOBAL_HISTORY_CACHE_KEY, JSON.stringify(merged)); } catch (_) {}
-      return merged;
-    }
-    try { return pendingTimingEdits(pendingSessionMetadata<GlobalWorkoutSession>(JSON.parse(localStorage.getItem(GLOBAL_HISTORY_CACHE_KEY) || '[]'), getQueue()), getQueue()); } catch { return []; }
-  },
+  getGlobalHistory: () => refreshJournal(),
 
-  getAnalytics: async (period: number = 14) => {
-    const params = new URLSearchParams();
-    params.set('period', period.toString());
-    const data = await api.request(`analytics?${params.toString()}`, {}, 28_000);
-    return data || null;
-  },
+  getAnalytics: (period: number = 14) => analyticsResource(period).refresh(),
   
   confirmBaseline: async (proposalId: string, action: 'CONFIRM' | 'SNOOZE' | 'DECLINE') => {
     return await api.request('confirm_baseline', {
@@ -278,8 +344,7 @@ const api = {
     upsertQueue('updateSession', { session_id: sessionId, location, client_request_id: sessionId });
     // Keep the optimistic value after queue acknowledgement while offline.
     try {
-      const cached = JSON.parse(localStorage.getItem(GLOBAL_HISTORY_CACHE_KEY) || '[]');
-      localStorage.setItem(GLOBAL_HISTORY_CACHE_KEY, JSON.stringify(pendingSessionMetadata(cached, getQueue())));
+      journalResource().update(cached => pendingSessionMetadata(cached || [], getQueue()));
     } catch { /* Queue is already durably saved. */ }
     queueMicrotask(() => { void api.syncOfflineQueue(); });
   },
@@ -995,11 +1060,10 @@ const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plat
  * programme is the coach's.
  */
 const TrainerSummaryScreen = ({ onBack, notify, allExercises = [] }: any) => {
-  const [history, setHistory] = useState<any[] | null>(null);
+  const journal = useJournal();
+  const history = journal.history;
   const [days, setDays] = useState(7);
   const [copied, setCopied] = useState(false);
-
-  useEffect(() => { api.getGlobalHistory().then((data: any) => setHistory(data || [])); }, []);
 
   const today = todayInLogFormat().replace(/\./g, '-');
   const exerciseById = useMemo(
@@ -1007,8 +1071,8 @@ const TrainerSummaryScreen = ({ onBack, notify, allExercises = [] }: any) => {
     [allExercises],
   );
   const summary = useMemo(
-    () => (history ? buildTrainerSummary(history, isoDaysAgo(today, days), today, exerciseById) : null),
-    [history, days, today, exerciseById],
+    () => (journal.data !== null || history.length ? buildTrainerSummary(history, isoDaysAgo(today, days), today, exerciseById) : null),
+    [history, days, today, exerciseById, journal.data !== null],
   );
   const text = useMemo(() => (summary ? formatTrainerSummaryText(summary) : ''), [summary]);
 
@@ -1043,7 +1107,7 @@ const TrainerSummaryScreen = ({ onBack, notify, allExercises = [] }: any) => {
           ))}
         </div>
 
-        {history === null && <div className="text-sm text-zinc-500">Читаю историю…</div>}
+        <LocalDataStatus snapshot={journal} onRefresh={() => void journalResource().refresh(true)} />
 
         {summary && summary.sessionCount === 0 && (
           <div className="rounded-xl bg-zinc-900 p-4 text-sm text-zinc-400">
@@ -1099,7 +1163,7 @@ const TrainerSummaryScreen = ({ onBack, notify, allExercises = [] }: any) => {
       </div>
 
       {summary && (
-        <div className="fixed inset-x-0 bottom-0 border-t border-zinc-800 bg-zinc-950/95 p-4 pb-safe-4 backdrop-blur">
+        <div className="fixed inset-x-0 above-app-navigation border-t border-zinc-800 bg-zinc-950 p-4">
           <Button onClick={copy} className="h-12 w-full">
             {copied ? 'Скопировано' : 'Скопировать текстом'}
           </Button>
@@ -1109,17 +1173,33 @@ const TrainerSummaryScreen = ({ onBack, notify, allExercises = [] }: any) => {
   );
 };
 
-const HomeScreen = ({ workoutActive, location, onLocationChange, restBanner, plan = [], planDone = [], draft, onOpenPlanItem, onStartWorkout, onFinishWorkout, onAllExercises, onHistory, onAnalytics, onSummary, onSettings, onMove, onReplace, onSkip, sourceDate }: any) => (
-  <div className="px-4 pb-24 pt-safe-4 space-y-5">
+const HomeScreen = ({ workoutActive, location, onLocationChange, restBanner, plan = [], planDone = [], draft, onOpenPlanItem, onStartWorkout, onFinishWorkout, onAllExercises, onHistory, onAnalytics, onSummary, onSettings, onMove, onReplace, onSkip, sourceDate }: any) => {
+  const journal = useJournal();
+  return (
+  <div className="mx-auto max-w-3xl px-4 pb-24 pt-safe-4 space-y-5">
     <div className="flex items-center justify-between gap-3">
-      <h1 className="text-2xl font-bold">{workoutActive ? 'Текущая тренировка' : 'Тренировки'}</h1>
+      <h1 className="text-2xl font-bold">Главная</h1>
       <button aria-label="Настройки" onClick={onSettings} className="min-h-11 min-w-11 flex items-center justify-center rounded-xl text-zinc-300 hover:bg-zinc-800"><Settings className="h-6 w-6" /></button>
     </div>
-    {!workoutActive ? <div className="space-y-3">
+    <LocalDataStatus snapshot={journal} onRefresh={() => void journalResource().refresh(true)} />
+    {!workoutActive && <section className="space-y-3">
+      <h2 className="text-lg font-semibold">Тренировка</h2>
       <p className="text-sm text-zinc-300">Откройте историю и повторите подходящую тренировку.</p>
       <Button onClick={onHistory} icon={HistoryIcon} className="w-full min-h-14 text-lg">Выбрать из истории</Button>
       <Button onClick={onStartWorkout} variant="secondary" icon={Plus} className="w-full min-h-12">Новая тренировка</Button>
-    </div> : <>
+    </section>}
+    <nav aria-label="Разделы приложения" className="divide-y divide-zinc-800 border-y border-zinc-800">
+      {[{ label: 'Аналитика', detail: 'Нагрузка и подходы по мышцам', icon: Activity, action: onAnalytics },
+        { label: 'Сводка для тренера', detail: 'Результаты для Паши', icon: ClipboardList, action: onSummary },
+        ...(!workoutActive ? [{ label: 'Справочник упражнений', detail: 'Техника и история упражнений', icon: Dumbbell, action: onAllExercises }] : []),
+      ].map(item => <button key={item.label} onClick={item.action} className="flex min-h-16 w-full items-center gap-3 py-3 text-left text-zinc-100 hover:bg-zinc-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500">
+        <item.icon className="h-5 w-5 shrink-0 text-zinc-400" />
+        <span className="min-w-0 flex-1"><span className="block font-medium">{item.label}</span><span className="block text-sm text-zinc-400">{item.detail}</span></span>
+        <ChevronRight className="h-5 w-5 shrink-0 text-zinc-500" />
+      </button>)}
+    </nav>
+    {workoutActive && <>
+      <h2 className="text-lg font-semibold">Текущая тренировка</h2>
       {sourceDate && <p className="text-sm text-zinc-300">Повторение тренировки {sourceDate}</p>}
       <label className="flex items-center justify-between gap-3 text-sm text-zinc-300">Место тренировки
         <select aria-label="Место новой тренировки" value={location || ''} onChange={e => onLocationChange(e.target.value)} className="min-h-11 rounded-lg bg-zinc-800 px-3 text-zinc-100">
@@ -1150,13 +1230,9 @@ const HomeScreen = ({ workoutActive, location, onLocationChange, restBanner, pla
       <Button onClick={onFinishWorkout} variant="secondary" className="w-full min-h-12">Завершить тренировку</Button>
       <Button onClick={onHistory} variant="ghost" className="w-full min-h-11">История тренировок</Button>
     </>}
-    <div className="flex flex-wrap gap-x-4 border-t border-zinc-800 pt-3">
-      <button onClick={onSummary} className="min-h-11 text-sm text-zinc-300">Сводка для тренера</button>
-      <button onClick={onAnalytics} className="min-h-11 text-sm text-zinc-300">Статистика</button>
-      {!workoutActive && <button onClick={onAllExercises} className="min-h-11 text-sm text-zinc-300">Справочник упражнений</button>}
-    </div>
   </div>
-);
+  );
+};
 
 const ExercisesListScreen = ({ exercises, title, restBanner, onBack, onSelectExercise, onAddExercise, onEditExercise, searchQuery, onSearch }: any) => {
   const [infoModalEx, setInfoModalEx] = useState<Exercise | null>(null);
@@ -1700,7 +1776,8 @@ const WorkoutScreen = ({ initialExercise, allExercises, clock, onClockChange, st
 };
 
 const HistoryScreen = ({ onBack, onRepeat, allExercises = [], bodyWeight = USER_BODY_WEIGHT_DEFAULT, notify, haptic, focusSessionId = null }: any) => {
-  const [history, setHistory] = useState<GlobalWorkoutSession[]>([]);
+  const journal = useJournal();
+  const history = journal.history;
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [editTarget, setEditTarget] = useState<any>(null);
   const [editW, setEditW] = useState('');
@@ -1712,21 +1789,18 @@ const HistoryScreen = ({ onBack, onRepeat, allExercises = [], bodyWeight = USER_
   const [focusState, setFocusState] = useState<'idle' | 'searching' | 'missing'>('idle');
   const focusRef = useRef<HTMLDivElement | null>(null);
 
-  const refresh = () => api.getGlobalHistory().then(data => {
-    setHistory(data);
-    setExpandedId(previous => previous ? data.find(row => row.id === previous || row.clientSessionId === previous)?.id || previous : null);
-  });
+  const refresh = () => refreshJournal(true);
   useEffect(() => {
-    refresh();
-    const afterSync = () => { if (getPendingCount() === 0) void refresh(); };
-    window.addEventListener(QUEUE_CHANGED_EVENT, afterSync);
-    return () => window.removeEventListener(QUEUE_CHANGED_EVENT, afterSync);
-  }, []);
+    setExpandedId(previous => previous ? history.find(row => row.id === previous || row.clientSessionId === previous)?.id || previous : null);
+  }, [journal.data]);
 
-  // Deep link from HealthOS. The backend is asked first — that call, not the
-  // presence of the id in the local list, is what establishes ownership.
+  // The current account's previously fetched journal can open a known session
+  // offline. Unknown links still require the backend's ownership check.
   useEffect(() => {
     if (!focusSessionId) return;
+    if (history.some(session => session.id === focusSessionId)) {
+      setFocusState('idle'); setExpandedId(focusSessionId); return;
+    }
     let cancelled = false;
     setFocusState('searching');
     void api.getSession(focusSessionId).then((session: any) => {
@@ -1736,7 +1810,7 @@ const HistoryScreen = ({ onBack, onRepeat, allExercises = [], bodyWeight = USER_
       setExpandedId(session.id);
     });
     return () => { cancelled = true; };
-  }, [focusSessionId]);
+  }, [focusSessionId, history.some(session => session.id === focusSessionId)]);
 
   // Scroll only once the card for that session actually exists in the list.
   useEffect(() => {
@@ -1801,7 +1875,7 @@ const HistoryScreen = ({ onBack, onRepeat, allExercises = [], bodyWeight = USER_
       api.updateSet({ ...locator(editTarget), timing: null });
       const next = pendingTimingEdits(history, getQueue());
       localStorage.setItem(GLOBAL_HISTORY_CACHE_KEY, JSON.stringify(next));
-      setHistory(next); setEditTarget(null); notify?.('success');
+      journalResource().update(() => next); setEditTarget(null); notify?.('success');
     } catch { notify?.('error'); }
   };
 
@@ -1821,6 +1895,7 @@ const HistoryScreen = ({ onBack, onRepeat, allExercises = [], bodyWeight = USER_
         <h1 className="text-xl font-bold">История</h1>
       </div>
       <div className="p-4 space-y-4 pb-20">
+        <LocalDataStatus snapshot={journal} onRefresh={() => void journalResource().refresh(true)} />
         {focusState !== 'idle' && (
           <div className="p-4 rounded-xl bg-zinc-800/60 border border-zinc-700 text-zinc-300 text-sm">
             {focusState === 'searching'
@@ -1854,7 +1929,6 @@ const HistoryScreen = ({ onBack, onRepeat, allExercises = [], bodyWeight = USER_
                       const location = (e.target.value || null) as WorkoutLocation | null;
                       try {
                         api.updateSession(w.id, location);
-                        setHistory(rows => rows.map(row => row.id === w.id ? { ...row, location } : row));
                         notify?.('success');
                       } catch { notify?.('error'); }
                     }}>
@@ -1917,7 +1991,7 @@ const HistoryScreen = ({ onBack, onRepeat, allExercises = [], bodyWeight = USER_
             </AnimatePresence>
           </Card>
         ))}
-        {history.length === 0 && <div className="text-center text-zinc-500 py-10 flex flex-col items-center"><Activity className="w-12 h-12 mb-3 opacity-20" /><p>Нет данных</p></div>}
+        {history.length === 0 && journal.data !== null && <div className="text-center text-zinc-500 py-10 flex flex-col items-center"><Activity className="w-12 h-12 mb-3 opacity-20" /><p>Тренировок пока нет</p></div>}
       </div>
       <Modal isOpen={!!editTarget} onClose={() => setEditTarget(null)} title="Правка подхода">
         {editTarget && (
@@ -1966,17 +2040,15 @@ type WorkloadTrend = {
 };
 
 const AnalyticsScreen = ({ onBack }: any) => {
-  const [data, setData] = useState<{ volume?: number; workloadTrend?: WorkloadTrend; muscleVolume?: Record<string, number>; muscleSets?: Record<string, number> } | null>(null);
   const [period, setPeriod] = useState(14);
-  const [loading, setLoading] = useState(true);
+  const resource = analyticsResource(period);
+  const snapshot = useSyncExternalStore(resource.subscribe, resource.getSnapshot);
+  const data = snapshot.data;
+  const loading = !data;
 
   useEffect(() => {
-    setLoading(true);
-    api.getAnalytics(period).then((d) => {
-      setData(d);
-      setLoading(false);
-    });
-  }, [period]);
+    void resource.refresh();
+  }, [resource]);
 
   const muscleList = useMemo(() => {
     const sets = data?.muscleSets || {};
@@ -1999,6 +2071,7 @@ const AnalyticsScreen = ({ onBack }: any) => {
         <h1 className="text-xl font-bold">Аналитика</h1>
       </div>
       <div className="p-4 space-y-6 pb-20">
+        <LocalDataStatus snapshot={snapshot} label="Аналитика" onRefresh={() => void resource.refresh(true)} />
         {/* Neutral by construction: one surface colour for every outcome. A
             red/amber/green scale here would reintroduce the ACWR threshold
             through styling. */}
@@ -2014,7 +2087,7 @@ const AnalyticsScreen = ({ onBack }: any) => {
           ))}
         </div>
         {loading ? (
-          <div className="text-center text-zinc-500 py-10">Загрузка...</div>
+          <div className="text-center text-zinc-400 py-10">{snapshot.error ? 'Аналитика пока недоступна.' : 'Получаю данные аналитики…'}</div>
         ) : (
           <>
             <Card className="p-4">
@@ -2195,6 +2268,8 @@ const App = () => {
   const [newMeasure, setNewMeasure] = useState<'strength' | 'cardio'>('strength');
   const [pendingCount, setPendingCount] = useState(getPendingCount());
   const telegramMode = isTelegramMode();
+  const [ownerKey, setOwnerKey] = useState(cacheOwner);
+  const activateCacheOwner = (owner: string) => { cacheOwner = owner; setOwnerKey(owner); };
   const [authState, setAuthState] = useState<'loading' | 'authenticated' | 'anonymous'>(
     telegramMode ? 'authenticated' : 'loading'
   );
@@ -2265,10 +2340,10 @@ const App = () => {
 
     let active = true;
     void getStandaloneSession().then((session) => {
-      if (active) setAuthState(session ? 'authenticated' : 'anonymous');
+      if (active) { activateCacheOwner(session ? `supabase:${session.user.id}` : ''); setAuthState(session ? 'authenticated' : 'anonymous'); }
     });
     const subscription = supabaseAuth?.auth.onAuthStateChange((_event, session) => {
-      if (active) setAuthState(session ? 'authenticated' : 'anonymous');
+      if (active) { activateCacheOwner(session ? `supabase:${session.user.id}` : ''); setAuthState(session ? 'authenticated' : 'anonymous'); }
     }).data.subscription;
     const requireSignIn = () => {
       setAuthState('anonymous');
@@ -2293,6 +2368,8 @@ const App = () => {
       setLoginError(error);
       return;
     }
+    const signedIn = await getStandaloneSession();
+    activateCacheOwner(signedIn ? `supabase:${signedIn.user.id}` : '');
     setLoginPassword('');
     setAuthState('authenticated');
   };
@@ -2431,10 +2508,8 @@ const App = () => {
           ...(active.sourceSessionId ? { repeated_from_session_id: active.sourceSessionId } : {}) });
         const local = finishedSession(readSavedWorkout(), allExercises, sessionId, location, active.startedAt, endedAt, bodyWeight);
         if (local) {
-          const saved = JSON.parse(localStorage.getItem('gym_finished_local') || '[]');
-          localStorage.setItem('gym_finished_local', JSON.stringify([{ ...local, repeatedFromSessionId: active.sourceSessionId }, ...saved.filter((s: any) => s.clientSessionId !== sessionId)]));
-          const cached = JSON.parse(localStorage.getItem(GLOBAL_HISTORY_CACHE_KEY) || '[]');
-          localStorage.setItem(GLOBAL_HISTORY_CACHE_KEY, JSON.stringify([local, ...cached.filter((s: any) => s.clientSessionId !== sessionId)]));
+          writeLocalFinished([{ ...local, repeatedFromSessionId: active.sourceSessionId }, ...readLocalFinished().filter(s => s.clientSessionId !== sessionId)]);
+          journalResource().update(cached => [local, ...(cached || []).filter(s => s.clientSessionId !== sessionId)]);
         }
       }
       stopExerciseRest(); localStorage.removeItem(ACTIVE_WORKOUT_KEY); localStorage.removeItem(WORKOUT_STORAGE_KEY);
@@ -2492,6 +2567,8 @@ const App = () => {
         setGroups(sortGroups(fresh.groups));
         setAllExercises(fresh.exercises || []);
       }
+      void refreshJournal(true);
+      for (const resource of analyticsResources.values()) resource.invalidate();
     } catch {
       setDataBusy(false);
       notify('error');
@@ -2538,17 +2615,27 @@ const App = () => {
   useEffect(() => {
     if (!isAuthenticated) return;
     const cleanupNetwork = initNetworkListeners();
-    const updatePendingCount = () => { setPendingCount(getPendingCount()); setQueueItems(getQueue()); setInFlightId(getInFlightId()); };
+    let previousPending = getPendingCount();
+    const updatePendingCount = () => {
+      const pending = getPendingCount();
+      setPendingCount(pending); setQueueItems(getQueue()); setInFlightId(getInFlightId());
+      if (previousPending > 0 && pending === 0) {
+        void refreshJournal(true);
+        for (const resource of analyticsResources.values()) { resource.invalidate(); if (resource.observed()) void resource.refresh(); }
+      }
+      previousPending = pending;
+    };
     window.addEventListener(QUEUE_CHANGED_EVENT, updatePendingCount);
     updatePendingCount();
     return () => {
       cleanupNetwork();
       window.removeEventListener(QUEUE_CHANGED_EVENT, updatePendingCount);
     };
-  }, [isAuthenticated]);
+  }, [isAuthenticated, ownerKey]);
 
   useEffect(() => { 
     if (isAuthenticated) {
+      setGroups([]); setAllExercises([]);
       const applyInit = (data: any) => {
         if (data && data.groups) {
           setGroups(sortGroups(data.groups));
@@ -2561,10 +2648,10 @@ const App = () => {
       }); 
       // A single background request prepares offline templates even for exercises
       // not opened on this device yet. It never gates navigation or editing.
-      if (navigator.onLine) void api.getGlobalHistory();
+      if (navigator.onLine) void journalResource().refresh(true);
       void api.syncOfflineQueue();
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, ownerKey]);
 
   const debouncedSearchQuery = useDebounce(searchQuery, 300);
   const filteredExercises = useMemo(() => {
@@ -2645,7 +2732,7 @@ const App = () => {
     notify={() => { haptic('heavy'); notify('warning'); }} /> : null;
   const activeStep = plan.find(p => p.key === activeStepKey);
   return (
-    <div className="bg-zinc-950 min-h-screen text-zinc-50 font-sans selection:bg-blue-500/30 pb-safe">
+    <div className="bg-zinc-950 min-h-screen text-zinc-50 font-sans selection:bg-blue-500/30 pb-app-navigation">
       {workoutError && <div role="alert" className="mx-4 flex items-center gap-3 rounded-xl border border-amber-700 bg-zinc-900 p-3 text-sm text-amber-200"><span className="flex-1">{workoutError}</span><button aria-label="Закрыть сообщение" onClick={() => setWorkoutError('')} className="min-h-11 min-w-11"><X className="mx-auto h-5 w-5" /></button></div>}
       {screen === 'home' && <HomeScreen location={location} onLocationChange={changeWorkoutLocation} restBanner={restBanner} workoutActive={workoutActive} plan={plan} planDone={planDone} draft={readSavedWorkout()} onOpenPlanItem={openPlanItem} onStartWorkout={startWorkout} onFinishWorkout={() => setIsFinishConfirmOpen(true)} onAllExercises={() => workoutActive ? chooseExercise('add') : setScreen('exercises')} onHistory={() => setScreen('history')} onAnalytics={() => setScreen('analytics')} onSummary={() => setScreen('summary')} onMove={moveStep} onReplace={(key: string) => chooseExercise('replace', key)} onSkip={(key: string) => finishStep(key, 'skipped')} sourceDate={plan.find(p => p.sourceDate)?.sourceDate} onSettings={() => { setBodyWeightInput(String(bodyWeight)); setPlatesDraft(plates); setPresetDraft(preset); setIsSettingsOpen(true); }} />}
       {screen === 'analytics' && <AnalyticsScreen onBack={() => setScreen('home')} />}
@@ -2658,14 +2745,8 @@ const App = () => {
         <Button className="mb-2 w-full min-h-12" onClick={() => pendingRepeat && finishWorkoutConfirmed(pendingRepeat)}>Завершить текущую и повторить</Button>
         <Button variant="secondary" className="w-full min-h-12" onClick={() => { setPendingRepeat(null); setScreen('home'); }}>Продолжить текущую</Button>
       </Modal>
-      {pendingCount > 0 && (
-        <button
-          onClick={() => { setQueueItems(getQueue()); setIsQueueOpen(true); void api.syncOfflineQueue(); }}
-          className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-full border border-amber-700/60 bg-amber-950/95 px-4 py-2 text-xs font-medium text-amber-200 shadow-xl"
-        >
-          В очереди: {pendingCount} · подробнее
-        </button>
-      )}
+      <BottomNavigation screen={screen} navigate={next => { if (next !== 'history') setDeeplinkSession(null); setScreen(next); }} pendingCount={pendingCount}
+        onQueue={() => { setQueueItems(getQueue()); setIsQueueOpen(true); void api.syncOfflineQueue(); }} />
       
       <Modal isOpen={isCreateModalOpen} onClose={() => setIsCreateModalOpen(false)} title="Новое упражнение">
         <div className="space-y-4">

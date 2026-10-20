@@ -1,4 +1,5 @@
 import type { Exercise, WorkoutSet } from './types';
+import type { WorkoutLocation } from './sessionMetadata';
 import { calcEffectiveWeight, loadRulesOf, rulesAsExercise } from './exerciseConfig';
 
 /** Keep the full local result while only part of its queue has reached the server. */
@@ -10,7 +11,7 @@ export function reconcileFinished(local: any[], remote: any[], queue: { data: Re
 }
 
 /** A local history entry exists only for work that was actually recorded. */
-export function finishedSession(draft: any, catalogue: Exercise[], sessionId: string, location: string | null,
+export function finishedSession(draft: any, catalogue: Exercise[], sessionId: string, location: WorkoutLocation | null,
   startedAt: number, endedAt: number, bodyWeight: number) {
   const blocks = Object.entries(draft?.exercises || {}) as [string, any][];
   const groupCounts = new Map<string, number>();
@@ -35,6 +36,6 @@ export function finishedSession(draft: any, catalogue: Exercise[], sessionId: st
     - Math.min(...[...b.sets, ...(b.cardio || [])].map(s => s.order)));
   return { id: sessionId, clientSessionId: sessionId, pendingLocal: true, location,
     date: new Date(startedAt).toLocaleDateString('sv-SE', { timeZone: 'Europe/Moscow' }).replace(/-/g, '.'),
-    muscleGroups: [...new Set(exercises.map(e => catalogue.find(c => c.id === e.exerciseId)?.muscleGroup).filter(Boolean))],
+    muscleGroups: [...new Set(exercises.map(e => catalogue.find(c => c.id === e.exerciseId)?.muscleGroup).filter((group): group is string => !!group))],
     duration: `${Math.max(0, Math.round((endedAt - startedAt) / 60000))}м`, exercises };
 }

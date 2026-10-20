@@ -9,3 +9,5 @@
 .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
 .pt-safe-2 { padding-top: calc(0.5rem + env(safe-area-inset-top)); }
 .pt-safe-4 { padding-top: calc(1rem + env(safe-area-inset-top)); }
+.pb-app-navigation { padding-bottom: calc(5rem + env(safe-area-inset-bottom)); }
+.above-app-navigation { bottom: calc(4rem + env(safe-area-inset-bottom)); }
