@@ -25,8 +25,9 @@ export function finishedSession(draft: any, catalogue: Exercise[], sessionId: st
     const rows = completed.map(s => ({ id: s.requestId, input_weight: Number(s.weight || 0),
       weight: calcEffectiveWeight(rulesAsExercise(s.load || rules), Number(s.weight || 0), bodyWeight),
       reps: Number(s.reps), rest: Number(s.rest || 0), set_type: s.setType || 'working', order: s.order || 0,
+      include_in_tonnage: typeof ex.tonnageMode === 'string' ? ex.tonnageMode !== 'excluded' : undefined,
       load: s.load || rules, timing: s.timing, rpe: s.rpe, rir: s.rir, setGroupId: block.setGroupId }));
-    return [{ exerciseId: id, name: ex.name, supersetId: (groupCounts.get(block.setGroupId) || 0) > 1 ? block.setGroupId : null,
+    return [{ exerciseId: id, name: ex.name, muscleGroup: ex.muscleGroup, supersetId: (groupCounts.get(block.setGroupId) || 0) > 1 ? block.setGroupId : null,
       sets: ex.measure === 'cardio' ? [] : rows,
       ...(ex.measure === 'cardio' ? { cardio: completed.map(s => ({ minutes: Number(s.minutes), speed: s.speed ? Number(s.speed) : undefined,
         incline: s.incline ? Number(s.incline) : undefined, order: s.order || 0 })) } : {}) }];
@@ -35,7 +36,8 @@ export function finishedSession(draft: any, catalogue: Exercise[], sessionId: st
   exercises.sort((a, b) => Math.min(...[...a.sets, ...(a.cardio || [])].map(s => s.order))
     - Math.min(...[...b.sets, ...(b.cardio || [])].map(s => s.order)));
   return { id: sessionId, clientSessionId: sessionId, pendingLocal: true, location,
+    started_at: new Date(startedAt).toISOString(),
     date: new Date(startedAt).toLocaleDateString('sv-SE', { timeZone: 'Europe/Moscow' }).replace(/-/g, '.'),
     muscleGroups: [...new Set(exercises.map(e => catalogue.find(c => c.id === e.exerciseId)?.muscleGroup).filter((group): group is string => !!group))],
-    duration: `${Math.max(0, Math.round((endedAt - startedAt) / 60000))}м`, exercises };
+    duration: `${Math.max(0, Math.round((endedAt - startedAt) / 60000))}м`, duration_source: 'elapsed', exercises };
 }

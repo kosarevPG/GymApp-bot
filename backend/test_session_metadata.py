@@ -87,6 +87,7 @@ class SessionMetadataTests(unittest.TestCase):
         self.assertEqual(self.client.tables["gym_workout_sessions"], [])
 
     def test_restored_records_flow_into_history_and_analytics_without_timestamps(self):
+        self.current = self.current.replace(year=2026, month=10, day=20)
         plan = build_plan(OWNER, confirmed_lateral_raises=True)
         self.client.tables["gym_workout_sessions"] = [plan["session"]]
         self.client.tables["gym_set_groups"] = plan["groups"]

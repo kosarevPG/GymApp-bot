@@ -6,6 +6,7 @@ export interface Exercise {
   id: string;
   name: string;
   muscleGroup: string;
+  tonnageMode?: string;
   description?: string;
   imageUrl?: string;
   secondaryMuscles?: string;

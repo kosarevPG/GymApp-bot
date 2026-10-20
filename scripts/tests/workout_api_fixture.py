@@ -1,6 +1,7 @@
 """Loopback-only browser fixture. All writes stay in MemoryClient; no secrets/network."""
 import copy
 import json
+import hashlib
 import sys
 import threading
 import uuid
@@ -22,6 +23,24 @@ LOCK = threading.Lock()
 
 def reset():
     client = MemoryClient(max_page_size=500)
+    def snapshot_read(function, arguments):
+        assert function == 'gym_journal_snapshot_v1'
+        assert arguments['p_user_id'] == USER_ID
+        manifest, changed = {}, []
+        for session in client.tables['gym_workout_sessions']:
+            if session['user_id'] != USER_ID:
+                continue
+            owned = lambda table: [r for r in client.tables[table] if r['user_id'] == USER_ID and r.get('session_id') == session['id']]
+            sets, cardio = owned('gym_sets'), owned('gym_cardio_segments')
+            exercise_ids = {r['exercise_id'] for r in sets + cardio}
+            row = dict(session=session, sets=sets, cardio=cardio, groups=owned('gym_set_groups'),
+                exercises=[e for e in client.tables['gym_exercises'] if e['user_id'] == USER_ID and e['id'] in exercise_ids])
+            revision = hashlib.md5(json.dumps(row, sort_keys=True).encode()).hexdigest()
+            manifest[session['id']] = revision
+            if arguments.get('p_known', {}).get(session['id']) != revision:
+                changed.append(dict(row, revision=revision))
+        return dict(manifest=manifest, changed=changed)
+    client.rpc_read = snapshot_read
     plan = build_plan(OWNER, confirmed_lateral_raises=True)
     client.tables["gym_workout_sessions"] = [dict(plan["session"], user_id=USER_ID)]
     client.tables["gym_set_groups"] = [dict(g, user_id=USER_ID) for g in plan["groups"]]

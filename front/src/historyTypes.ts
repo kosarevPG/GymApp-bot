@@ -10,6 +10,7 @@ export interface GlobalHistorySet {
   rest?: number;
   order?: number;
   set_type?: string;
+  include_in_tonnage?: boolean;
   rpe?: number;
   rir?: number;
   load?: LoadRules | null;
@@ -17,6 +18,7 @@ export interface GlobalHistorySet {
 }
 
 export interface GlobalHistoryExercise {
+  muscleGroup?: string;
   name?: string;
   exerciseId?: string;
   supersetId?: string | null;
@@ -26,6 +28,9 @@ export interface GlobalHistoryExercise {
 }
 
 export interface GlobalHistorySession {
+  syncVersion?: string;
+  started_at?: string | null;
+  analyticsComplete?: boolean;
   clientSessionId?: string;
   repeatedFromSessionId?: string;
   location?: 'gym' | 'home' | 'other' | null;

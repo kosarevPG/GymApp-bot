@@ -203,6 +203,7 @@ class SupabaseRestClient:
         body: Any = None,
         prefer: str = "",
         with_headers: bool = False,
+        read_only: bool = False,
     ) -> Any:
         suffix = f"?{urlencode(query or {})}" if query else ""
         headers = {"apikey": self.secret_key, "Accept": "application/json"}
@@ -219,12 +220,13 @@ class SupabaseRestClient:
             method=method,
         )
         # A stalled read must not consume most of the 30s function budget.
-        # Retry only GET: repeating a write after an ambiguous timeout could
+        # Retry GET and the explicitly read-only snapshot RPC; repeating writes could
         # overwrite a newer edit. Writes retain their existing queue semantics.
-        attempts = 2 if method == "GET" else 1
+        safe_read = method == "GET" or read_only
+        attempts = 2 if safe_read else 1
         for attempt in range(attempts):
             try:
-                with urlopen(request, timeout=4 if method == "GET" else 20) as result:
+                with urlopen(request, timeout=4 if safe_read else 20) as result:
                     raw = result.read().decode("utf-8")
                     # Headers are optional for older test clients.
                     response_headers = dict(result.headers) if with_headers else {}
@@ -313,6 +315,9 @@ class SupabaseRestClient:
             body=row,
             prefer="resolution=merge-duplicates,return=representation",
         )
+
+    def rpc_read(self, function: str, arguments: Dict[str, Any]) -> Any:
+        return self._request('POST', f'rpc/{function}', body=arguments, read_only=True)
 
     def update(
         self, table: str, values: Dict[str, Any], *, filters: Dict[str, Any]
@@ -424,6 +429,7 @@ class SupabaseStore:
             "id": str(record.get("source_key") or record.get("id") or ""),
             "name": str(record.get("name_ru") or ""),
             "muscleGroup": str(record.get("muscle_group") or ""),
+            "tonnageMode": str(record.get("tonnage_mode") or "external_load"),
             "description": str(record.get("description") or ""),
             "imageUrl": str(record.get("image_url") or ""),
             "imageUrl2": str(record.get("image_url_2") or ""),
@@ -449,7 +455,7 @@ class SupabaseStore:
         exercises = [row for row in exercises if row["id"] and row["name"]]
         exercises.sort(key=lambda row: row["name"].casefold())
         groups = sorted({row["muscleGroup"] for row in exercises if row["muscleGroup"]}, key=str.casefold)
-        return {"groups": groups, "exercises": exercises}
+        return {"groups": groups, "exercises": exercises, "capabilities": {"journalSync": 1}}
 
     def _ensure_session(self, user_id: str, session_ref: str, performed_at: datetime, location: Any = None) -> Dict[str, Any]:
         if not session_ref:
@@ -716,6 +722,9 @@ class SupabaseStore:
         rows = self._select(
             "gym_sets", filters={"user_id": user_id, "client_request_id": request_id}, limit=1
         )
+        if not rows:
+            # Imported rows may predate client_request_id. Their API id is the row UUID.
+            rows = self._select("gym_sets", filters={"user_id": user_id, "id": request_id}, limit=1)
         return rows[0] if rows else None
 
     def update_set(self, user_id: str, data: Dict[str, Any]) -> bool:
@@ -972,6 +981,7 @@ class SupabaseStore:
             "order": _to_int(row.get("position")),
             "setGroupId": str((group or {}).get("legacy_group_id") or row.get("set_group_id") or ""),
             "set_type": str(row.get("set_type") or "working"),
+            "include_in_tonnage": bool(row.get("include_in_tonnage", True)),
         }
         if row.get("rpe") is not None:
             result["rpe"] = _to_float(row["rpe"])
@@ -1048,16 +1058,43 @@ class SupabaseStore:
             "note": str(exercise.get("technique_note") or ""),
         }
 
-    def get_global_history(self, user_id: str, limit_rows: int = 3000) -> List[Dict[str, Any]]:
+    def get_global_history(self, user_id: str, limit_rows: Optional[int] = None) -> List[Dict[str, Any]]:
         sessions, groups, sets, exercises = self._data(user_id)
         cardio = self._select(CARDIO_TABLE, filters={"user_id": user_id})
         return self._history_from_rows(sessions, groups, sets, exercises, cardio, limit_rows)
+
+    def get_journal_delta(self, user_id: str, known: Dict[str, str]) -> Dict[str, Any]:
+        if (not isinstance(known, dict) or len(known) > 10000
+                or any(not isinstance(k, str) or not isinstance(v, str) or len(k) > 64 or len(v) > 64 for k, v in known.items())):
+            raise ValueError('known must be a journal version map')
+        read = getattr(self.client, 'rpc_read', None)
+        if read is None:
+            return {'mode': 'full', 'history': self.get_global_history(user_id)}
+        try:
+            snapshot = read('gym_journal_snapshot_v1', {'p_user_id': user_id, 'p_known': known})
+        except RuntimeError as error:
+            # Backwards-compatible rollout before the additive read function exists.
+            if 'PGRST202' not in str(error):
+                raise
+            return {'mode': 'full', 'history': self.get_global_history(user_id)}
+        if not isinstance(snapshot, dict) or not isinstance(snapshot.get('manifest'), dict) or not isinstance(snapshot.get('changed'), list):
+            raise ValueError('Invalid journal snapshot')
+        upserts, changed_ids = [], []
+        for row in snapshot['changed']:
+            session = row['session']
+            if str(session.get('user_id')) != str(user_id):
+                raise ValueError('Journal snapshot owner mismatch')
+            changed_ids.append(str(session['id']))
+            history = self._history_from_rows([session], row['groups'], row['sets'], row['exercises'], row['cardio'], None)
+            upserts.extend({**item, 'syncVersion': row['revision']} for item in history)
+        return {'mode': 'delta', 'manifest': snapshot['manifest'], 'changedIds': changed_ids, 'upserts': upserts}
 
     def _history_from_rows(self, sessions, groups, sets, exercises, cardio, limit_rows=3000):
         """Shared history shape for the full journal and an owned session."""
         exercise_by_id = {row["id"]: row for row in exercises}
         group_by_id = {row["id"]: row for row in groups}
         session_by_id = {row["id"]: row for row in sessions}
+        analytics_complete = limit_rows is None or len(sets) <= limit_rows
         sets = sorted(sets, key=lambda row: (
             str(session_by_id.get(row.get("session_id"), {}).get("workout_date") or ""),
             str(row.get("performed_at") or ""), _to_int(row.get("position")),
@@ -1084,6 +1121,7 @@ class SupabaseStore:
                 block = blocks.setdefault(key, {
                     "name": str(exercise.get("name_ru") or ""),
                     "exerciseId": source_key,
+                    "muscleGroup": str(exercise.get("muscle_group") or ""),
                     "supersetId": group.get("legacy_group_id") if group.get("group_type") != "single" else None,
                     "sets": [],
                 })
@@ -1110,12 +1148,16 @@ class SupabaseStore:
             ))
             result.append({
                 "id": session["id"],
+                "analyticsComplete": analytics_complete,
                 "clientSessionId": (session.get("source_payload") or {}).get("client_session_id"),
                 "repeatedFromSessionId": (session.get("source_payload") or {}).get("repeated_from_session_id"),
                 "date": _api_date(session.get("workout_date")),
+                "started_at": session.get("started_at"),
                 "muscleGroups": sorted(muscles, key=str.casefold),
                 "location": session.get("location"),
                 "duration_minutes": session.get("duration_minutes"),
+                "duration_source": ("reported" if session.get("duration_minutes") is not None else
+                                    "elapsed" if 'elapsed_seconds' in (session.get("source_payload") or {}) else "estimated"),
                 "duration_is_approximate": session.get("duration_is_approximate", False),
                 "duration": (f"{'≈' if session.get('duration_is_approximate') else ''}{_to_float(session['duration_minutes']):g}м"
                              if session.get("duration_minutes") is not None else
@@ -1167,10 +1209,10 @@ class SupabaseStore:
         def recent(row: Dict[str, Any], period: int) -> bool:
             session = session_by_id.get(row.get("session_id"), {})
             try:
-                date = datetime.fromisoformat(str(session.get("workout_date"))).replace(tzinfo=MOSCOW_TZ)
+                day = datetime.fromisoformat(str(session.get("workout_date"))).date()
             except (TypeError, ValueError):
                 return False
-            return date >= now - timedelta(days=period)
+            return now.date() - timedelta(days=period - 1) <= day <= now.date()
 
         working = [row for row in sets if str(row.get("set_type") or "working") == "working" and row.get("include_in_tonnage", True)]
         selected = [row for row in working if recent(row, max(1, min(days, 365)))]
@@ -1323,7 +1365,8 @@ def export_data(user_id: str): return _store().export_data(user_id)
 def import_data(user_id: str, data: Dict[str, Any]): return _store().import_data(user_id, data)
 def create_exercise(user_id: str, name: str, group: str, measure: str = "strength"): return _store().create_exercise(user_id, name, group, measure)
 def update_exercise(user_id: str, exercise_id: str, updates: Dict[str, Any]): return _store().update_exercise(user_id, exercise_id, updates)
-def get_global_history(user_id: str, limit_rows: int = 3000): return _store().get_global_history(user_id, limit_rows)
+def get_global_history(user_id: str, limit_rows: Optional[int] = None): return _store().get_global_history(user_id, limit_rows)
+def get_journal_delta(user_id: str, known: Dict[str, str]): return _store().get_journal_delta(user_id, known)
 def get_workout_session(user_id: str, session_id: str): return _store().get_workout_session(user_id, session_id)
 def update_session(user_id: str, data: Dict[str, Any]): return _store().update_session(user_id, data)
 

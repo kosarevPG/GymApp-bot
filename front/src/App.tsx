@@ -7,7 +7,6 @@ import {
   , Play, Repeat2, ArrowUp, ArrowDown, SkipForward, Replace, ClipboardList
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts';
 import { API_BASE_URL, STANDALONE_API_BASE_URL, WORKOUT_STORAGE_KEY, ACTIVE_WORKOUT_KEY, WORKOUT_PRESET_KEY, GROUP_ORDER, sortGroups, SESSION_ID_KEY, ORDER_COUNTER_KEY, LAST_ACTIVE_KEY } from './constants';
 import { CARDIO_QUICK_MINUTES, durationSeconds, formatCardioSegment, formatCardioSegments, toNumber, isRepeatableTreadmill, shouldAppendCardio } from './cardio';
 import { createHistoryLoader, decodeHistory, historyFromJournal, type ExerciseHistory } from './exerciseHistory';
@@ -28,6 +27,11 @@ import { BottomNavigation } from './components/BottomNavigation';
 import { ScreenContent, ScreenHeader } from './components/ScreenLayout';
 import { PeriodSelector, type HistoryPeriod } from './components/PeriodSelector';
 import { SectionLink } from './components/SectionLink';
+import { calculateLocalAnalytics } from './localAnalytics';
+import { readOfflineOwner, rememberOfflineOwner, forgetOfflineOwner, offlineAccessLocked } from './offlineAccount';
+import { OfflineUpdateNotice } from './components/OfflineUpdateNotice';
+import { ChartBoundary } from './components/ChartBoundary';
+import { journalVersions, mergeJournalDelta } from './journalSync';
 import { calcEffectiveWeight, weightInputLabel, WEIGHT_TYPE_OPTIONS, USER_BODY_WEIGHT_DEFAULT, describeLoad, DEFAULT_PLATES, PLATE_CHOICES, carryOverInput, loadRulesOf, rulesAsExercise, rulesForSet, setLoadLabel, forNewEntry } from './exerciseConfig';
 import type { Exercise, WorkoutSet, HistoryItem, CardioHistoryItem, ExerciseSessionData, SetType } from './types';
 import {
@@ -61,8 +65,12 @@ import { LOCATION_LABELS, pendingSessionMetadata, pendingTimingEdits, type Worko
 // --- TYPES ---
 
 type Screen = 'home' | 'exercises' | 'workout' | 'history' | 'analytics' | 'summary';
+const loadAnalyticsChart = () => import('./components/AnalyticsVolumeChart');
+const AnalyticsVolumeChart = React.lazy(loadAnalyticsChart);
 
 interface GlobalWorkoutSession {
+  syncVersion?: string;
+  started_at?: string | null;
   id: string;
   date: string;
   muscleGroups: string[];
@@ -71,6 +79,7 @@ interface GlobalWorkoutSession {
   clientSessionId?: string;
   repeatedFromSessionId?: string;
   pendingLocal?: boolean;
+  pendingChanges?: boolean;
   exercises: { 
     name: string; 
     exerciseId?: string;
@@ -97,10 +106,12 @@ const telegramCacheOwner = () => {
   try { return `telegram:${JSON.parse(new URLSearchParams(getTelegramInitData()).get('user') || '{}').id || 'unknown'}`; }
   catch { return 'telegram:unknown'; }
 };
-let cacheOwner = telegramCacheOwner();
+let cacheOwner = telegramCacheOwner() || readOfflineOwner(localStorage);
+let apiReady = !!getTelegramInitData();
 
 const cacheExercises = (data: any) => {
   try { writeLocalCache(localStorage, cacheOwner, 'catalogue', { data, updatedAt: Date.now() }); } catch { /* Network data remains usable. */ }
+  try { rememberOfflineOwner(localStorage, cacheOwner); } catch { /* Offline access is optional when storage is full. */ }
   try { localStorage.setItem('gym_exercises_cache', JSON.stringify(data)); } catch (_) {}
 };
 
@@ -128,7 +139,7 @@ const historyLoader = createHistoryLoader({
   },
   fetch: async (id) => { const owner = cacheOwner; const data = await api.request(`history?exercise_id=${encodeURIComponent(id)}`); return owner === cacheOwner ? data : null; },
   write: cacheHistory,
-  online: () => navigator.onLine,
+  online: () => navigator.onLine && apiReady,
 });
 
 const validJournal = (value: unknown): value is GlobalWorkoutSession[] => Array.isArray(value)
@@ -158,13 +169,17 @@ const journalResource = () => {
       } catch { /* The account-scoped copy is already saved. */ }
     },
     fetch: async () => {
-      const data = await api.request('global_history', {}, 28_000);
+      const supportsDelta = readLocalCache<any>(localStorage, owner, 'catalogue')?.data?.capabilities?.journalSync === 1;
+      const cached = journals.get(owner)?.getSnapshot().data || [];
+      const data = supportsDelta
+        ? mergeJournalDelta(cached, await api.request('journal_sync', { method: 'POST', body: JSON.stringify({ known: journalVersions(cached) }) }, 28_000))
+        : await api.request('global_history', {}, 28_000);
       if (owner !== cacheOwner || !validJournal(data)) return null;
       const { remaining, history } = reconcileFinished(readLocalFinished(), data, getQueue());
       try { writeLocalFinished(remaining); } catch { /* Keep the durable queue. */ }
       return pendingTimingEdits(pendingSessionMetadata<GlobalWorkoutSession>(history, getQueue()), getQueue());
     },
-    valid: validJournal, online: () => navigator.onLine && !!owner && owner === cacheOwner, ttl: 300_000,
+    valid: validJournal, online: () => navigator.onLine && apiReady && !!owner && owner === cacheOwner, ttl: 300_000,
   }));
   return journals.get(owner)!;
 };
@@ -175,6 +190,7 @@ function localJournal(): GlobalWorkoutSession[] {
 }
 type AnalyticsData = { volume?: number; workloadTrend?: WorkloadTrend; muscleVolume?: Record<string, number>; muscleSets?: Record<string, number> };
 const analyticsResources = new Map<string, ReturnType<typeof createLocalResource<AnalyticsData>>>();
+const noResourceSubscription = () => () => {};
 const analyticsResource = (period: number) => {
   const owner = cacheOwner, key = `${owner}:${period}`;
   if (!analyticsResources.has(key)) analyticsResources.set(key, createLocalResource<AnalyticsData>({
@@ -182,7 +198,7 @@ const analyticsResource = (period: number) => {
     write: saved => writeLocalCache(localStorage, owner, `analytics:${period}`, saved),
     fetch: async () => { const data = await api.request(`analytics?period=${period}`, {}, 28_000); return owner === cacheOwner ? data : null; },
     valid: value => !!value && typeof value === 'object' && !Array.isArray(value) && 'muscleSets' in value,
-    online: () => navigator.onLine && !!owner && owner === cacheOwner, ttl: 300_000,
+    online: () => navigator.onLine && apiReady && !!owner && owner === cacheOwner, ttl: 300_000,
   }));
   return analyticsResources.get(key)!;
 };
@@ -204,6 +220,7 @@ function useJournal() {
 const SYNC_REQUEST_TIMEOUT_MS = 35_000;
 
 const QUEUE_ENDPOINTS: Record<QueuedItem['type'], string> = {
+  deleteWorkout: 'delete_workout',
   saveSet: 'save_set',
   updateSet: 'update_set',
   deleteSet: 'delete_set',
@@ -213,6 +230,7 @@ const QUEUE_ENDPOINTS: Record<QueuedItem['type'], string> = {
 
 // Кардио идёт через ту же очередь, но в свою таблицу на сервере.
 const CARDIO_ENDPOINTS: Record<QueuedItem['type'], string> = {
+  deleteWorkout: 'delete_workout',
   saveSet: 'save_cardio',
   updateSet: 'update_cardio',
   deleteSet: 'delete_cardio',
@@ -221,6 +239,7 @@ const CARDIO_ENDPOINTS: Record<QueuedItem['type'], string> = {
 };
 
 const sendQueuedItem = async (item: QueuedItem): Promise<SendOutcome> => {
+  if (!apiReady) return { ok: false, error: 'authorization', stop: true };
   const endpoint = (item.data.kind === 'cardio' ? CARDIO_ENDPOINTS : QUEUE_ENDPOINTS)[item.type];
   // Удаление из очереди может прийти для строки, которой на сервере нет:
   // подход до него не дошёл, либо ответ на прошлое удаление потерялся.
@@ -275,7 +294,7 @@ const api = {
   // читают всю историю несколькими страницами и на холодной функции в него
   // не укладываются — им бюджет задаётся явно, ближе к её лимиту в 30 с.
   request: async (endpoint: string, options: RequestInit = {}, timeoutMs = 12_000) => {
-    if (!navigator.onLine) return null;
+    if (!navigator.onLine || !apiReady) return null;
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -372,8 +391,10 @@ const api = {
     queueMicrotask(() => { void api.syncOfflineQueue(); });
   },
 
-  deleteWorkout: async (date: string, sessionId?: string): Promise<{ status?: string; deleted?: number } | null> => {
-    return await api.request('delete_workout', { method: 'POST', body: JSON.stringify({ date, session_id: sessionId }) });
+  deleteWorkout: (date: string, sessionId?: string): void => {
+    if (!sessionId) throw new Error('session_id is required');
+    upsertQueue('deleteWorkout', { date, session_id: sessionId, client_request_id: `workout:${sessionId}`, missing_ok: true });
+    queueMicrotask(() => { void api.syncOfflineQueue(); });
   },
 
   exportData: async () => {
@@ -415,7 +436,7 @@ const api = {
   },
 
   syncOfflineQueue: (): Promise<void> => {
-    if (!navigator.onLine || !getApiBaseUrl()) return Promise.resolve();
+    if (!navigator.onLine || !apiReady || !getApiBaseUrl()) return Promise.resolve();
     return syncQueue(sendQueuedItem);
   },
 
@@ -652,7 +673,7 @@ const Modal = ({ isOpen, onClose, title, children, headerAction }: any) => (
             <h3 className="text-lg font-semibold text-zinc-50 truncate max-w-[70%]">{title}</h3>
             <div className="flex items-center gap-2">
               {headerAction}
-              <button onClick={onClose} className="p-2 bg-zinc-800 rounded-full text-zinc-400"><X className="w-5 h-5" /></button>
+              <button aria-label="Закрыть окно" onClick={onClose} className="flex min-h-11 min-w-11 items-center justify-center rounded-xl bg-zinc-800 text-zinc-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400"><X className="w-5 h-5" /></button>
             </div>
           </div>
           <div className="overflow-y-auto p-4 flex-1 pb-10">{children}</div>
@@ -1806,31 +1827,31 @@ const HistoryScreen = ({ onBack, onRepeat, allExercises = [], bodyWeight = USER_
     return () => window.clearTimeout(timer);
   }, [focusSessionId, expandedId, history.length]);
 
-  const openEdit = (s: any, ex: any) => {
+  const openEdit = (s: any, ex: any, sessionId: string) => {
     const exercise = allExercises.find((e: Exercise) => e.id === ex.exerciseId);
     // Подход правится по своим правилам — тем, что были в день подхода.
     const rules = rulesForSet(s, exercise, bodyWeight);
-    setEditTarget({ set: s, exerciseId: ex.exerciseId, exerciseName: ex.name, exercise, rules });
+    setEditTarget({ set: s, sessionId, exerciseId: ex.exerciseId, exerciseName: ex.name, exercise, rules });
     setEditW(String(s.input_weight ?? s.weight ?? ''));
     setEditR(String(s.reps ?? ''));
     setEditRest(String(s.rest ?? ''));
   };
 
-  // Строка в таблице ищется по client_request_id, для старых записей —
-  // по натуральному ключу (упражнение + сет-группа + порядок).
-  const locator = (t: any) => ({ client_request_id: String(t.set.id || ''), exercise_id: t.exerciseId, set_group_id: t.set.setGroupId, order: t.set.order });
+  // Сервер ищет client_request_id или UUID старой записи внутри текущего владельца.
+  const locator = (t: any) => ({ client_request_id: String(t.set.id || ''), session_id: t.sessionId, exercise_id: t.exerciseId, set_group_id: t.set.setGroupId, order: t.set.order });
 
-  const saveEdit = async () => {
+  const saveEdit = () => {
     if (!editTarget || busy) return;
     const inputWeight = parseFloat(editW.replace(',', '.'));
     const reps = parseInt(editR, 10);
-    if (Number.isNaN(inputWeight) || !(reps > 0)) { notify?.('error'); return; }
-    setBusy(true);
+    const rest = parseFloat(editRest.replace(',', '.')) || 0;
+    if (!Number.isFinite(inputWeight) || inputWeight < 0 || !(reps > 0) || !Number.isFinite(rest) || rest < 0) { notify?.('error'); return; }
     // Повторы и отдых правятся без пересчёта веса: итог старого подхода
     // считался по весу тела и настройкам того дня, а не нынешним.
     const { set: original, rules } = editTarget;
     const weightChanged = inputWeight !== Number(original.input_weight ?? original.weight);
-    const res = await api.request('update_set', { method: 'POST', body: JSON.stringify({
+    try {
+    api.updateSet({
       ...locator(editTarget),
       ...(weightChanged ? {
         input_weight: inputWeight,
@@ -1838,20 +1859,20 @@ const HistoryScreen = ({ onBack, onRepeat, allExercises = [], bodyWeight = USER_
         load: rules,
       } : {}),
       reps,
-      rest: parseFloat(editRest.replace(',', '.')) || 0,
-    }) });
-    setBusy(false);
-    if (res && res.status === 'success') { haptic?.('medium'); notify?.('success'); setEditTarget(null); refresh(); }
-    else { notify?.('error'); }
+      rest,
+    });
+    journalResource().update(() => pendingTimingEdits(history, getQueue()));
+    haptic?.('medium'); notify?.('success'); setEditTarget(null);
+    } catch { notify?.('error'); }
   };
 
-  const deleteEditSet = async () => {
+  const deleteEditSet = () => {
     if (!editTarget || busy) return;
-    setBusy(true);
-    const res = await api.request('delete_set', { method: 'POST', body: JSON.stringify(locator(editTarget)) });
-    setBusy(false);
-    if (res && res.status === 'success') { haptic?.('medium'); notify?.('success'); setEditTarget(null); refresh(); }
-    else { notify?.('error'); }
+    try {
+      api.deleteSet(locator(editTarget));
+      journalResource().update(() => pendingTimingEdits(history, getQueue()));
+      haptic?.('medium'); notify?.('success'); setEditTarget(null);
+    } catch { notify?.('error'); }
   };
   const excludeTiming = () => {
     if (!editTarget) return;
@@ -1863,13 +1884,13 @@ const HistoryScreen = ({ onBack, onRepeat, allExercises = [], bodyWeight = USER_
     } catch { notify?.('error'); }
   };
 
-  const deleteDayConfirmed = async () => {
+  const deleteDayConfirmed = () => {
     if (!deleteDay || busy) return;
-    setBusy(true);
-    const res = await api.deleteWorkout(deleteDay.date, deleteDay.sessionId);
-    setBusy(false);
-    if (res && res.status === 'success') { haptic?.('medium'); notify?.('success'); setDeleteDay(null); refresh(); }
-    else { notify?.('error'); }
+    try {
+      api.deleteWorkout(deleteDay.date, deleteDay.sessionId);
+      journalResource().update(() => pendingTimingEdits(history, getQueue()));
+      haptic?.('medium'); notify?.('success'); setDeleteDay(null);
+    } catch { notify?.('error'); }
   };
 
   return (
@@ -1919,6 +1940,7 @@ const HistoryScreen = ({ onBack, onRepeat, allExercises = [], bodyWeight = USER_
                   </label>
                   <div className="px-4 pb-4"><Button onClick={() => onRepeat(w)} icon={Repeat2} className="w-full min-h-12">Повторить тренировку</Button>
                     {w.pendingLocal && <p className="mt-2 text-sm text-zinc-300">Сохранено на устройстве. Изменение истории станет доступно после синхронизации.</p>}
+                    {w.pendingChanges && !w.pendingLocal && <p className="mt-2 text-sm text-amber-300">Изменения сохранены на устройстве и ожидают отправки.</p>}
                   </div>
                   {w.exercises && w.exercises.length > 0 ? (
                     w.exercises.map((ex: any, i: number) => {
@@ -1947,7 +1969,7 @@ const HistoryScreen = ({ onBack, onRepeat, allExercises = [], bodyWeight = USER_
                           ) : ex.sets && Array.isArray(ex.sets) && ex.sets.length > 0 ? (
                             <div className="space-y-1">
                               {ex.sets.map((s: any, j: number) => (
-                                <button key={j} disabled={w.pendingLocal} onClick={() => openEdit(s, ex)} className="w-full min-h-11 px-2 py-1 bg-zinc-800/30 rounded flex items-center justify-between text-left active:bg-zinc-800/60">
+                                <button key={j} disabled={w.pendingLocal} onClick={() => openEdit(s, ex, w.id)} className="w-full min-h-11 px-2 py-1 bg-zinc-800/30 rounded flex items-center justify-between text-left active:bg-zinc-800/60">
                                   <SetDisplayRow
                                     weightText={setLoadLabel(s, allExercises.find((e: Exercise) => e.id === ex.exerciseId), bodyWeight)}
                                     reps={s.reps}
@@ -1979,9 +2001,9 @@ const HistoryScreen = ({ onBack, onRepeat, allExercises = [], bodyWeight = USER_
           <div className="space-y-4">
             <div className="text-sm text-zinc-400">{editTarget.exerciseName} · {editTarget.set.date}</div>
             <div className="grid grid-cols-3 gap-2">
-              <div><label className="text-xs text-zinc-400 mb-1 block uppercase">{weightInputLabel(rulesAsExercise(editTarget.rules))}</label><Input type="number" inputMode="decimal" value={editW} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditW(e.target.value)} /></div>
-              <div><label className="text-xs text-zinc-400 mb-1 block uppercase">Повт</label><Input type="tel" inputMode="numeric" value={editR} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditR(e.target.value)} /></div>
-              <div><label className="text-xs text-zinc-400 mb-1 block uppercase">Мин</label><Input type="number" inputMode="decimal" value={editRest} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditRest(e.target.value)} /></div>
+              <div><label className="text-xs text-zinc-400 mb-1 block uppercase">{weightInputLabel(rulesAsExercise(editTarget.rules))}</label><Input aria-label="Вес сохранённого подхода" type="number" inputMode="decimal" value={editW} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditW(e.target.value)} /></div>
+              <div><label className="text-xs text-zinc-400 mb-1 block uppercase">Повт</label><Input aria-label="Повторения сохранённого подхода" type="tel" inputMode="numeric" value={editR} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditR(e.target.value)} /></div>
+              <div><label className="text-xs text-zinc-400 mb-1 block uppercase">Мин</label><Input aria-label="Отдых сохранённого подхода" type="number" inputMode="decimal" value={editRest} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditRest(e.target.value)} /></div>
             </div>
             <Button className="w-full h-12" onClick={saveEdit}>{busy ? 'Сохраняю…' : 'Сохранить'}</Button>
             {editTarget.set.timing?.duration_seconds != null && <Button variant="secondary" className="w-full min-h-12" onClick={excludeTiming}>Исключить замер времени</Button>}
@@ -2023,14 +2045,21 @@ type WorkloadTrend = {
 const AnalyticsScreen = ({ onBack, onSummary, period, onPeriodChange }: {
   onBack: () => void; onSummary: () => void; period: HistoryPeriod; onPeriodChange: (period: HistoryPeriod) => void;
 }) => {
+  const journal = useJournal();
+  const today = todayInLogFormat().replace(/\./g, '-');
+  const localData = useMemo(() => journal.data !== null || journal.history.length
+    ? calculateLocalAnalytics(journal.history, period, today) : null, [journal.history, journal.data !== null, period, today]);
   const resource = analyticsResource(period);
-  const snapshot = useSyncExternalStore(resource.subscribe, resource.getSnapshot);
-  const data = snapshot.data;
+  const remote = useSyncExternalStore(localData ? noResourceSubscription : resource.subscribe, resource.getSnapshot);
+  const snapshot = localData ? { ...journal, data: localData } : remote;
+  const data = localData || remote.data;
   const loading = !data;
 
   useEffect(() => {
-    void resource.refresh();
-  }, [resource]);
+    if (!localData) { void resource.refresh(); return; }
+    // This is a derived copy: its timestamp belongs to the journal it came from.
+    try { writeLocalCache(localStorage, cacheOwner, `analytics:${period}`, { data: localData, updatedAt: journal.updatedAt }); } catch { /* Recomputable from the durable journal. */ }
+  }, [resource, localData, period, journal.updatedAt]);
 
   const muscleList = useMemo(() => {
     const sets = data?.muscleSets || {};
@@ -2045,7 +2074,7 @@ const AnalyticsScreen = ({ onBack, onSummary, period, onPeriodChange }: {
     <motion.div initial={{ x: 50, opacity: 0 }} animate={{ x: 0, opacity: 1 }} className="min-h-screen bg-zinc-950">
       <ScreenHeader title="Аналитика" onBack={onBack} />
       <ScreenContent className="space-y-4 py-4 pb-20">
-        <LocalDataStatus snapshot={snapshot} label="Аналитика" onRefresh={() => void resource.refresh(true)} />
+        <LocalDataStatus snapshot={snapshot} label="Аналитика" onRefresh={() => localData ? void refreshJournal(true) : void resource.refresh(true)} />
         <PeriodSelector value={period} onChange={onPeriodChange} />
         <div className="border-y border-zinc-800"><SectionLink title="Сводка для тренера" icon={ClipboardList} onClick={onSummary} /></div>
         {/* Neutral by construction: one surface colour for every outcome. A
@@ -2083,14 +2112,9 @@ const AnalyticsScreen = ({ onBack, onSummary, period, onPeriodChange }: {
             <Card className="p-4">
               <h2 className="text-sm font-bold text-zinc-400 uppercase mb-3">Объём по группам (кг)</h2>
               <div className="h-48">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={muscleList.map(m => ({ name: m, volume: Math.round((data?.muscleVolume || {})[m] ?? 0) }))} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-                    <XAxis dataKey="name" tick={{ fill: '#a1a1aa', fontSize: 10 }} />
-                    <YAxis tick={{ fill: '#a1a1aa', fontSize: 10 }} />
-                    <Tooltip contentStyle={{ backgroundColor: '#27272a', border: '1px solid #3f3f46' }} formatter={(v: number | undefined) => [(v ?? 0).toLocaleString('ru') + ' кг', 'Тоннаж']} />
-                    <Bar dataKey="volume" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
+                <ChartBoundary><React.Suspense fallback={<p className="py-4 text-sm text-zinc-400">Открываем график…</p>}>
+                  <AnalyticsVolumeChart data={muscleList.map(m => ({ name: m, volume: Math.round((data?.muscleVolume || {})[m] ?? 0) }))} />
+                </React.Suspense></ChartBoundary>
               </div>
             </Card>
             <Card className="p-4">
@@ -2242,14 +2266,26 @@ const App = () => {
   const telegramMode = isTelegramMode();
   const [ownerKey, setOwnerKey] = useState(cacheOwner);
   const activateCacheOwner = (owner: string) => { cacheOwner = owner; setOwnerKey(owner); };
-  const [authState, setAuthState] = useState<'loading' | 'authenticated' | 'anonymous'>(
-    telegramMode ? 'authenticated' : 'loading'
+  const [authState, setAuthState] = useState<'loading' | 'authenticated' | 'local' | 'anonymous'>(
+    telegramMode ? 'authenticated' : offlineAccessLocked(localStorage) ? 'anonymous' : readOfflineOwner(localStorage) ? 'local' : 'loading'
   );
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [loginBusy, setLoginBusy] = useState(false);
   const [loginError, setLoginError] = useState('');
-  const isAuthenticated = authState === 'authenticated';
+  const isAuthenticated = authState === 'authenticated' || authState === 'local';
+  const remoteAuthenticated = authState === 'authenticated';
+  useEffect(() => {
+    if (!isAuthenticated || !navigator.onLine) return;
+    const timer = window.setTimeout(() => { void loadAnalyticsChart().catch(() => {}); }, 1500);
+    return () => window.clearTimeout(timer);
+  }, [isAuthenticated]);
+  const manualSignOut = useRef(offlineAccessLocked(localStorage));
+  const logout = () => {
+    manualSignOut.current = true; apiReady = false;
+    forgetOfflineOwner(localStorage); activateCacheOwner(''); setAuthState('anonymous');
+    void signOutStandalone();
+  };
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [bodyWeightInput, setBodyWeightInput] = useState('');
@@ -2311,21 +2347,29 @@ const App = () => {
     }
 
     let active = true;
-    void getStandaloneSession().then((session) => {
-      if (active) { activateCacheOwner(session ? `supabase:${session.user.id}` : ''); setAuthState(session ? 'authenticated' : 'anonymous'); }
-    });
+    const acceptSession = (session: Awaited<ReturnType<typeof getStandaloneSession>>) => {
+      if (!active || manualSignOut.current) return;
+      apiReady = !!session;
+      const owner = session ? `supabase:${session.user.id}` : readOfflineOwner(localStorage);
+      activateCacheOwner(owner);
+      setAuthState(session ? 'authenticated' : owner ? 'local' : 'anonymous');
+    };
+    const restore = () => { void getStandaloneSession().then(acceptSession).catch(() => acceptSession(null)); };
+    restore();
     const subscription = supabaseAuth?.auth.onAuthStateChange((_event, session) => {
-      if (active) { activateCacheOwner(session ? `supabase:${session.user.id}` : ''); setAuthState(session ? 'authenticated' : 'anonymous'); }
+      acceptSession(session);
     }).data.subscription;
     const requireSignIn = () => {
-      setAuthState('anonymous');
-      void signOutStandalone();
+      apiReady = false;
+      setAuthState(readOfflineOwner(localStorage) ? 'local' : 'anonymous');
     };
     window.addEventListener(STANDALONE_AUTH_REQUIRED_EVENT, requireSignIn);
+    window.addEventListener('online', restore);
     return () => {
       active = false;
       subscription?.unsubscribe();
       window.removeEventListener(STANDALONE_AUTH_REQUIRED_EVENT, requireSignIn);
+      window.removeEventListener('online', restore);
     };
   }, [telegramMode]);
 
@@ -2341,6 +2385,9 @@ const App = () => {
       return;
     }
     const signedIn = await getStandaloneSession();
+    manualSignOut.current = false;
+    if (signedIn) try { rememberOfflineOwner(localStorage, `supabase:${signedIn.user.id}`); } catch { /* Login remains usable in memory. */ }
+    apiReady = !!signedIn;
     activateCacheOwner(signedIn ? `supabase:${signedIn.user.id}` : '');
     setLoginPassword('');
     setAuthState('authenticated');
@@ -2585,7 +2632,7 @@ const App = () => {
   }, []);
 
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!remoteAuthenticated) return;
     const cleanupNetwork = initNetworkListeners();
     let previousPending = getPendingCount();
     const updatePendingCount = () => {
@@ -2603,7 +2650,7 @@ const App = () => {
       cleanupNetwork();
       window.removeEventListener(QUEUE_CHANGED_EVENT, updatePendingCount);
     };
-  }, [isAuthenticated, ownerKey]);
+  }, [remoteAuthenticated, ownerKey]);
 
   useEffect(() => { 
     if (isAuthenticated) {
@@ -2615,6 +2662,7 @@ const App = () => {
         }
       };
       applyInit(api.getCachedInit());
+      if (!remoteAuthenticated) return;
       api.getInit().then(d => {
         if (d) applyInit(d);
       }); 
@@ -2623,7 +2671,7 @@ const App = () => {
       if (navigator.onLine) void journalResource().refresh(true);
       void api.syncOfflineQueue();
     }
-  }, [isAuthenticated, ownerKey]);
+  }, [isAuthenticated, remoteAuthenticated, ownerKey]);
 
   const debouncedSearchQuery = useDebounce(searchQuery, 300);
   const filteredExercises = useMemo(() => {
@@ -2685,6 +2733,7 @@ const App = () => {
             <Input type="password" autoComplete="current-password" value={loginPassword} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setLoginPassword(e.target.value)} placeholder="Пароль" />
             {loginError && <p className="text-sm text-red-400">{loginError}</p>}
             <Button type="submit" className="w-full h-12" disabled={loginBusy}>{loginBusy ? 'Входим…' : 'Войти'}</Button>
+            {readOfflineOwner(localStorage) && <Button type="button" variant="secondary" className="w-full min-h-12" onClick={() => { activateCacheOwner(readOfflineOwner(localStorage)); setAuthState('local'); }}>Продолжить с данными на устройстве</Button>}
           </form>
         )}
       </div>
@@ -2705,6 +2754,8 @@ const App = () => {
   const activeStep = plan.find(p => p.key === activeStepKey);
   return (
     <div className="bg-zinc-950 min-h-screen text-zinc-50 font-sans selection:bg-blue-500/30 pb-app-navigation">
+      <OfflineUpdateNotice workoutActive={workoutActive} pendingCount={pendingCount} />
+      {authState === 'local' && <ScreenContent className="flex flex-wrap items-center justify-between gap-3 py-3 text-sm text-zinc-300"><p>Работаем с данными на устройстве.</p><button className="min-h-11 text-blue-300" onClick={() => setAuthState('anonymous')}>Войти для отправки результатов</button></ScreenContent>}
       {workoutError && <div role="alert" className="mx-4 flex items-center gap-3 rounded-xl border border-amber-700 bg-zinc-900 p-3 text-sm text-amber-200"><span className="flex-1">{workoutError}</span><button aria-label="Закрыть сообщение" onClick={() => setWorkoutError('')} className="min-h-11 min-w-11"><X className="mx-auto h-5 w-5" /></button></div>}
       {screen === 'home' && <HomeScreen location={location} onLocationChange={changeWorkoutLocation} restBanner={restBanner} workoutActive={workoutActive} plan={plan} planDone={planDone} draft={readSavedWorkout()} resumeStep={activeStep && !activeStep.status ? activeStep : nextStep(plan)} onOpenPlanItem={openPlanItem} onStartWorkout={startWorkout} onFinishWorkout={() => setIsFinishConfirmOpen(true)} onAllExercises={() => workoutActive ? chooseExercise('add') : setScreen('exercises')} onHistory={() => setScreen('history')} onAnalytics={() => setScreen('analytics')} onMove={moveStep} onReplace={(key: string) => chooseExercise('replace', key)} onSkip={(key: string) => finishStep(key, 'skipped')} sourceDate={plan.find(p => p.sourceDate)?.sourceDate} onSettings={() => { setBodyWeightInput(String(bodyWeight)); setPlatesDraft(plates); setPresetDraft(preset); setIsSettingsOpen(true); }} />}
       {screen === 'analytics' && <AnalyticsScreen onBack={() => setScreen('home')} onSummary={() => setScreen('summary')} period={analyticsPeriod} onPeriodChange={setAnalyticsPeriod} />}
@@ -2807,7 +2858,7 @@ const App = () => {
             )}
           </div>
           <Button className="w-full h-12" onClick={() => { const v = parseFloat(bodyWeightInput.replace(',', '.')); if (v >= 30 && v <= 250) { updateBodyWeight(v); updatePlates(platesDraft); savePreset(normalizePreset(presetDraft)); notify('success'); setIsSettingsOpen(false); } else { notify('error'); } }}>Сохранить</Button>
-          {!telegramMode && <Button variant="secondary" className="w-full h-12" onClick={() => { void signOutStandalone(); setIsSettingsOpen(false); }}>Выйти из HealthOS</Button>}
+          {!telegramMode && <Button variant="secondary" className="w-full h-12" onClick={() => { logout(); setIsSettingsOpen(false); }}>Выйти из HealthOS</Button>}
           <div className="border-t border-zinc-800 pt-4 space-y-3">
             <div className="text-sm font-medium text-zinc-400">Данные</div>
             <Button variant="secondary" className="w-full h-12" onClick={handleExport}>{dataBusy ? 'Готовлю…' : 'Экспорт (упражнения + тренировки)'}</Button>

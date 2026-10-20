@@ -23,14 +23,16 @@ const until = async fn => { for(let i=0;i<80;i++){ if(await fn())return; await n
    await ctx.route('**/*',async route=>{
     const request=route.request(),url=new URL(request.url()),endpoint=url.searchParams.get('url');
     if(endpoint?.startsWith('/api/')){
-     if(endpoint==='/api/global_history')globalRequests++;
+     if(endpoint==='/api/global_history'||endpoint==='/api/journal_sync')globalRequests++;
      if(endpoint.startsWith('/api/analytics'))analyticsRequests++;
-     if(mode==='hold' && (endpoint==='/api/global_history'||endpoint.startsWith('/api/analytics')))
+     if(mode==='hold' && (endpoint==='/api/global_history'||endpoint==='/api/journal_sync'||endpoint.startsWith('/api/analytics')))
       await new Promise(resolve=>releases.push(resolve));
      if(mode==='fail')return route.fulfill({status:503,body:'{}',contentType:'application/json'});
      const response=await fetch(FIXTURE+'/?'+new URLSearchParams({url:endpoint}),{method:request.method(),headers:{'Content-Type':'application/json'},...(request.postData()?{body:request.postData()}:{})});
      const body=await response.text();
-     const data=endpoint==='/api/global_history'?JSON.parse(body).map(s=>s.date==='2026.10.12'?{...s,duration:'≈61м'}:s):null;
+     const remap=s=>s.date==='2026.10.12'?{...s,duration:'≈61м'}:s;
+     const result=JSON.parse(body);
+     const data=endpoint==='/api/global_history'?result.map(remap):endpoint==='/api/journal_sync'?{...result,upserts:result.upserts?.map(remap),history:result.history?.map(remap)}:null;
      return route.fulfill({status:response.status,body:data?JSON.stringify(data):body,contentType:'application/json'});
     }
     if(url.hostname==='127.0.0.1')return route.continue();
@@ -53,6 +55,7 @@ const until = async fn => { for(let i=0;i<80;i++){ if(await fn())return; await n
    await until(()=>hasCache('analytics:28'));
    await page.getByRole('button',{name:'Неделя',exact:true}).click();
    await until(()=>hasCache('analytics:7'));
+   assert.equal(analyticsRequests,0,'all periods calculate locally from the complete journal');
    assert.equal(globalRequests,1,'startup, home and analytics do not duplicate journal reads');
    mode='hold';globalRequests=0;analyticsRequests=0;
    await page.evaluate(()=>{for(const key of Object.keys(localStorage)){if(key.startsWith('gym_read_cache_v1:')){const value=JSON.parse(localStorage.getItem(key));value.updatedAt=1;localStorage.setItem(key,JSON.stringify(value));}}});
@@ -116,7 +119,7 @@ const until = async fn => { for(let i=0;i<80;i++){ if(await fn())return; await n
    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
    assert.deepEqual(errors,[]);
    results.push({viewport:name,historyVisibleMs:historyMs,cachedAnalyticsVisibleMs:analyticsMs,
-    sharedBackgroundReads:1,sharedPeriodBothDirections:true,fourWeekPeriod:true,activeWorkoutBeforeNavigation:true,
+    sharedBackgroundReads:1,localAnalyticsWithoutAPI:true,sharedPeriodBothDirections:true,fourWeekPeriod:true,activeWorkoutBeforeNavigation:true,
     failedRefreshKeptHistory:true,offlineRepeat:true,stableQueueAcrossReload:true,runtimeErrors:errors});
    console.log(results.at(-1));await ctx.close();
   }

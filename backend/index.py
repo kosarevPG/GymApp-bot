@@ -25,6 +25,7 @@ from supabase_store import (
     get_analytics,
     get_exercise_history,
     get_global_history,
+    get_journal_delta,
     get_init,
     get_workout_session,
     update_session,
@@ -245,6 +246,11 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             return response(get_exercise_history(user_id, exercise_id))
         if endpoint == "global_history" and method == "GET":
             return response(get_global_history(user_id))
+        if endpoint == "journal_sync" and method == "POST":
+            try:
+                return response(get_journal_delta(user_id, _body(event).get('known', {})))
+            except ValueError as error:
+                return response({'error': str(error)}, 400)
         if endpoint == "session" and method == "GET":
             session_id = params.get("session_id", "")
             if not session_id:
@@ -292,7 +298,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             if not date_text and not session_id:
                 return response({"error": "session_id or date is required"}, 400)
             deleted = delete_workout(user_id, date_text, session_id=session_id)
-            return response({"status": "success" if deleted else "error", "deleted": deleted})
+            return response({"status": "success" if deleted or data.get("missing_ok") is True else "error", "deleted": deleted})
         if endpoint == "export" and method == "GET":
             return response(export_data(user_id))
         if endpoint == "import" and method == "POST":

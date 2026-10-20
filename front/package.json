@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "test": "node --test tests/*.test.mjs",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && node scripts/buildServiceWorker.mjs",
     "preview": "vite preview",
     "deploy": "npm run build && gh-pages -d dist",
     "predeploy": "node scripts/checkEnv.mjs"
