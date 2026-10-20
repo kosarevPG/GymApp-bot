@@ -52,7 +52,7 @@ backend и фронтенд не публиковались. Записей в �
 | `front/tests/`, `backend/test_journal_delta.py`, `test_local_analytics_history.py`, `test_session_metadata.py`, `scripts/tests/` | Проверки вычислений, правок, SQL, офлайн-запуска и обновления |
 | `.github/workflows/ci.yml` | Python в frontend job для сравнения локальных расчётов с настоящим адаптером API |
 
-Отдельный SQL: `supabase/migrations/20261020190854_gym_journal_snapshot_v1.sql`.
+Отдельный SQL: `supabase/migrations/20261020194920_gym_journal_snapshot_v1.sql`.
 Добавляет только функцию чтения `public.gym_journal_snapshot_v1(uuid, jsonb)`.
 Она получает согласованный снимок одним SQL-запросом и вычисляет версии по
 содержимому сессии, групп, подходов, кардио и использованных упражнений.
@@ -115,7 +115,7 @@ backend, а не из тела запроса клиента.
 
 1. **Supabase HealthOS** (`yafpqobpgqffkahvwwki`): проверить список применённых
    миграций и сохранить определения представлений / контрольные количества строк.
-   Применить только `20261020190854_gym_journal_snapshot_v1.sql`. Проверить
+   Применить только `20261020194920_gym_journal_snapshot_v1.sql`. Проверить
    ограничения доступа и равенство прежних данных / представлений. Импорт не запускать.
 2. **Backend Яндекс Облака**: опубликовать `backend/` в существующую функцию
    `d4ehbqgul5keq1hehqvb` через `scripts/deploy_function.sh`, сохранив всё окружение

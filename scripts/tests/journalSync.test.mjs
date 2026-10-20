@@ -27,7 +27,7 @@ test('SQL snapshot is read-only, owner-scoped, selective, deletion-aware and ina
    }
   }
   const before=(await db.query('select to_jsonb(t) as row from gym_workout_projection t order by session_id')).rows;
-  await db.exec(await read('../../supabase/migrations/20261020190854_gym_journal_snapshot_v1.sql'));
+  await db.exec(await read('../../supabase/migrations/20261020194920_gym_journal_snapshot_v1.sql'));
   assert.deepEqual((await db.query('select to_jsonb(t) as row from gym_workout_projection t order by session_id')).rows,before);
   const snapshot=async known=>(await db.query('select public.gym_journal_snapshot_v1($1,$2::jsonb) as data',[owner,JSON.stringify(known)])).rows[0].data;
   const initial=await snapshot({});assert.equal(Object.keys(initial.manifest).length,2);assert.equal(initial.changed.length,2);
