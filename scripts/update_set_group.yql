@@ -1,8 +1,0 @@
--- Обновление set_group_id в workout_logs
--- Запуск: ydb -p <profile> table query execute -t data -q "$(cat scripts/update_set_group.yql)"
--- или: ydb -p <profile> sql -t data -f scripts/update_set_group.yql
-
-UPDATE workout_logs
-SET set_group_id = '30b42ccd-57de-4b45-945b-79ee24382ddc'
-WHERE exercise_id = '6d50c565-e5f6-4895-bdf5-a2562ba68dd34'
-  AND set_group_id = 'dea9a713-2f8a-408d-95a6-85543c41402e';
