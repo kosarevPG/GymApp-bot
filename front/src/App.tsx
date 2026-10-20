@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, useSyncExternalStore } fro
 import { 
   Search, ChevronRight, Plus, X, Info, 
   Check, Trash2, StickyNote, ChevronDown, Dumbbell, Calendar, 
-  ChevronLeft, Settings, ArrowLeft, Camera, Pencil, Trophy,
+  Settings, ArrowLeft, Camera, Pencil, Trophy,
   History as HistoryIcon, Activity, Link as LinkIcon, Target
   , Play, Repeat2, ArrowUp, ArrowDown, SkipForward, Replace, ClipboardList
 } from 'lucide-react';
@@ -25,6 +25,9 @@ import { createLocalResource } from './localResource';
 import { readLocalCache, writeLocalCache } from './cacheStorage';
 import { LocalDataStatus } from './components/LocalDataStatus';
 import { BottomNavigation } from './components/BottomNavigation';
+import { ScreenContent, ScreenHeader } from './components/ScreenLayout';
+import { PeriodSelector, type HistoryPeriod } from './components/PeriodSelector';
+import { SectionLink } from './components/SectionLink';
 import { calcEffectiveWeight, weightInputLabel, WEIGHT_TYPE_OPTIONS, USER_BODY_WEIGHT_DEFAULT, describeLoad, DEFAULT_PLATES, PLATE_CHOICES, carryOverInput, loadRulesOf, rulesAsExercise, rulesForSet, setLoadLabel, forNewEntry } from './exerciseConfig';
 import type { Exercise, WorkoutSet, HistoryItem, CardioHistoryItem, ExerciseSessionData, SetType } from './types';
 import {
@@ -627,7 +630,7 @@ const Button = ({ children, variant = 'primary', className = '', onClick, icon: 
     success: "bg-green-500/10 text-green-500"
   };
   return (
-    <button {...props} onClick={onClick} className={`flex items-center justify-center font-medium rounded-xl transition-all active:scale-95 disabled:opacity-50 ${variants[variant]} ${className}`}>
+    <button {...props} onClick={onClick} className={`flex min-h-11 items-center justify-center font-medium rounded-xl transition-colors active:scale-95 disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400 ${variants[variant]} ${className}`}>
       {Icon && <Icon className="w-5 h-5 mr-2" />}
       {children}
     </button>
@@ -635,7 +638,7 @@ const Button = ({ children, variant = 'primary', className = '', onClick, icon: 
 };
 
 const Input = React.forwardRef<HTMLInputElement, any>((props, ref) => (
-  <input ref={ref} {...props} className={`w-full h-12 bg-zinc-900 text-zinc-50 rounded-xl px-4 focus:outline-none focus:ring-1 focus:ring-zinc-600 placeholder:text-zinc-600 transition-all ${props.className}`} />
+  <input ref={ref} {...props} className={`w-full h-12 bg-zinc-900 text-zinc-50 rounded-xl px-4 focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-zinc-400 transition-all ${props.className}`} />
 ));
 Input.displayName = 'Input';
 
@@ -752,7 +755,7 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates =
 
   return (
     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="mb-3">
-      <div className="grid grid-cols-[auto_auto_1fr_1fr_1fr_auto] gap-2 items-start">
+      <div className="set-entry-grid items-start">
         <button
           disabled={set.completed}
           onClick={() => {
@@ -760,7 +763,7 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates =
             const next = SET_TYPE_CYCLE[(idx + 1) % SET_TYPE_CYCLE.length];
             onUpdate(set.id, 'setType', next);
           }}
-          className={`w-8 h-12 rounded-lg text-xs font-bold flex items-center justify-center transition-colors ${
+          className={`set-entry-type w-11 h-12 rounded-lg text-xs font-bold flex items-center justify-center transition-colors ${
             (set.setType || 'working') === 'warmup' ? 'bg-zinc-700 text-zinc-400' :
             (set.setType || 'working') === 'drop' ? 'bg-orange-900/50 text-orange-400' :
             (set.setType || 'working') === 'failure' ? 'bg-red-900/50 text-red-400' :
@@ -770,11 +773,11 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates =
         >
           {SET_TYPE_LABELS[(set.setType || 'working') as SetType]}
         </button>
-        <button aria-label={set.completed ? 'Изменить выполненный подход' : 'Отметить подход выполненным'} onClick={() => onComplete(set.id)} className={`relative w-12 h-12 rounded-xl border flex items-center justify-center transition-colors ${set.completed ? 'bg-green-500 border-green-500' : 'bg-zinc-900 border-zinc-700'}`}>
+        <button aria-label={set.completed ? 'Изменить выполненный подход' : 'Отметить подход выполненным'} onClick={() => onComplete(set.id)} className={`set-entry-complete relative w-12 h-12 rounded-xl border flex items-center justify-center transition-colors ${set.completed ? 'bg-green-500 border-green-500' : 'bg-zinc-900 border-zinc-700'}`}>
           <Check className={`w-6 h-6 ${set.completed ? 'text-white' : 'text-zinc-700'}`} />
           <SyncDot mark={syncMark} />
         </button>
-        <div className="flex flex-col gap-1">
+        <div className="set-entry-weight flex min-w-0 flex-col gap-1">
           <input
             type="number"
             aria-label="Вес подхода"
@@ -787,7 +790,7 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates =
             className="w-full h-12 bg-zinc-800 rounded-xl text-center text-xl font-bold text-zinc-100 focus:ring-1 focus:ring-blue-500 outline-none tabular-nums"
           />
           {(showTotal || oneRM > 0 || delta !== 0 || (set.rir != null && set.rir !== '')) && (
-            <div className="flex justify-between px-1 text-[10px]">
+            <div className="flex flex-wrap justify-between gap-x-1 break-words px-1 text-xs">
               <span>
                 {showTotal && <span className="text-blue-400 font-medium mr-1">Σ{effectiveWeight}</span>}
                 {oneRM > 0 && <span className="text-zinc-500">1ПМ:{oneRM}</span>}
@@ -806,7 +809,7 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates =
           disabled={set.completed}
           onChange={e => onUpdate(set.id, 'reps', e.target.value)}
           onFocus={e => e.target.select()}
-          className="w-full h-12 bg-zinc-800 rounded-xl text-center text-xl font-bold text-zinc-100 focus:ring-1 focus:ring-blue-500 outline-none tabular-nums"
+          className="set-entry-reps min-w-0 w-full h-12 bg-zinc-800 rounded-xl text-center text-xl font-bold text-zinc-100 focus:ring-1 focus:ring-blue-500 outline-none tabular-nums"
         />
         <input 
           type="number" 
@@ -817,9 +820,9 @@ const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates =
           disabled={set.completed}
           onChange={e => onUpdate(set.id, 'rest', e.target.value)}
           onFocus={e => e.target.select()}
-          className="w-full h-12 bg-zinc-800 rounded-xl text-center text-zinc-400 focus:text-zinc-100 focus:ring-1 focus:ring-blue-500 outline-none tabular-nums"
+          className="set-entry-rest min-w-0 w-full h-12 bg-zinc-800 rounded-xl text-center text-zinc-400 focus:text-zinc-100 focus:ring-1 focus:ring-blue-500 outline-none tabular-nums"
         />
-        <button onClick={() => onDelete(set.id)} className="w-10 h-12 flex items-center justify-center text-zinc-600 hover:text-red-500"><Trash2 className="w-5 h-5" /></button>
+        <button aria-label="Удалить подход" onClick={() => onDelete(set.id)} className="set-entry-delete w-11 h-12 flex items-center justify-center text-zinc-400 hover:text-red-400"><Trash2 className="w-5 h-5" /></button>
       </div>
       {set.completed && set.timing?.duration_seconds != null && <div className="ml-14 mt-1 text-xs text-zinc-300">Время подхода{set.load?.perSide ? ' (обе руки)' : ''} {formatSeconds(set.timing.duration_seconds)}</div>}
       {isActive && onStart && <button className="ml-14 mt-1 min-h-11 text-sm text-blue-300" onClick={() => onStart(set.id)}>Начать этот подход</button>}
@@ -887,7 +890,7 @@ const LastTimeBlock = ({ exercise, history, bodyWeight = USER_BODY_WEIGHT_DEFAUL
   if (!line) return null;
   return (
     <div className="mb-3 rounded-xl bg-zinc-800/40 px-3 py-2">
-      <div className="text-[11px] text-zinc-500">Прошлый раз</div>
+      <div className="text-xs text-zinc-400">Прошлый раз</div>
       <div className="text-xs text-zinc-200">{line}</div>
     </div>
   );
@@ -949,7 +952,7 @@ const CardioCard = ({ exerciseData, syncMarks = {}, onAddSet, onUpdateSet, onDel
       <div className="flex justify-between items-start mb-4">
         <div>
           <h2 className="text-xl font-semibold text-zinc-50">{exerciseData.exercise.name}</h2>
-          <div className="text-xs text-zinc-500 mt-1">Кардио — в тоннаж не входит</div>
+          <div className="text-xs text-zinc-400 mt-1">Кардио — в тоннаж не входит</div>
         </div>
         <div className="flex gap-2">
           <button onClick={() => setShowHistory(true)} className="p-2 bg-zinc-800/50 rounded-lg text-zinc-400 hover:text-blue-500"><Calendar className="w-5 h-5" /></button>
@@ -958,15 +961,15 @@ const CardioCard = ({ exerciseData, syncMarks = {}, onAddSet, onUpdateSet, onDel
       </div>
       {last.length > 0 && (
         <div className="mb-3 rounded-xl bg-zinc-800/40 px-3 py-2">
-          <div className="text-[11px] text-zinc-500">Прошлый раз</div>
+          <div className="text-xs text-zinc-400">Прошлый раз</div>
           <div className="text-xs text-zinc-200">{String(last[0].date || '').slice(5)} · {formatCardioSegments(last)}</div>
         </div>
       )}
       <div className="grid grid-cols-[auto_1fr_1fr_1fr_auto] gap-2 mb-2 px-1">
         <div className="w-12" />
-        <div className="text-[10px] text-center text-zinc-500 font-bold uppercase">Мин</div>
-        <div className="text-[10px] text-center text-zinc-500 font-bold uppercase">Км/ч</div>
-        <div className="text-[10px] text-center text-zinc-500 font-bold uppercase">Наклон, %</div>
+        <div className="text-xs text-center text-zinc-400 font-bold uppercase">Мин</div>
+        <div className="text-xs text-center text-zinc-400 font-bold uppercase">Км/ч</div>
+        <div className="text-xs text-center text-zinc-400 font-bold uppercase">Наклон, %</div>
         <div className="w-9" />
       </div>
       {exerciseData.sets.map((set: WorkoutSet) => (
@@ -977,7 +980,7 @@ const CardioCard = ({ exerciseData, syncMarks = {}, onAddSet, onUpdateSet, onDel
         <div className="space-y-3">
           {sessions.map((session, i) => (
             <div key={i} className="p-3 bg-zinc-800/30 border border-zinc-800 rounded-xl">
-              <div className="text-xs text-zinc-500 mb-1">{session.date}</div>
+              <div className="text-xs text-zinc-400 mb-1">{session.date}</div>
               <div className="text-sm text-zinc-200">{formatCardioSegments(session.items)}</div>
             </div>
           ))}
@@ -1016,13 +1019,13 @@ const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plat
       <LastTimeBlock exercise={exerciseData.exercise} history={exerciseData.history} bodyWeight={bodyWeight} />
       <NoteWidget initialValue={exerciseData.note} onChange={onNoteChange} />
       <HistoryListModal isOpen={showHistoryModal} onClose={() => setShowHistoryModal(false)} history={exerciseData.history} exerciseName={exerciseData.exercise.name} exercise={exerciseData.exercise} bodyWeight={bodyWeight} />
-      <div className="grid grid-cols-[auto_auto_1fr_1fr_1fr_auto] gap-2 mb-2 px-1">
-        <div className="w-8" />
-        <div className="w-10" />
-        <div className="text-[10px] text-center text-zinc-500 font-bold uppercase">{weightInputLabel(exerciseData.exercise)}</div>
-        <div className="text-[10px] text-center text-zinc-500 font-bold uppercase">{exerciseData.exercise.unilateral ? 'ПОВТ/РУКА' : 'ПОВТ'}</div>
-        <div className="text-[10px] text-center text-zinc-500 font-bold uppercase">МИН</div>
-        <div className="w-8" />
+      <div className="set-entry-grid set-entry-labels mb-2">
+        <div className="set-label-type" />
+        <div />
+        <div className="text-xs text-center text-zinc-400 font-bold uppercase">{weightInputLabel(exerciseData.exercise)}</div>
+        <div className="text-xs text-center text-zinc-400 font-bold uppercase">{exerciseData.exercise.unilateral ? 'ПОВТ/РУКА' : 'ПОВТ'}</div>
+        <div className="text-xs text-center text-zinc-400 font-bold uppercase">МИН</div>
+        <div className="set-label-delete" />
       </div>
       <div className="space-y-1">
         {exerciseData.sets.map((set: WorkoutSet) => (
@@ -1059,10 +1062,12 @@ const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plat
  * the same exercise was done, and a list of what went down. No advice — the
  * programme is the coach's.
  */
-const TrainerSummaryScreen = ({ onBack, notify, allExercises = [] }: any) => {
+const TrainerSummaryScreen = ({ onBack, notify, allExercises = [], period, onPeriodChange }: {
+  onBack: () => void; notify?: (type: 'error' | 'success' | 'warning') => void; allExercises?: Exercise[];
+  period: HistoryPeriod; onPeriodChange: (period: HistoryPeriod) => void;
+}) => {
   const journal = useJournal();
   const history = journal.history;
-  const [days, setDays] = useState(7);
   const [copied, setCopied] = useState(false);
 
   const today = todayInLogFormat().replace(/\./g, '-');
@@ -1071,8 +1076,8 @@ const TrainerSummaryScreen = ({ onBack, notify, allExercises = [] }: any) => {
     [allExercises],
   );
   const summary = useMemo(
-    () => (journal.data !== null || history.length ? buildTrainerSummary(history, isoDaysAgo(today, days), today, exerciseById) : null),
-    [history, days, today, exerciseById, journal.data !== null],
+    () => (journal.data !== null || history.length ? buildTrainerSummary(history, isoDaysAgo(today, period), today, exerciseById) : null),
+    [history, period, today, exerciseById, journal.data !== null],
   );
   const text = useMemo(() => (summary ? formatTrainerSummaryText(summary) : ''), [summary]);
 
@@ -1089,25 +1094,10 @@ const TrainerSummaryScreen = ({ onBack, notify, allExercises = [] }: any) => {
 
   return (
     <motion.div initial={{ x: 50, opacity: 0 }} animate={{ x: 0, opacity: 1 }} className="min-h-screen bg-zinc-950">
-      <div className="sticky top-0 z-30 flex items-center gap-4 border-b border-zinc-800 bg-zinc-950/80 px-4 pb-4 pt-safe-4 backdrop-blur-md">
-        <button onClick={onBack} className="-ml-2 p-2 text-zinc-400 active:text-white"><ChevronLeft className="h-6 w-6" /></button>
-        <h1 className="text-xl font-bold">Сводка для тренера</h1>
-      </div>
-
-      <div className="space-y-4 p-4 pb-32">
-        <div className="flex gap-2">
-          {[7, 14, 30].map((d) => (
-            <button
-              key={d}
-              onClick={() => setDays(d)}
-              className={`rounded-xl px-4 py-2 text-sm font-medium ${days === d ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-400'}`}
-            >
-              {d} дн.
-            </button>
-          ))}
-        </div>
-
+      <ScreenHeader title="Сводка для тренера" onBack={onBack} backLabel="Назад к аналитике" />
+      <ScreenContent className="space-y-4 py-4 pb-32">
         <LocalDataStatus snapshot={journal} onRefresh={() => void journalResource().refresh(true)} />
+        <PeriodSelector value={period} onChange={onPeriodChange} />
 
         {summary && summary.sessionCount === 0 && (
           <div className="rounded-xl bg-zinc-900 p-4 text-sm text-zinc-400">
@@ -1119,7 +1109,7 @@ const TrainerSummaryScreen = ({ onBack, notify, allExercises = [] }: any) => {
           <Card key={session.date} className="p-4">
             <div className="flex items-baseline justify-between">
               <div className="text-sm font-semibold text-zinc-100">{session.date.slice(8)}.{session.date.slice(5, 7)}{session.location && ` · ${LOCATION_LABELS[session.location as WorkoutLocation]}`}{session.duration && ` · ${session.duration}`}</div>
-              <div className="text-[11px] text-zinc-500">{session.totalSets} подх.</div>
+              <div className="text-xs text-zinc-400">{session.totalSets} подх.</div>
             </div>
             <div className="mt-2 space-y-2">
               {session.exercises.map((exercise: any) => (
@@ -1128,14 +1118,14 @@ const TrainerSummaryScreen = ({ onBack, notify, allExercises = [] }: any) => {
                   <div className="text-sm text-zinc-100">{exercise.text}</div>
                   {!!exercise.measuredSets && <div className="text-xs text-zinc-300">Время подходов {formatSeconds(exercise.measuredSeconds)} · измерено {exercise.measuredSets} из {exercise.setCount}</div>}
                   {exercise.change ? (
-                    <div className={`text-[11px] ${exercise.change.down ? 'text-amber-400' : 'text-zinc-500'}`}>
+                    <div className={`text-xs ${exercise.change.down ? 'text-amber-400' : 'text-zinc-400'}`}>
                       было {exercise.change.previousText}
                       {exercise.change.weightText && ` · ${exercise.change.weightText}`}
                       {exercise.change.repsDelta !== 0 && ` · повт. ${exercise.change.repsDelta > 0 ? '+' : '−'}${Math.abs(exercise.change.repsDelta)}`}
                       {exercise.change.weightDelta === 0 && exercise.change.repsDelta === 0 && ' · как в прошлый раз'}
                     </div>
                   ) : exercise.cardio ? null : (
-                    <div className="text-[11px] text-zinc-500">впервые</div>
+                    <div className="text-xs text-zinc-400">впервые</div>
                   )}
                 </div>
               ))}
@@ -1147,7 +1137,7 @@ const TrainerSummaryScreen = ({ onBack, notify, allExercises = [] }: any) => {
           <Card className="p-4">
             <div className="text-sm font-semibold text-zinc-100">Просело</div>
             {summary.drops.length === 0 ? (
-              <div className="mt-1 text-xs text-zinc-500">Ничего не просело.</div>
+              <div className="mt-1 text-xs text-zinc-400">Ничего не просело.</div>
             ) : (
               <div className="mt-2 space-y-1">
                 {summary.drops.map((drop: any, i: number) => (
@@ -1160,27 +1150,27 @@ const TrainerSummaryScreen = ({ onBack, notify, allExercises = [] }: any) => {
             )}
           </Card>
         )}
-      </div>
+      </ScreenContent>
 
       {summary && (
-        <div className="fixed inset-x-0 above-app-navigation border-t border-zinc-800 bg-zinc-950 p-4">
+        <div className="fixed inset-x-0 above-app-navigation border-t border-zinc-800 bg-zinc-950 py-4">
+          <ScreenContent>
           <Button onClick={copy} className="h-12 w-full">
             {copied ? 'Скопировано' : 'Скопировать текстом'}
           </Button>
+          </ScreenContent>
         </div>
       )}
     </motion.div>
   );
 };
 
-const HomeScreen = ({ workoutActive, location, onLocationChange, restBanner, plan = [], planDone = [], draft, onOpenPlanItem, onStartWorkout, onFinishWorkout, onAllExercises, onHistory, onAnalytics, onSummary, onSettings, onMove, onReplace, onSkip, sourceDate }: any) => {
+const HomeScreen = ({ workoutActive, location, onLocationChange, restBanner, plan = [], planDone = [], draft, resumeStep, onOpenPlanItem, onStartWorkout, onFinishWorkout, onAllExercises, onHistory, onAnalytics, onSettings, onMove, onReplace, onSkip, sourceDate }: any) => {
   const journal = useJournal();
   return (
-  <div className="mx-auto max-w-3xl px-4 pb-24 pt-safe-4 space-y-5">
-    <div className="flex items-center justify-between gap-3">
-      <h1 className="text-2xl font-bold">Главная</h1>
-      <button aria-label="Настройки" onClick={onSettings} className="min-h-11 min-w-11 flex items-center justify-center rounded-xl text-zinc-300 hover:bg-zinc-800"><Settings className="h-6 w-6" /></button>
-    </div>
+  <div className="min-h-screen bg-zinc-950">
+    <ScreenHeader title="Главная" action={<button aria-label="Настройки" onClick={onSettings} className="flex min-h-11 min-w-11 items-center justify-center rounded-xl text-zinc-300 hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500"><Settings className="h-6 w-6" /></button>} />
+    <ScreenContent className="space-y-5 py-4 pb-24">
     <LocalDataStatus snapshot={journal} onRefresh={() => void journalResource().refresh(true)} />
     {!workoutActive && <section className="space-y-3">
       <h2 className="text-lg font-semibold">Тренировка</h2>
@@ -1188,18 +1178,11 @@ const HomeScreen = ({ workoutActive, location, onLocationChange, restBanner, pla
       <Button onClick={onHistory} icon={HistoryIcon} className="w-full min-h-14 text-lg">Выбрать из истории</Button>
       <Button onClick={onStartWorkout} variant="secondary" icon={Plus} className="w-full min-h-12">Новая тренировка</Button>
     </section>}
-    <nav aria-label="Разделы приложения" className="divide-y divide-zinc-800 border-y border-zinc-800">
-      {[{ label: 'Аналитика', detail: 'Нагрузка и подходы по мышцам', icon: Activity, action: onAnalytics },
-        { label: 'Сводка для тренера', detail: 'Результаты для Паши', icon: ClipboardList, action: onSummary },
-        ...(!workoutActive ? [{ label: 'Справочник упражнений', detail: 'Техника и история упражнений', icon: Dumbbell, action: onAllExercises }] : []),
-      ].map(item => <button key={item.label} onClick={item.action} className="flex min-h-16 w-full items-center gap-3 py-3 text-left text-zinc-100 hover:bg-zinc-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500">
-        <item.icon className="h-5 w-5 shrink-0 text-zinc-400" />
-        <span className="min-w-0 flex-1"><span className="block font-medium">{item.label}</span><span className="block text-sm text-zinc-400">{item.detail}</span></span>
-        <ChevronRight className="h-5 w-5 shrink-0 text-zinc-500" />
-      </button>)}
-    </nav>
     {workoutActive && <>
       <h2 className="text-lg font-semibold">Текущая тренировка</h2>
+      {resumeStep && <p className="text-sm text-zinc-300">Упражнение {plan.findIndex((item: PlanItem) => item.key === resumeStep.key) + 1} из {plan.length} · {resumeStep.label}</p>}
+      {restBanner}
+      {resumeStep && !restBanner && <Button icon={Play} onClick={() => onOpenPlanItem(resumeStep)} className="w-full min-h-12">Продолжить тренировку</Button>}
       {sourceDate && <p className="text-sm text-zinc-300">Повторение тренировки {sourceDate}</p>}
       <label className="flex items-center justify-between gap-3 text-sm text-zinc-300">Место тренировки
         <select aria-label="Место новой тренировки" value={location || ''} onChange={e => onLocationChange(e.target.value)} className="min-h-11 rounded-lg bg-zinc-800 px-3 text-zinc-100">
@@ -1207,7 +1190,6 @@ const HomeScreen = ({ workoutActive, location, onLocationChange, restBanner, pla
           {Object.entries(LOCATION_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
       </label>
-      {restBanner}
       <div className="flex items-center justify-between gap-3"><span className="text-sm text-zinc-300">{plan.filter((p: PlanItem, i: number) => p.status === 'done' || planDone[i]).length} из {plan.length} завершено{plan.some((p: PlanItem) => p.status === 'skipped') ? ` · ${plan.filter((p: PlanItem) => p.status === 'skipped').length} пропущено` : ''}</span>
         <button onClick={onAllExercises} className="min-h-11 text-sm text-blue-300">Добавить упражнение</button></div>
       <div className="divide-y divide-zinc-800">
@@ -1230,6 +1212,11 @@ const HomeScreen = ({ workoutActive, location, onLocationChange, restBanner, pla
       <Button onClick={onFinishWorkout} variant="secondary" className="w-full min-h-12">Завершить тренировку</Button>
       <Button onClick={onHistory} variant="ghost" className="w-full min-h-11">История тренировок</Button>
     </>}
+    <nav aria-label="Разделы приложения" className="divide-y divide-zinc-800 border-y border-zinc-800">
+      <SectionLink title="Аналитика" detail="Нагрузка и подходы по мышцам" icon={Activity} onClick={onAnalytics} />
+      {!workoutActive && <SectionLink title="Справочник упражнений" detail="Техника и история упражнений" icon={Dumbbell} onClick={onAllExercises} />}
+    </nav>
+    </ScreenContent>
   </div>
   );
 };
@@ -1248,28 +1235,23 @@ const ExercisesListScreen = ({ exercises, title, restBanner, onBack, onSelectExe
   
   return (
     <motion.div initial={{ x: 50, opacity: 0 }} animate={{ x: 0, opacity: 1 }} className="flex flex-col h-full">
-      <div className="sticky top-0 z-30 bg-zinc-950/80 backdrop-blur-md border-b border-zinc-800 px-4 pb-4 pt-safe-4 flex items-center justify-between gap-4">
-        <div className="flex items-center gap-2 flex-1 min-w-0">
-          <button onClick={onBack} className="p-2 -ml-2 text-zinc-400 active:text-white"><ChevronLeft className="w-6 h-6" /></button>
-          {searchQuery ? (
-            <div className="relative flex-1">
+      <ScreenHeader title={title} onBack={onBack} action={<button aria-label="Создать упражнение" onClick={onAddExercise} className="flex min-h-11 min-w-11 items-center justify-center rounded-xl text-blue-400 hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500"><Plus className="h-6 w-6" /></button>}>
+          {searchQuery && (
+            <div className="relative">
               <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
               <Input 
                 ref={searchInputRef}
                 placeholder="Найти..." 
+                aria-label="Поиск упражнений"
                 value={searchQuery}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => onSearch(e.target.value)} 
-                className="pl-8 bg-zinc-900 w-full h-9 text-sm" 
+                className="pl-8 bg-zinc-900 w-full text-sm"
               />
             </div>
-          ) : (
-            <h1 className="text-xl font-bold truncate">{title}</h1>
           )}
-        </div>
-        <button onClick={onAddExercise} className="p-2 text-blue-500 hover:bg-zinc-800 rounded-full active:scale-90"><Plus className="w-7 h-7" /></button>
-      </div>
-      {restBanner && <div className="px-4 pt-4">{restBanner}</div>}
-      <div className="p-4 space-y-2 pb-24">
+      </ScreenHeader>
+      {restBanner && <ScreenContent className="pt-4">{restBanner}</ScreenContent>}
+      <ScreenContent className="space-y-2 py-4 pb-24">
         {exercises.map((ex: Exercise) => (
           <div key={ex.id} className="flex items-center p-2 rounded-2xl hover:bg-zinc-900 border border-transparent hover:border-zinc-800 transition-all">
             <div onClick={(e) => { e.stopPropagation(); setInfoModalEx(ex); }} className="w-14 h-14 rounded-xl bg-zinc-800 flex-shrink-0 overflow-hidden cursor-pointer active:scale-90 transition-transform relative group">
@@ -1278,18 +1260,18 @@ const ExercisesListScreen = ({ exercises, title, restBanner, onBack, onSelectExe
             </div>
             <div onClick={() => onSelectExercise(ex)} className="flex-1 px-4 cursor-pointer">
               <div className="font-medium text-zinc-100 text-[17px]">{ex.name}</div>
-              <div className="text-xs text-zinc-500">{ex.muscleGroup}</div>
+              <div className="text-xs text-zinc-400">{ex.muscleGroup}</div>
             </div>
             <button onClick={() => onSelectExercise(ex)} className="p-2 text-zinc-600"><ChevronRight className="w-5 h-5" /></button>
           </div>
         ))}
-      </div>
+      </ScreenContent>
       <Modal isOpen={!!infoModalEx} onClose={() => setInfoModalEx(null)} title={infoModalEx?.name} headerAction={<button onClick={() => { if (infoModalEx) { onEditExercise(infoModalEx); setInfoModalEx(null); } }} className="p-2 bg-zinc-800 rounded-full text-zinc-400 hover:text-blue-400"><Pencil className="w-5 h-5" /></button>}>
         {infoModalEx && (
           <div className="space-y-4">
             <div className="aspect-video bg-zinc-800 rounded-2xl overflow-hidden">{infoModalEx.imageUrl && <img src={infoModalEx.imageUrl} className="w-full h-full object-cover" alt="" />}</div>
             <div className="text-zinc-400 leading-relaxed">{infoModalEx.description || 'Описание отсутствует.'}</div>
-            <div className="pt-4"><div className="text-xs text-zinc-500 uppercase font-bold tracking-wider mb-2">Группа</div><div className="px-3 py-1 bg-zinc-800 rounded-lg inline-block text-zinc-300 text-sm">{infoModalEx.muscleGroup}</div></div>
+            <div className="pt-4"><div className="text-xs text-zinc-400 uppercase font-bold tracking-wider mb-2">Группа</div><div className="px-3 py-1 bg-zinc-800 rounded-lg inline-block text-zinc-300 text-sm">{infoModalEx.muscleGroup}</div></div>
           </div>
         )}
       </Modal>
@@ -1703,7 +1685,8 @@ const WorkoutScreen = ({ initialExercise, allExercises, clock, onClockChange, st
 
   return (
     <div className="min-h-screen bg-zinc-950 pb-20">
-      <div className="sticky top-0 z-40 bg-zinc-950 px-4 pb-3 pt-safe-2">
+      <div className="sticky top-0 z-40 bg-zinc-950 pb-3 pt-safe-2">
+        <ScreenContent>
         <div className="flex items-center justify-between gap-3 py-3 text-sm text-zinc-300"><span>{stepTitle || 'Тренировка'}</span><button onClick={onWorkoutOverview} className="min-h-11 text-blue-300">Вся тренировка</button></div>
         {(nextSet || runningSet?.set || clock) && <WorkoutClockPanel clock={clock} runningHere={!!runningSet?.set}
           perSide={!!runningSet && sessionData[runningSet.exId]?.exercise.unilateral}
@@ -1711,20 +1694,21 @@ const WorkoutScreen = ({ initialExercise, allExercises, clock, onClockChange, st
           onContinue={clock?.kind === 'set' && !runningSet?.set ? onResumeRunning : undefined}
           onComplete={runningSet?.set ? () => handleCompleteSet(runningSet.exId, runningSet.set!.id) : undefined}
           onCancel={() => onClockChange(cancelSetClock(clock))} notify={() => { haptic('heavy'); notify('warning'); }} />}
+        </ScreenContent>
       </div>
-      <div className="px-4 space-y-4">
+      <ScreenContent className="space-y-4">
         {activeExercises.map(exId => {
           const data = sessionData[exId];
           if (!data) return <div key={exId} className="h-40 bg-zinc-900 rounded-2xl animate-pulse" />;
           if (isCardio(exId)) return <CardioCard key={exId} exerciseData={data} syncMarks={syncMarks} onAddSet={() => handleAddSet(exId)} onUpdateSet={(sid: string, f: string, v: string) => handleUpdateSet(exId, sid, f, v)} onDeleteSet={(sid: string) => handleDeleteSet(exId, sid)} onCompleteSet={(sid: string) => handleCompleteSet(exId, sid)} onRemove={() => requestRemoveExercise(exId)} />;
           return <WorkoutCard key={exId} exerciseData={data} bodyWeight={bodyWeight} plates={plates} syncMarks={syncMarks} onAddSet={() => handleAddSet(exId)} onUpdateSet={(sid: string, f: string, v: string) => handleUpdateSet(exId, sid, f, v)} onDeleteSet={(sid: string) => handleDeleteSet(exId, sid)} onCompleteSet={(sid: string) => handleCompleteSet(exId, sid)} onStartSet={activeExercises.length > 1 ? (sid: string) => beginSet(exId, sid) : undefined} onNoteChange={(val: string) => { dirtyExercises.current.add(exId); setSessionData(p => ({...p, [exId]: {...p[exId], note: val}})); }} onAddSuperset={() => setIsAddModalOpen(true)} onRemove={() => requestRemoveExercise(exId)} />;
         })}
-      </div>
-      <div className="px-4 mt-6 mb-20 space-y-2">
+      </ScreenContent>
+      <ScreenContent className="mt-6 mb-20 space-y-2">
         <Button variant="primary" onClick={onFinish} className="w-full h-14 text-lg font-semibold">{stepTitle ? 'Завершить и перейти дальше' : 'Завершить упражнение'}</Button>
         {onReplace && <Button variant="secondary" onClick={onReplace} icon={Replace} className="w-full min-h-12">Заменить упражнение</Button>}
         {onSkip && <Button variant="ghost" onClick={onSkip} className="w-full min-h-12">Пропустить оставшееся</Button>}
-      </div>
+      </ScreenContent>
       <Modal isOpen={!!removeTarget} onClose={() => setRemoveTarget(null)} title="Убрать упражнение?">
         {removeTarget && (
           <div className="space-y-4">
@@ -1890,11 +1874,8 @@ const HistoryScreen = ({ onBack, onRepeat, allExercises = [], bodyWeight = USER_
 
   return (
     <motion.div initial={{ x: 50, opacity: 0 }} animate={{ x: 0, opacity: 1 }} className="min-h-screen bg-zinc-950">
-      <div className="sticky top-0 z-30 bg-zinc-950/80 backdrop-blur-md border-b border-zinc-800 px-4 pb-4 pt-safe-4 flex items-center gap-4">
-        <button onClick={onBack} className="p-2 -ml-2 text-zinc-400 active:text-white"><ChevronLeft className="w-6 h-6" /></button>
-        <h1 className="text-xl font-bold">История</h1>
-      </div>
-      <div className="p-4 space-y-4 pb-20">
+      <ScreenHeader title="История" onBack={onBack} />
+      <ScreenContent className="space-y-4 py-4 pb-20">
         <LocalDataStatus snapshot={journal} onRefresh={() => void journalResource().refresh(true)} />
         {focusState !== 'idle' && (
           <div className="p-4 rounded-xl bg-zinc-800/60 border border-zinc-700 text-zinc-300 text-sm">
@@ -1981,7 +1962,7 @@ const HistoryScreen = ({ onBack, onRepeat, allExercises = [], bodyWeight = USER_
                                 </button>
                               ))}
                             </div>
-                          ) : <div className="text-xs text-zinc-500">Нет подходов</div>}
+                          ) : <div className="text-xs text-zinc-400">Нет подходов</div>}
                         </div>
                       );
                     })
@@ -1992,15 +1973,15 @@ const HistoryScreen = ({ onBack, onRepeat, allExercises = [], bodyWeight = USER_
           </Card>
         ))}
         {history.length === 0 && journal.data !== null && <div className="text-center text-zinc-500 py-10 flex flex-col items-center"><Activity className="w-12 h-12 mb-3 opacity-20" /><p>Тренировок пока нет</p></div>}
-      </div>
+      </ScreenContent>
       <Modal isOpen={!!editTarget} onClose={() => setEditTarget(null)} title="Правка подхода">
         {editTarget && (
           <div className="space-y-4">
             <div className="text-sm text-zinc-400">{editTarget.exerciseName} · {editTarget.set.date}</div>
             <div className="grid grid-cols-3 gap-2">
-              <div><label className="text-[10px] text-zinc-500 mb-1 block uppercase">{weightInputLabel(rulesAsExercise(editTarget.rules))}</label><Input type="number" inputMode="decimal" value={editW} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditW(e.target.value)} /></div>
-              <div><label className="text-[10px] text-zinc-500 mb-1 block uppercase">Повт</label><Input type="tel" inputMode="numeric" value={editR} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditR(e.target.value)} /></div>
-              <div><label className="text-[10px] text-zinc-500 mb-1 block uppercase">Мин</label><Input type="number" inputMode="decimal" value={editRest} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditRest(e.target.value)} /></div>
+              <div><label className="text-xs text-zinc-400 mb-1 block uppercase">{weightInputLabel(rulesAsExercise(editTarget.rules))}</label><Input type="number" inputMode="decimal" value={editW} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditW(e.target.value)} /></div>
+              <div><label className="text-xs text-zinc-400 mb-1 block uppercase">Повт</label><Input type="tel" inputMode="numeric" value={editR} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditR(e.target.value)} /></div>
+              <div><label className="text-xs text-zinc-400 mb-1 block uppercase">Мин</label><Input type="number" inputMode="decimal" value={editRest} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditRest(e.target.value)} /></div>
             </div>
             <Button className="w-full h-12" onClick={saveEdit}>{busy ? 'Сохраняю…' : 'Сохранить'}</Button>
             {editTarget.set.timing?.duration_seconds != null && <Button variant="secondary" className="w-full min-h-12" onClick={excludeTiming}>Исключить замер времени</Button>}
@@ -2039,8 +2020,9 @@ type WorkloadTrend = {
   text: string;
 };
 
-const AnalyticsScreen = ({ onBack }: any) => {
-  const [period, setPeriod] = useState(14);
+const AnalyticsScreen = ({ onBack, onSummary, period, onPeriodChange }: {
+  onBack: () => void; onSummary: () => void; period: HistoryPeriod; onPeriodChange: (period: HistoryPeriod) => void;
+}) => {
   const resource = analyticsResource(period);
   const snapshot = useSyncExternalStore(resource.subscribe, resource.getSnapshot);
   const data = snapshot.data;
@@ -2057,21 +2039,15 @@ const AnalyticsScreen = ({ onBack }: any) => {
     return hasData ? MUSCLE_ORDER.filter(m => (sets[m] ?? 0) > 0 || (vol[m] ?? 0) > 0) : [...MUSCLE_ORDER];
   }, [data?.muscleSets, data?.muscleVolume]);
 
-  const barColor = (sets: number) => {
-    if (sets < 6) return 'bg-zinc-600';
-    if (sets >= 10 && sets <= 15) return 'bg-green-600';
-    if (sets > 20) return 'bg-red-600';
-    return 'bg-zinc-500';
-  };
+  const maxMuscleSets = Math.max(1, ...muscleList.map(m => (data?.muscleSets || {})[m] ?? 0));
 
   return (
     <motion.div initial={{ x: 50, opacity: 0 }} animate={{ x: 0, opacity: 1 }} className="min-h-screen bg-zinc-950">
-      <div className="sticky top-0 z-30 bg-zinc-950/80 backdrop-blur-md border-b border-zinc-800 px-4 pb-4 pt-safe-4 flex items-center gap-4">
-        <button onClick={onBack} className="p-2 -ml-2 text-zinc-400 active:text-white"><ChevronLeft className="w-6 h-6" /></button>
-        <h1 className="text-xl font-bold">Аналитика</h1>
-      </div>
-      <div className="p-4 space-y-6 pb-20">
+      <ScreenHeader title="Аналитика" onBack={onBack} />
+      <ScreenContent className="space-y-4 py-4 pb-20">
         <LocalDataStatus snapshot={snapshot} label="Аналитика" onRefresh={() => void resource.refresh(true)} />
+        <PeriodSelector value={period} onChange={onPeriodChange} />
+        <div className="border-y border-zinc-800"><SectionLink title="Сводка для тренера" icon={ClipboardList} onClick={onSummary} /></div>
         {/* Neutral by construction: one surface colour for every outcome. A
             red/amber/green scale here would reintroduce the ACWR threshold
             through styling. */}
@@ -2081,11 +2057,6 @@ const AnalyticsScreen = ({ onBack }: any) => {
             <span>{data.workloadTrend.text}</span>
           </div>
         )}
-        <div className="flex gap-2">
-          {[7, 14, 28].map((d) => (
-            <button key={d} onClick={() => setPeriod(d)} className={`px-4 py-2 rounded-xl text-sm font-medium ${period === d ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-400'}`}>{d} дн.</button>
-          ))}
-        </div>
         {loading ? (
           <div className="text-center text-zinc-400 py-10">{snapshot.error ? 'Аналитика пока недоступна.' : 'Получаю данные аналитики…'}</div>
         ) : (
@@ -2095,19 +2066,19 @@ const AnalyticsScreen = ({ onBack }: any) => {
               <div className="space-y-3">
                 {muscleList.map((m) => {
                   const sets = (data?.muscleSets || {})[m] ?? 0;
-                  const pct = Math.min(100, (sets / 20) * 100);
+                  const pct = (sets / maxMuscleSets) * 100;
                   return (
                     <div key={m} className="flex items-center gap-3">
                       <span className="text-zinc-300 w-24 text-sm">{m}</span>
-                      <div className="flex-1 h-6 bg-zinc-800 rounded-full overflow-hidden">
-                        <div className={`h-full rounded-full transition-all ${barColor(sets)}`} style={{ width: `${pct}%` }} />
+                      <div className="flex-1 h-6 bg-zinc-800 rounded-full overflow-hidden" aria-hidden="true">
+                        <div className="h-full rounded-full bg-blue-500 transition-[width]" style={{ width: `${pct}%` }} />
                       </div>
-                      <span className="text-zinc-500 text-sm w-8">{sets}</span>
+                      <span className="text-zinc-300 text-sm w-8 tabular-nums">{sets}</span>
                     </div>
                   );
                 })}
               </div>
-              <div className="mt-3 text-[10px] text-zinc-500">Зоны за период: серый — мало (&lt;6) · зелёный — оптимум (10–15) · красный — перебор (&gt;20)</div>
+              <p className="mt-3 text-xs text-zinc-400">Количество подходов за выбранный период.</p>
             </Card>
             <Card className="p-4">
               <h2 className="text-sm font-bold text-zinc-400 uppercase mb-3">Объём по группам (кг)</h2>
@@ -2142,7 +2113,7 @@ const AnalyticsScreen = ({ onBack }: any) => {
             </Card>
           </>
         )}
-      </div>
+      </ScreenContent>
     </motion.div>
   );
 };
@@ -2256,6 +2227,7 @@ const App = () => {
   const { haptic, notify } = useHaptics();
   const { sessionId, location, updateLocation, incrementOrder, ensureOrderAtLeast, bodyWeight, updateBodyWeight, plates, updatePlates, resetSession } = useSession();
   const [screen, setScreen] = useState<Screen>('home');
+  const [analyticsPeriod, setAnalyticsPeriod] = useState<HistoryPeriod>(14);
   const [groups, setGroups] = useState<string[]>([]);
   const [allExercises, setAllExercises] = useState<Exercise[]>([]);
   const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
@@ -2734,9 +2706,9 @@ const App = () => {
   return (
     <div className="bg-zinc-950 min-h-screen text-zinc-50 font-sans selection:bg-blue-500/30 pb-app-navigation">
       {workoutError && <div role="alert" className="mx-4 flex items-center gap-3 rounded-xl border border-amber-700 bg-zinc-900 p-3 text-sm text-amber-200"><span className="flex-1">{workoutError}</span><button aria-label="Закрыть сообщение" onClick={() => setWorkoutError('')} className="min-h-11 min-w-11"><X className="mx-auto h-5 w-5" /></button></div>}
-      {screen === 'home' && <HomeScreen location={location} onLocationChange={changeWorkoutLocation} restBanner={restBanner} workoutActive={workoutActive} plan={plan} planDone={planDone} draft={readSavedWorkout()} onOpenPlanItem={openPlanItem} onStartWorkout={startWorkout} onFinishWorkout={() => setIsFinishConfirmOpen(true)} onAllExercises={() => workoutActive ? chooseExercise('add') : setScreen('exercises')} onHistory={() => setScreen('history')} onAnalytics={() => setScreen('analytics')} onSummary={() => setScreen('summary')} onMove={moveStep} onReplace={(key: string) => chooseExercise('replace', key)} onSkip={(key: string) => finishStep(key, 'skipped')} sourceDate={plan.find(p => p.sourceDate)?.sourceDate} onSettings={() => { setBodyWeightInput(String(bodyWeight)); setPlatesDraft(plates); setPresetDraft(preset); setIsSettingsOpen(true); }} />}
-      {screen === 'analytics' && <AnalyticsScreen onBack={() => setScreen('home')} />}
-      {screen === 'summary' && <TrainerSummaryScreen onBack={() => setScreen('home')} notify={notify} allExercises={allExercises} />}
+      {screen === 'home' && <HomeScreen location={location} onLocationChange={changeWorkoutLocation} restBanner={restBanner} workoutActive={workoutActive} plan={plan} planDone={planDone} draft={readSavedWorkout()} resumeStep={activeStep && !activeStep.status ? activeStep : nextStep(plan)} onOpenPlanItem={openPlanItem} onStartWorkout={startWorkout} onFinishWorkout={() => setIsFinishConfirmOpen(true)} onAllExercises={() => workoutActive ? chooseExercise('add') : setScreen('exercises')} onHistory={() => setScreen('history')} onAnalytics={() => setScreen('analytics')} onMove={moveStep} onReplace={(key: string) => chooseExercise('replace', key)} onSkip={(key: string) => finishStep(key, 'skipped')} sourceDate={plan.find(p => p.sourceDate)?.sourceDate} onSettings={() => { setBodyWeightInput(String(bodyWeight)); setPlatesDraft(plates); setPresetDraft(preset); setIsSettingsOpen(true); }} />}
+      {screen === 'analytics' && <AnalyticsScreen onBack={() => setScreen('home')} onSummary={() => setScreen('summary')} period={analyticsPeriod} onPeriodChange={setAnalyticsPeriod} />}
+      {screen === 'summary' && <TrainerSummaryScreen onBack={() => setScreen('analytics')} notify={notify} allExercises={allExercises} period={analyticsPeriod} onPeriodChange={setAnalyticsPeriod} />}
       {screen === 'history' && <HistoryScreen onRepeat={(source: GlobalWorkoutSession) => beginWorkout(source)} onBack={() => { setDeeplinkSession(null); setScreen('home'); }} allExercises={allExercises} bodyWeight={bodyWeight} notify={notify} haptic={haptic} focusSessionId={deeplinkSession} />}
       {screen === 'exercises' && <ExercisesListScreen restBanner={restBanner} exercises={filteredExercises} title={selection?.kind === 'replace' ? 'Заменить упражнение' : selection ? 'Добавить упражнение' : 'Упражнения'} searchQuery={searchQuery} onSearch={(q: string) => setSearchQuery(q)} onBack={() => { setSelection(null); setSearchQuery(''); setSelectedGroup(null); setScreen('home'); }} onSelectExercise={selectExercise} onAddExercise={() => setIsCreateModalOpen(true)} onEditExercise={(ex: Exercise) => setExerciseToEdit(ex)} />}
       {screen === 'workout' && currentExercise && <WorkoutScreen clock={clock} onClockChange={changeClock} onResumeRunning={resumeClock} onGroupChange={changeGroup} key={`${planDefaults?.blockId || ''}:${currentExercise.id}`} stepTitle={activeStep ? `Упражнение ${plan.indexOf(activeStep) + 1} из ${plan.length}` : undefined} onWorkoutOverview={() => setScreen('home')} onReplace={activeStep ? () => chooseExercise('replace', activeStep.key) : undefined} onSkip={activeStep ? () => finishStep(activeStep.key, 'skipped') : undefined} onFinish={finishExercise} initialExercise={currentExercise} allExercises={allExercises} planDefaults={planDefaults} sessionId={sessionId} location={location} incrementOrder={incrementOrder} ensureOrderAtLeast={ensureOrderAtLeast} bodyWeight={bodyWeight} plates={plates} haptic={haptic} notify={notify} onBack={() => setScreen('home')} />}
@@ -2775,7 +2747,7 @@ const App = () => {
           <div>
             <label className="text-sm text-zinc-400 mb-1 block">Вес тела, кг</label>
             <Input type="number" inputMode="decimal" value={bodyWeightInput} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setBodyWeightInput(e.target.value)} />
-            <p className="text-xs text-zinc-500 mt-1">Используется для гравитрона, брусьев и упражнений со своим весом.</p>
+            <p className="text-xs text-zinc-400 mt-1">Используется для гравитрона, брусьев и упражнений со своим весом.</p>
           </div>
           <div>
             <label className="text-sm text-zinc-400 mb-1 block">Блины в зале, кг</label>
@@ -2793,12 +2765,12 @@ const App = () => {
                 );
               })}
             </div>
-            <p className="text-xs text-zinc-500 mt-1">По ним считается подсказка «на сторону» для штанги и блинов.</p>
+            <p className="text-xs text-zinc-400 mt-1">По ним считается подсказка «на сторону» для штанги и блинов.</p>
           </div>
           <div className="space-y-3">
             <div>
               <div className="text-sm text-zinc-400">Начало и конец тренировки</div>
-              <p className="text-xs text-zinc-500 mt-1">«Начать тренировку» добавит на главную план. Подходы появятся, только когда их отметишь.</p>
+              <p className="text-xs text-zinc-400 mt-1">«Начать тренировку» добавит на главную план. Подходы появятся, только когда их отметишь.</p>
             </div>
             {(['warmup', 'abs', 'cooldown'] as PlanKey[]).map(key => {
               const item = presetDraft?.[key] || DEFAULT_PRESET[key]!;
@@ -2806,7 +2778,7 @@ const App = () => {
               const set = (patch: Record<string, string>) => setPresetDraft({ ...presetDraft, [key]: { ...item, ...patch } });
               return (
                 <div key={key}>
-                  <label className="text-xs text-zinc-500 mb-1 block">{{ warmup: 'Разминка', abs: 'Пресс', cooldown: 'Заминка' }[key]}</label>
+                  <label className="text-xs text-zinc-400 mb-1 block">{{ warmup: 'Разминка', abs: 'Пресс', cooldown: 'Заминка' }[key]}</label>
                   {/* Список занимает всю строку, числа — узкие поля справа. Шрифт 16px:
                       на меньшем iOS приближает экран при фокусе. */}
                   <div className="flex items-center gap-2">
@@ -2823,7 +2795,7 @@ const App = () => {
                     ) : (
                       <>
                         <input type="tel" inputMode="numeric" aria-label="Минут" value={String(item.minutes ?? '')} onChange={(e) => set({ minutes: e.target.value })} className={PRESET_NUMBER_CLASS} />
-                        <span className="text-xs text-zinc-500">мин</span>
+                        <span className="text-xs text-zinc-400">мин</span>
                       </>
                     )}
                   </div>
@@ -2842,7 +2814,7 @@ const App = () => {
             <Button variant="secondary" className="w-full h-12" onClick={() => importInputRef.current?.click()}>{dataBusy ? 'Импортирую…' : 'Импорт из файла'}</Button>
             <input ref={importInputRef} type="file" accept=".json,application/json" className="hidden" onChange={handleImportFile} />
             {importReport && <p className="text-xs text-zinc-400">{importReport}</p>}
-            <p className="text-xs text-zinc-500">Экспорт делает полный слепок таблицы. Импорт добавляет недостающее и не создаёт дубли.</p>
+            <p className="text-xs text-zinc-400">Экспорт делает полный слепок таблицы. Импорт добавляет недостающее и не создаёт дубли.</p>
           </div>
         </div>
       </Modal>
@@ -2863,7 +2835,7 @@ const App = () => {
             <div key={item.id} className="flex items-center gap-3 p-3 bg-zinc-800/50 rounded-xl border border-zinc-800">
               <div className="flex-1 min-w-0">
                 <div className="text-sm text-zinc-200 truncate">{item.type === 'updateSession' ? 'Место тренировки' : item.type === 'saveSession' ? 'Тренировка' : String(item.data.exercise_name || 'Подход')}</div>
-                <div className="text-xs text-zinc-500">{item.type === 'saveSession' ? (item.data.ended_at ? 'Завершение тренировки' : 'Начало тренировки') : item.type === 'updateSession' ? (LOCATION_LABELS[item.data.location as WorkoutLocation] || 'Не указано') : item.data.kind === 'cardio'
+                <div className="text-xs text-zinc-400">{item.type === 'saveSession' ? (item.data.ended_at ? 'Завершение тренировки' : 'Начало тренировки') : item.type === 'updateSession' ? (LOCATION_LABELS[item.data.location as WorkoutLocation] || 'Не указано') : item.data.kind === 'cardio'
                   ? formatCardioSegment({ minutes: Number(item.data.duration_seconds || 0) / 60, speed: item.data.speed_kmh as number | null, incline: item.data.incline_pct as number | null })
                   : `${item.data.input_weight != null || item.data.weight != null ? setLoadLabel(item.data as any, null) : '?'} × ${String(item.data.reps ?? '?')}`} · {item.type === 'saveSet' ? 'новый подход' : item.type === 'deleteSet' ? 'удаление' : 'правка'}</div>
                 {item.id === inFlightId

@@ -17,7 +17,7 @@ const waitFor = async fn => { for(let i=0;i<60;i++){ if(await fn()) return; awai
   const browser = await chromium.launch({headless:true});
   const results = [];
   try {
-    for (const [name, viewport] of [['desktop',{width:1280,height:900}],['mobile',{width:390,height:844}]]) {
+    for (const [name, viewport] of [['desktop',{width:1280,height:900}],['mobile',{width:390,height:844}],['compact',{width:320,height:720}]]) {
       await reset();
       const original = await state();
       const ctx = await browser.newContext({viewport, isMobile:name==='mobile', hasTouch:name==='mobile', timezoneId:'Europe/Moscow'});
@@ -52,6 +52,11 @@ const waitFor = async fn => { for(let i=0;i<60;i++){ if(await fn()) return; awai
       await page.getByText(/Время подхода 00:/).waitFor();
       const rest = await page.evaluate(()=>JSON.parse(localStorage.getItem('gym_workout_clock_v1')));
       await page.waitForTimeout(600); // Let row/accordion transitions settle before visual evidence.
+      for(const label of ['Вес подхода','Повторения подхода','Отдых после подхода в минутах']) {
+        const box=await page.getByLabel(label,{exact:true}).first().boundingBox();
+        assert.ok(box.width>=44&&box.height>=44,`${name}: ${label} remains readable and touchable`);
+        assert.ok(box.x>=0&&box.x+box.width<=viewport.width,`${name}: ${label} stays inside the viewport`);
+      }
       await page.screenshot({path:path.join(OUTPUT,`${name}-set.png`),fullPage:true});
       await page.getByRole('button',{name:'Завершить и перейти дальше',exact:true}).click();
       await page.getByText('Упражнение 2 из 5',{exact:true}).waitFor();

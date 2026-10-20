@@ -12,9 +12,9 @@ const until = async fn => { for(let i=0;i<80;i++){ if(await fn())return; await n
 (async()=>{
  const browser=await chromium.launch({headless:true}); const results=[];
  try{
-  for(const [name,viewport] of [['desktop',{width:1280,height:900}],['mobile',{width:390,height:844}]]){
+  for(const [name,viewport] of [['desktop',{width:1280,height:900}],['tablet',{width:768,height:1024}],['mobile',{width:390,height:844}],['compact',{width:320,height:720}]]){
    await fetch(FIXTURE+'/__reset',{method:'POST'});
-   const ctx=await browser.newContext({viewport,isMobile:name==='mobile',hasTouch:name==='mobile',timezoneId:'Europe/Moscow'});
+   const ctx=await browser.newContext({viewport,isMobile:viewport.width<768,hasTouch:viewport.width<768,timezoneId:'Europe/Moscow'});
    let mode='normal', globalRequests=0, analyticsRequests=0, releases=[];
    await ctx.addInitScript(()=>{
     window.Telegram={WebApp:{initData:'fixture-only',initDataUnsafe:{},ready(){},expand(){},HapticFeedback:{impactOccurred(){},notificationOccurred(){}}}};
@@ -40,9 +40,19 @@ const until = async fn => { for(let i=0;i<80;i++){ if(await fn())return; await n
    const nav=()=>page.getByRole('navigation',{name:'Основная навигация'});
    const hasCache=kind=>page.evaluate(kind=>!!localStorage.getItem('gym_read_cache_v1:telegram:unknown:'+kind),kind);
    await page.goto(SITE);await until(()=>hasCache('journal'));
+   assert.equal(await page.getByRole('button',{name:'Сводка для тренера',exact:false}).count(),0,'summary is nested under analytics');
+   assert.ok(!(await page.locator('body').innerText()).includes('Паш'));
+   await page.getByRole('button',{name:'Справочник упражнений',exact:false}).click();
+   await page.getByRole('heading',{name:'Упражнения',exact:true}).waitFor();
+   await page.waitForTimeout(300);await page.screenshot({path:path.join(OUTPUT,`${name}-catalogue.png`),fullPage:true});
+   await page.getByRole('button',{name:'На главную',exact:true}).click();
    await nav().getByRole('button',{name:'Аналитика',exact:true}).click();
    await page.getByRole('heading',{name:'Подходы по мышцам',exact:true}).waitFor();
    await until(()=>hasCache('analytics:14'));
+   await page.getByRole('button',{name:'4 недели',exact:true}).click();
+   await until(()=>hasCache('analytics:28'));
+   await page.getByRole('button',{name:'Неделя',exact:true}).click();
+   await until(()=>hasCache('analytics:7'));
    assert.equal(globalRequests,1,'startup, home and analytics do not duplicate journal reads');
    mode='hold';globalRequests=0;analyticsRequests=0;
    await page.evaluate(()=>{for(const key of Object.keys(localStorage)){if(key.startsWith('gym_read_cache_v1:')){const value=JSON.parse(localStorage.getItem(key));value.updatedAt=1;localStorage.setItem(key,JSON.stringify(value));}}});
@@ -57,13 +67,27 @@ const until = async fn => { for(let i=0;i<80;i++){ if(await fn())return; await n
    assert.equal(await page.getByLabel('Место тренировки 2026.10.12').inputValue(),'home');
    await page.waitForTimeout(300);await page.screenshot({path:path.join(OUTPUT,`${name}-history.png`),fullPage:true});
    await nav().getByRole('button',{name:'Главная',exact:true}).click();
+   await nav().getByRole('button',{name:'Аналитика',exact:true}).click();
+   await page.getByRole('button',{name:'Неделя',exact:true}).click();
    await page.getByRole('button',{name:'Сводка для тренера',exact:false}).click();
-   await page.getByRole('button',{name:'14 дн.',exact:true}).click();
+   assert.equal(await nav().getByRole('button',{name:'Аналитика',exact:true}).getAttribute('aria-current'),'page');
+   assert.equal(await page.getByRole('button',{name:'Неделя',exact:true}).getAttribute('aria-pressed'),'true','summary inherits the analytics period');
+   await page.getByRole('button',{name:'2 недели',exact:true}).click();
    await page.getByText('12.10 · 🏠 Дома · ≈61м',{exact:true}).waitFor({timeout:1200});
-   const analyticsStart=Date.now();await nav().getByRole('button',{name:'Аналитика',exact:true}).click();
+   await page.waitForTimeout(300);await page.screenshot({path:path.join(OUTPUT,`${name}-summary.png`),fullPage:true});
+   const analyticsStart=Date.now();await page.getByRole('button',{name:'Назад к аналитике',exact:true}).click();
    await page.getByRole('heading',{name:'Подходы по мышцам',exact:true}).waitFor({timeout:1200});
+   assert.equal(await page.getByRole('button',{name:'2 недели',exact:true}).getAttribute('aria-pressed'),'true','changing the summary period also changes analytics');
    const analyticsMs=Date.now()-analyticsStart;assert.ok(analyticsMs<1200);
    assert.equal(globalRequests,1);
+   await page.getByRole('button',{name:'4 недели',exact:true}).click();
+   await page.getByRole('button',{name:'Сводка для тренера',exact:true}).click();
+   assert.equal(await page.getByRole('button',{name:'4 недели',exact:true}).getAttribute('aria-pressed'),'true');
+   await page.getByRole('button',{name:'Назад к аналитике',exact:true}).click();
+   assert.ok(!(await page.locator('body').innerText()).includes('перебор'));
+   for(const button of await page.getByRole('group',{name:'Период',exact:true}).getByRole('button').all()) {
+    assert.ok((await button.boundingBox()).height>=44);
+   }
    await page.waitForTimeout(300);await page.screenshot({path:path.join(OUTPUT,`${name}-analytics.png`),fullPage:true});
    mode='normal';releases.splice(0).forEach(resolve=>resolve());
    await until(()=>page.evaluate(()=>!document.querySelector('[aria-label="Обновить: аналитика"]')?.disabled));
@@ -82,13 +106,18 @@ const until = async fn => { for(let i=0;i<80;i++){ if(await fn())return; await n
    assert.equal(queued.length,2);
    await page.reload();await nav().getByRole('button',{name:'Главная',exact:true}).click();
    await page.getByRole('heading',{name:'Текущая тренировка',exact:true}).waitFor();
+   const currentTop=(await page.getByRole('heading',{name:'Текущая тренировка',exact:true}).boundingBox()).y;
+   const sectionsTop=(await page.getByRole('navigation',{name:'Разделы приложения',exact:true}).boundingBox()).y;
+   assert.ok(currentTop<sectionsTop,'active workout is placed before secondary navigation');
+   await page.waitForTimeout(300);await page.screenshot({path:path.join(OUTPUT,`${name}-active-home.png`),fullPage:true});
    assert.deepEqual(await page.evaluate(()=>JSON.parse(localStorage.getItem('gym_offline_queue_v2')).map(q=>q.id)),queued);
    assert.equal(globalRequests,beforeOffline);
    assert.ok(await nav().getByRole('button',{name:'Очередь синхронизации: 2',exact:true}).isVisible());
    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
    assert.deepEqual(errors,[]);
    results.push({viewport:name,historyVisibleMs:historyMs,cachedAnalyticsVisibleMs:analyticsMs,
-    sharedBackgroundReads:1,failedRefreshKeptHistory:true,offlineRepeat:true,stableQueueAcrossReload:true,runtimeErrors:errors});
+    sharedBackgroundReads:1,sharedPeriodBothDirections:true,fourWeekPeriod:true,activeWorkoutBeforeNavigation:true,
+    failedRefreshKeptHistory:true,offlineRepeat:true,stableQueueAcrossReload:true,runtimeErrors:errors});
    console.log(results.at(-1));await ctx.close();
   }
   fs.writeFileSync(path.join(OUTPUT,'results.json'),JSON.stringify(results,null,2));
