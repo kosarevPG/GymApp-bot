@@ -52,6 +52,7 @@ const until=async fn=>{for(let i=0;i<100;i++){if(await fn())return;await new Pro
    await page.getByText('Жим штанги',{exact:true}).click();await page.getByRole('button',{name:'Начать подход',exact:true}).click();
    await page.getByRole('button',{name:'Подход выполнен',exact:true}).click();await page.getByRole('button',{name:'Вся тренировка',exact:true}).click();
    const queueIds=await page.evaluate(()=>JSON.parse(localStorage.getItem('gym_offline_queue_v2')).map(q=>q.id));
+   await page.getByLabel('Действия: Жим штанги',{exact:true}).click();
    await page.getByRole('button',{name:'Заменить',exact:true}).first().click();
    await page.getByRole('heading',{name:'Заменить упражнение',exact:true}).waitFor();assert.equal(await search().inputValue(),'');
    await groups().getByRole('button',{name:'Ноги',exact:true}).click();await search().fill('гАкК');await page.getByText('Приседания в Гакк',{exact:true}).click();

@@ -4,21 +4,23 @@ import {
   Check, Trash2, StickyNote, ChevronDown, Dumbbell, Calendar, 
   Settings, ArrowLeft, Camera, Pencil, Trophy,
   History as HistoryIcon, Activity, Link as LinkIcon, Target
-  , Play, Repeat2, ArrowUp, ArrowDown, SkipForward, Replace, ClipboardList
+  , Play, Repeat2, SkipForward, Replace, ClipboardList
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { API_BASE_URL, STANDALONE_API_BASE_URL, WORKOUT_STORAGE_KEY, ACTIVE_WORKOUT_KEY, WORKOUT_PRESET_KEY, GROUP_ORDER, sortGroups, SESSION_ID_KEY, ORDER_COUNTER_KEY, LAST_ACTIVE_KEY } from './constants';
 import { CARDIO_QUICK_MINUTES, durationSeconds, formatCardioSegment, formatCardioSegments, toNumber, isRepeatableTreadmill, shouldAppendCardio } from './cardio';
 import { createHistoryLoader, decodeHistory, historyFromJournal, type ExerciseHistory } from './exerciseHistory';
 import { readExerciseRest, formatRestTime } from './exerciseRest';
-import { DEFAULT_PRESET, normalizePreset, planDefaultsFor, planFromPreset, planItemDone, planTargetText, type PlanDefaults, type PlanItem, type PlanKey, type WorkoutPreset } from './workoutPlan';
+import { DEFAULT_PRESET, normalizePreset, planDefaultsFor, planFromPreset, planItemDone, type PlanDefaults, type PlanItem, type PlanKey, type WorkoutPreset } from './workoutPlan';
 import { readSessionDeeplink, stripSessionParam } from './deeplink';
 import { lastSessionWorkingSets, formatLastSessionSets, personalBest } from './progression';
 import { buildTrainerSummary, formatTrainerSummaryText, isoDaysAgo } from './trainerSummary';
 import { SetDisplayRow } from './components/SetDisplayRow';
 import { WorkoutClockPanel } from './components/WorkoutClockPanel';
+import { WorkoutSetRow as SetRow } from './components/WorkoutSetRow';
+import { WorkoutHome } from './components/WorkoutHome';
 import { WORKOUT_CLOCK_KEY, readClock, startSetClock, cancelSetClock, completeSetTiming, nextRestClock, betweenExercises, formatSeconds, type WorkoutClock } from './workoutTiming';
-import { repeatPlan, templateSets, draftKey, replaceStep, nextStep, recordedSets } from './workoutRepeat';
+import { repeatPlan, templateSets, draftKey, replaceStep, nextStep } from './workoutRepeat';
 import { finishedSession, reconcileFinished } from './workoutJournal';
 import { createLocalResource } from './localResource';
 import { readLocalCache, writeLocalCache } from './cacheStorage';
@@ -32,7 +34,7 @@ import { readOfflineOwner, rememberOfflineOwner, forgetOfflineOwner, offlineAcce
 import { OfflineUpdateNotice } from './components/OfflineUpdateNotice';
 import { ChartBoundary } from './components/ChartBoundary';
 import { journalVersions, mergeJournalDelta } from './journalSync';
-import { calcEffectiveWeight, weightInputLabel, WEIGHT_TYPE_OPTIONS, USER_BODY_WEIGHT_DEFAULT, describeLoad, DEFAULT_PLATES, PLATE_CHOICES, carryOverInput, loadRulesOf, rulesAsExercise, rulesForSet, setLoadLabel, forNewEntry } from './exerciseConfig';
+import { calcEffectiveWeight, weightInputLabel, WEIGHT_TYPE_OPTIONS, USER_BODY_WEIGHT_DEFAULT, DEFAULT_PLATES, PLATE_CHOICES, carryOverInput, loadRulesOf, rulesAsExercise, rulesForSet, setLoadLabel, forNewEntry } from './exerciseConfig';
 import type { Exercise, WorkoutSet, HistoryItem, CardioHistoryItem, ExerciseSessionData, SetType } from './types';
 import {
   QUEUE_CHANGED_EVENT,
@@ -654,20 +656,21 @@ const Input = React.forwardRef<HTMLInputElement, any>((props, ref) => (
 ));
 Input.displayName = 'Input';
 
-const Modal = ({ isOpen, onClose, title, children, headerAction }: any) => (
+const Modal = ({ isOpen, onClose, title, children, headerAction, fullScreen = false, footer }: any) => (
   <AnimatePresence>
     {isOpen && (
       <>
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50" />
-        <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 25, stiffness: 300 }} className="fixed bottom-0 left-0 right-0 bg-zinc-900 border-t border-zinc-800 rounded-t-3xl z-50 max-h-[90vh] flex flex-col">
-          <div className="p-4 border-b border-zinc-800 flex items-center justify-between shrink-0">
+        <motion.div role="dialog" aria-modal="true" aria-label={title} initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 25, stiffness: 300 }} className={fullScreen ? 'fixed inset-0 z-50 flex flex-col bg-zinc-950' : 'fixed bottom-0 left-0 right-0 bg-zinc-900 border-t border-zinc-800 rounded-t-3xl z-50 max-h-[90vh] flex flex-col'}>
+          <div className={`p-4 border-b border-zinc-800 flex items-center justify-between shrink-0 ${fullScreen ? 'pt-safe-4' : ''}`}>
             <h3 className="text-lg font-semibold text-zinc-50 truncate max-w-[70%]">{title}</h3>
             <div className="flex items-center gap-2">
               {headerAction}
               <button aria-label="Закрыть окно" onClick={onClose} className="flex min-h-11 min-w-11 items-center justify-center rounded-xl bg-zinc-800 text-zinc-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400"><X className="w-5 h-5" /></button>
             </div>
           </div>
-          <div className="overflow-y-auto p-4 flex-1 pb-10">{children}</div>
+          <div className={`min-h-0 overflow-y-auto p-4 flex-1 pb-10 ${fullScreen ? 'mx-auto w-full max-w-3xl' : ''}`}>{children}</div>
+          {footer && <div className="shrink-0 border-t border-zinc-800 pb-safe"><div className="mx-auto w-full max-w-3xl p-4">{footer}</div></div>}
         </motion.div>
       </>
     )}
@@ -748,141 +751,6 @@ const SyncDot = ({ mark }: { mark?: SyncMark }) => (mark ? (
     className={`absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full border-2 border-zinc-900 ${mark === 'rejected' ? 'bg-red-500' : 'bg-amber-400'}`}
   />
 ) : null);
-
-const SET_TYPE_CYCLE: SetType[] = ['warmup', 'working', 'drop', 'failure'];
-const SET_TYPE_LABELS: Record<SetType, string> = { warmup: 'W', working: 'R', drop: 'D', failure: 'F' };
-
-const SetRow = ({ set, exercise, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates = DEFAULT_PLATES, isActive = false, syncMark, onUpdate, onDelete, onComplete, onStart }: { set: WorkoutSet; exercise?: Exercise; bodyWeight?: number; plates?: number[]; isActive?: boolean; syncMark?: SyncMark; onUpdate: (sid: string, field: string, value: string | number) => void; onDelete: (sid: string) => void; onComplete: (sid: string) => void; onStart?: (sid: string) => void }) => {
-  const effectiveWeight = calcEffectiveWeight(set.load ? rulesAsExercise(set.load) : exercise, parseFloat(set.weight || '0'), bodyWeight);
-  const showTotal = set.weight !== '' && effectiveWeight !== parseFloat(set.weight || '0');
-  const oneRM = set.weight && set.reps ? Math.round(effectiveWeight * (1 + parseInt(set.reps) / 30)) : 0;
-  const delta = set.prevWeight ? (effectiveWeight - set.prevWeight) : 0;
-  const deltaText = delta > 0 ? `+${delta}` : delta < 0 ? `${delta}` : '0';
-  const deltaColor = delta > 0 ? 'text-green-500' : delta < 0 ? 'text-red-500' : 'text-zinc-500';
-  // Что означает введённое число и сколько блинов вешать — считаем только для
-  // подхода, который сейчас делают: у остальных строк это лишний шум.
-  const loadPlan = isActive && !set.completed
-    ? describeLoad(exercise, parseFloat(set.weight || '0'), bodyWeight, plates)
-    : null;
-
-  return (
-    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="mb-3">
-      <div className="set-entry-grid items-start">
-        <button
-          disabled={set.completed}
-          onClick={() => {
-            const idx = SET_TYPE_CYCLE.indexOf((set.setType || 'working') as SetType);
-            const next = SET_TYPE_CYCLE[(idx + 1) % SET_TYPE_CYCLE.length];
-            onUpdate(set.id, 'setType', next);
-          }}
-          className={`set-entry-type w-11 h-12 rounded-lg text-xs font-bold flex items-center justify-center transition-colors ${
-            (set.setType || 'working') === 'warmup' ? 'bg-zinc-700 text-zinc-400' :
-            (set.setType || 'working') === 'drop' ? 'bg-orange-900/50 text-orange-400' :
-            (set.setType || 'working') === 'failure' ? 'bg-red-900/50 text-red-400' :
-            'bg-zinc-800 text-zinc-200'
-          }`}
-          title={set.setType || 'working'}
-        >
-          {SET_TYPE_LABELS[(set.setType || 'working') as SetType]}
-        </button>
-        <button aria-label={set.completed ? 'Изменить выполненный подход' : 'Отметить подход выполненным'} onClick={() => onComplete(set.id)} className={`set-entry-complete relative w-12 h-12 rounded-xl border flex items-center justify-center transition-colors ${set.completed ? 'bg-green-500 border-green-500' : 'bg-zinc-900 border-zinc-700'}`}>
-          <Check className={`w-6 h-6 ${set.completed ? 'text-white' : 'text-zinc-700'}`} />
-          <SyncDot mark={syncMark} />
-        </button>
-        <div className="set-entry-weight flex min-w-0 flex-col gap-1">
-          <input
-            type="number"
-            aria-label="Вес подхода"
-            inputMode="decimal"
-            placeholder="0"
-            value={set.weight}
-            disabled={set.completed}
-            onChange={e => onUpdate(set.id, 'weight', e.target.value)}
-            onFocus={e => e.target.select()}
-            className="w-full h-12 bg-zinc-800 rounded-xl text-center text-xl font-bold text-zinc-100 focus:ring-1 focus:ring-blue-500 outline-none tabular-nums"
-          />
-          {(showTotal || oneRM > 0 || delta !== 0 || (set.rir != null && set.rir !== '')) && (
-            <div className="flex flex-wrap justify-between gap-x-1 break-words px-1 text-xs">
-              <span>
-                {showTotal && <span className="text-blue-400 font-medium mr-1">Σ{effectiveWeight}</span>}
-                {oneRM > 0 && <span className="text-zinc-500">1ПМ:{oneRM}</span>}
-                {set.rir != null && set.rir !== '' && <span className="text-zinc-500 ml-1">| RIR: {set.rir}</span>}
-              </span>
-              {delta !== 0 && <span className={`${deltaColor} font-medium`}>{deltaText}</span>}
-            </div>
-          )}
-        </div>
-        <input
-          type="tel"
-          aria-label="Повторения подхода"
-          inputMode="numeric"
-          placeholder="0"
-          value={set.reps}
-          disabled={set.completed}
-          onChange={e => onUpdate(set.id, 'reps', e.target.value)}
-          onFocus={e => e.target.select()}
-          className="set-entry-reps min-w-0 w-full h-12 bg-zinc-800 rounded-xl text-center text-xl font-bold text-zinc-100 focus:ring-1 focus:ring-blue-500 outline-none tabular-nums"
-        />
-        <input 
-          type="number" 
-          aria-label="Отдых после подхода в минутах"
-          inputMode="decimal" 
-          placeholder="0" 
-          value={set.rest}
-          disabled={set.completed}
-          onChange={e => onUpdate(set.id, 'rest', e.target.value)}
-          onFocus={e => e.target.select()}
-          className="set-entry-rest min-w-0 w-full h-12 bg-zinc-800 rounded-xl text-center text-zinc-400 focus:text-zinc-100 focus:ring-1 focus:ring-blue-500 outline-none tabular-nums"
-        />
-        <button aria-label="Удалить подход" onClick={() => onDelete(set.id)} className="set-entry-delete w-11 h-12 flex items-center justify-center text-zinc-400 hover:text-red-400"><Trash2 className="w-5 h-5" /></button>
-      </div>
-      {set.completed && set.timing?.duration_seconds != null && <div className="ml-14 mt-1 text-xs text-zinc-300">Время подхода{set.load?.perSide ? ' (обе руки)' : ''} {formatSeconds(set.timing.duration_seconds)}</div>}
-      {isActive && onStart && <button className="ml-14 mt-1 min-h-11 text-sm text-blue-300" onClick={() => onStart(set.id)}>Начать этот подход</button>}
-      {isActive && !set.completed && (
-      <div className="mt-2 ml-14 space-y-2">
-        {loadPlan && (
-          <div className="rounded-lg border border-zinc-800 bg-zinc-800/40 px-3 py-2">
-            <div className="text-xs font-medium text-zinc-100">{loadPlan.summary}</div>
-            {loadPlan.plates && (
-              <div className="mt-1.5 flex flex-wrap items-center gap-1 text-xs">
-                <span className="mr-0.5 text-zinc-500">На сторону:</span>
-                {loadPlan.plates.items.map((plate, index) => (
-                  <span key={index} className="rounded bg-zinc-600 px-2 py-0.5 font-semibold text-white tabular-nums">{plate}</span>
-                ))}
-                {loadPlan.plates.items.length === 0 && <span className="text-zinc-500">без блинов</span>}
-                {loadPlan.plates.remainder > 0 && (
-                  <span className="text-amber-400">не хватает {loadPlan.plates.remainder}</span>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-        <div className="flex flex-wrap gap-2">
-        {([0, 1, 2, 3] as const).map(rirVal => (
-          <button
-            key={rirVal}
-            onClick={() => onUpdate(set.id, 'rir', set.rir === rirVal ? '' : rirVal)}
-            className={`px-2 py-1 text-xs rounded-lg border ${String(set.rir) === String(rirVal) ? 'bg-zinc-700 border-zinc-600 text-zinc-200' : 'bg-zinc-800/50 border-zinc-800 text-zinc-500'}`}
-          >
-            RIR {rirVal}{rirVal === 3 ? '+' : ''}
-          </button>
-        ))}
-        <input
-          type="number"
-          min={1}
-          max={10}
-          placeholder="RPE"
-          value={set.rpe ?? ''}
-          onChange={e => onUpdate(set.id, 'rpe', e.target.value)}
-          className="w-12 h-7 bg-zinc-800 rounded text-center text-xs text-zinc-400 focus:text-zinc-100 focus:ring-1 focus:ring-blue-500 outline-none"
-        />
-        </div>
-      </div>
-      )}
-    </motion.div>
-  );
-};
-
 
 /**
  * What was done last time, and nothing else.
@@ -1014,7 +882,7 @@ const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plat
   }, [exerciseData.history, exerciseData.exercise, bodyWeight]);
 
   return (
-    <Card className="p-4 mb-4">
+    <Card className="workout-exercise-card mb-4">
       <div className="flex justify-between items-start mb-4">
         <div>
           <h2 className="text-xl font-semibold text-zinc-50">{exerciseData.exercise.name}</h2>
@@ -1037,12 +905,13 @@ const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plat
         <div />
         <div className="text-xs text-center text-zinc-400 font-bold uppercase">{weightInputLabel(exerciseData.exercise)}</div>
         <div className="text-xs text-center text-zinc-400 font-bold uppercase">{exerciseData.exercise.unilateral ? 'ПОВТ/РУКА' : 'ПОВТ'}</div>
-        <div className="text-xs text-center text-zinc-400 font-bold uppercase">МИН</div>
+        <div className="text-xs text-center text-zinc-300">Отдых, мин</div>
         <div className="set-label-delete" />
       </div>
       <div className="space-y-1">
-        {exerciseData.sets.map((set: WorkoutSet) => (
+        {exerciseData.sets.map((set: WorkoutSet, index: number) => (
           <SetRow
+            ordinal={index + 1}
             key={set.id}
             set={set}
             exercise={exerciseData.exercise}
@@ -1178,60 +1047,9 @@ const TrainerSummaryScreen = ({ onBack, notify, allExercises = [], period, onPer
   );
 };
 
-const HomeScreen = ({ workoutActive, location, onLocationChange, restBanner, plan = [], planDone = [], draft, resumeStep, onOpenPlanItem, onStartWorkout, onFinishWorkout, onAllExercises, onHistory, onAnalytics, onSettings, onMove, onReplace, onSkip, sourceDate }: any) => {
+const HomeScreen = (props: any) => {
   const journal = useJournal();
-  return (
-  <div className="min-h-screen bg-zinc-950">
-    <ScreenHeader title="Главная" action={<button aria-label="Настройки" onClick={onSettings} className="flex min-h-11 min-w-11 items-center justify-center rounded-xl text-zinc-300 hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500"><Settings className="h-6 w-6" /></button>} />
-    <ScreenContent className="space-y-5 py-4 pb-24">
-    <LocalDataStatus snapshot={journal} onRefresh={() => void journalResource().refresh(true)} />
-    {!workoutActive && <section className="space-y-3">
-      <h2 className="text-lg font-semibold">Тренировка</h2>
-      <p className="text-sm text-zinc-300">Откройте историю и повторите подходящую тренировку.</p>
-      <Button onClick={onHistory} icon={HistoryIcon} className="w-full min-h-14 text-lg">Выбрать из истории</Button>
-      <Button onClick={onStartWorkout} variant="secondary" icon={Plus} className="w-full min-h-12">Новая тренировка</Button>
-    </section>}
-    {workoutActive && <>
-      <h2 className="text-lg font-semibold">Текущая тренировка</h2>
-      {resumeStep && <p className="text-sm text-zinc-300">Упражнение {plan.findIndex((item: PlanItem) => item.key === resumeStep.key) + 1} из {plan.length} · {resumeStep.label}</p>}
-      {restBanner}
-      {resumeStep && !restBanner && <Button icon={Play} onClick={() => onOpenPlanItem(resumeStep)} className="w-full min-h-12">Продолжить тренировку</Button>}
-      {sourceDate && <p className="text-sm text-zinc-300">Повторение тренировки {sourceDate}</p>}
-      <label className="flex items-center justify-between gap-3 text-sm text-zinc-300">Место тренировки
-        <select aria-label="Место новой тренировки" value={location || ''} onChange={e => onLocationChange(e.target.value)} className="min-h-11 rounded-lg bg-zinc-800 px-3 text-zinc-100">
-          {!location && <option value="">Не указано</option>}
-          {Object.entries(LOCATION_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-        </select>
-      </label>
-      <div className="flex items-center justify-between gap-3"><span className="text-sm text-zinc-300">{plan.filter((p: PlanItem, i: number) => p.status === 'done' || planDone[i]).length} из {plan.length} завершено{plan.some((p: PlanItem) => p.status === 'skipped') ? ` · ${plan.filter((p: PlanItem) => p.status === 'skipped').length} пропущено` : ''}</span>
-        <button onClick={onAllExercises} className="min-h-11 text-sm text-blue-300">Добавить упражнение</button></div>
-      <div className="divide-y divide-zinc-800">
-        {plan.map((item: PlanItem, i: number) => <div key={item.key} className="py-3">
-          <button onClick={() => onOpenPlanItem(item)} className="flex min-h-12 w-full items-center gap-3 text-left">
-            <span className="w-6 shrink-0 text-center text-sm text-zinc-400">{item.status === 'skipped' ? '—' : planDone[i] ? <Check className="h-5 w-5 text-green-400" /> : i + 1}</span>
-            <span className="flex-1 min-w-0"><span className="block font-medium text-zinc-100">{item.label}</span>
-              <span className="block text-sm text-zinc-300">{(item.templates?.length || 0) > 1 ? item.templates!.map(t => t.name).join(' · ') + ' · ' : ''}{planTargetText(item)}{item.blockId ? ` ранее · ${recordedSets(item, draft)} сегодня` : ''}{item.status === 'skipped' ? ' · оставшееся пропущено' : ''}</span></span>
-            <ChevronRight className="h-5 w-5 shrink-0 text-zinc-400" />
-          </button>
-          <div className="ml-9 flex flex-wrap items-center gap-1">
-            <button aria-label={`Поднять ${item.label}`} disabled={i === 0} onClick={() => onMove(i, -1)} className="min-h-11 min-w-11 text-zinc-300 disabled:opacity-30"><ArrowUp className="mx-auto h-4 w-4" /></button>
-            <button aria-label={`Опустить ${item.label}`} disabled={i === plan.length - 1} onClick={() => onMove(i, 1)} className="min-h-11 min-w-11 text-zinc-300 disabled:opacity-30"><ArrowDown className="mx-auto h-4 w-4" /></button>
-            <button onClick={() => onReplace(item.key)} className="min-h-11 px-2 text-sm text-blue-300">Заменить</button>
-            {!item.status && <button onClick={() => onSkip(item.key)} className="min-h-11 px-2 text-sm text-zinc-300">Пропустить</button>}
-          </div>
-        </div>)}
-      </div>
-      {!plan.length && <p className="text-sm text-zinc-400">Добавьте первое упражнение из справочника.</p>}
-      <Button onClick={onFinishWorkout} variant="secondary" className="w-full min-h-12">Завершить тренировку</Button>
-      <Button onClick={onHistory} variant="ghost" className="w-full min-h-11">История тренировок</Button>
-    </>}
-    <nav aria-label="Разделы приложения" className="divide-y divide-zinc-800 border-y border-zinc-800">
-      <SectionLink title="Аналитика" detail="Нагрузка и подходы по мышцам" icon={Activity} onClick={onAnalytics} />
-      {!workoutActive && <SectionLink title="Справочник упражнений" detail="Техника и история упражнений" icon={Dumbbell} onClick={onAllExercises} />}
-    </nav>
-    </ScreenContent>
-  </div>
-  );
+  return <WorkoutHome {...props} localStatus={<LocalDataStatus snapshot={journal} onRefresh={() => void journalResource().refresh(true)} />} />;
 };
 
 const ExercisesListScreen = ({ exercises, groups, selectedGroup, onSelectGroup, title, restBanner, onBack, onSelectExercise, onAddExercise, onEditExercise, searchQuery, onSearch }: any) => {
@@ -1731,7 +1549,8 @@ const WorkoutScreen = ({ initialExercise, allExercises, clock, onClockChange, st
       </ScreenContent>
       <div ref={dockRef} className="fixed inset-x-0 above-app-navigation z-40 border-t border-zinc-800 bg-zinc-950 py-3" aria-label="Управление подходом">
         <ScreenContent>
-          <WorkoutClockPanel docked clock={clock} runningHere={!!runningSet?.set}
+          <WorkoutClockPanel docked clock={clock}
+            completionLabel={!nextSet && clock?.kind !== 'set' && activeExercises.some(id => sessionData[id]?.sets.length) ? `${activeExercises.reduce((n, id) => n + (sessionData[id]?.sets.filter(s => s.completed).length || 0), 0)} / ${activeExercises.reduce((n, id) => n + (sessionData[id]?.sets.length || 0), 0)}` : undefined} runningHere={!!runningSet?.set}
             cardio={!!runningSet && isCardio(runningSet.exId)}
             perSide={!!runningSet && sessionData[runningSet.exId]?.exercise.unilateral}
             onStart={nextSet && clock?.kind !== 'set' ? () => beginSet(nextSet.exId, nextSet.set!.id) : undefined}
@@ -2772,14 +2591,14 @@ const App = () => {
       {screen === 'analytics' && <AnalyticsScreen onBack={() => setScreen('home')} onSummary={() => setScreen('summary')} period={analyticsPeriod} onPeriodChange={setAnalyticsPeriod} />}
       {screen === 'summary' && <TrainerSummaryScreen onBack={() => setScreen('analytics')} notify={notify} allExercises={allExercises} period={analyticsPeriod} onPeriodChange={setAnalyticsPeriod} />}
       {screen === 'history' && <HistoryScreen onRepeat={(source: GlobalWorkoutSession) => beginWorkout(source)} onBack={() => { setDeeplinkSession(null); setScreen('home'); }} allExercises={allExercises} bodyWeight={bodyWeight} notify={notify} haptic={haptic} focusSessionId={deeplinkSession} />}
-      {screen === 'exercises' && <ExercisesListScreen restBanner={restBanner} exercises={filteredExercises} groups={groups} selectedGroup={selectedGroup} onSelectGroup={setSelectedGroup} title={selection?.kind === 'replace' ? 'Заменить упражнение' : selection ? 'Добавить упражнение' : 'Упражнения'} searchQuery={searchQuery} onSearch={(q: string) => setSearchQuery(q)} onBack={() => { setSelection(null); setSearchQuery(''); setSelectedGroup(null); setScreen('home'); }} onSelectExercise={selectExercise} onAddExercise={() => setIsCreateModalOpen(true)} onEditExercise={(ex: Exercise) => setExerciseToEdit(ex)} />}
+      {screen === 'exercises' && <ExercisesListScreen restBanner={restBanner} exercises={filteredExercises} groups={groups} selectedGroup={selectedGroup} onSelectGroup={setSelectedGroup} title={selection?.kind === 'replace' ? 'Заменить упражнение' : selection ? 'Добавить упражнение' : 'Библиотека'} searchQuery={searchQuery} onSearch={(q: string) => setSearchQuery(q)} onBack={() => { setSelection(null); setSearchQuery(''); setSelectedGroup(null); setScreen('home'); }} onSelectExercise={selectExercise} onAddExercise={() => setIsCreateModalOpen(true)} onEditExercise={(ex: Exercise) => setExerciseToEdit(ex)} />}
       {screen === 'workout' && currentExercise && <WorkoutScreen clock={clock} onClockChange={changeClock} onResumeRunning={resumeClock} onGroupChange={changeGroup} key={`${planDefaults?.blockId || ''}:${currentExercise.id}`} stepTitle={activeStep ? `Упражнение ${plan.indexOf(activeStep) + 1} из ${plan.length}` : undefined} onWorkoutOverview={() => setScreen('home')} onReplace={activeStep ? () => chooseExercise('replace', activeStep.key) : undefined} onSkip={activeStep ? () => finishStep(activeStep.key, 'skipped') : undefined} onFinish={finishExercise} initialExercise={currentExercise} allExercises={allExercises} planDefaults={planDefaults} sessionId={sessionId} location={location} incrementOrder={incrementOrder} ensureOrderAtLeast={ensureOrderAtLeast} bodyWeight={bodyWeight} plates={plates} haptic={haptic} notify={notify} onBack={() => setScreen('home')} />}
       <Modal isOpen={!!pendingRepeat} onClose={() => setPendingRepeat(null)} title="Текущая тренировка ещё идёт">
         <p className="mb-4 text-sm text-zinc-300">Выполненные подходы будут сохранены перед началом выбранной тренировки.</p>
         <Button className="mb-2 w-full min-h-12" onClick={() => pendingRepeat && finishWorkoutConfirmed(pendingRepeat)}>Завершить текущую и повторить</Button>
         <Button variant="secondary" className="w-full min-h-12" onClick={() => { setPendingRepeat(null); setScreen('home'); }}>Продолжить текущую</Button>
       </Modal>
-      <BottomNavigation screen={screen} navigate={next => { if (next !== 'history') setDeeplinkSession(null); setScreen(next); }} pendingCount={pendingCount}
+      <BottomNavigation screen={screen} navigate={next => { if (next !== 'history') setDeeplinkSession(null); if (next === 'exercises') { setSelection(null); setSearchQuery(''); setSelectedGroup(null); } setScreen(next); }} pendingCount={pendingCount}
         onQueue={() => { setQueueItems(getQueue()); setIsQueueOpen(true); void api.syncOfflineQueue(); }} />
       
       <Modal isOpen={isCreateModalOpen} onClose={() => setIsCreateModalOpen(false)} title="Новое упражнение">
@@ -2804,11 +2623,19 @@ const App = () => {
           <Button onClick={handleCreate} className="w-full h-12 mt-4">Создать</Button>
         </div>
       </Modal>
-      <Modal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} title="Настройки">
+      <Modal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} title="Настройки" fullScreen footer={<Button className="w-full h-12" onClick={() => { const v = parseFloat(bodyWeightInput.replace(',', '.')); if (v >= 30 && v <= 250) { updateBodyWeight(v); updatePlates(platesDraft); savePreset(normalizePreset(presetDraft)); notify('success'); setIsSettingsOpen(false); } else { notify('error'); } }}>Сохранить</Button>}>
         <div className="space-y-5">
+          <div className="border-b border-zinc-800 pb-4 space-y-3">
+            <div className="text-sm font-medium text-zinc-400">Данные</div>
+            <Button variant="secondary" className="w-full h-12" onClick={handleExport}>{dataBusy ? 'Готовлю…' : 'Экспорт (упражнения + тренировки)'}</Button>
+            <Button variant="secondary" className="w-full h-12" onClick={() => importInputRef.current?.click()}>{dataBusy ? 'Импортирую…' : 'Импорт из файла'}</Button>
+            <input ref={importInputRef} type="file" accept=".json,application/json" className="hidden" onChange={handleImportFile} />
+            {importReport && <p className="text-xs text-zinc-400">{importReport}</p>}
+            <p className="text-xs text-zinc-400">Экспорт сохраняет упражнения и тренировки в JSON. Возможность импорта определяется сервером HealthOS.</p>
+          </div>
           <div>
-            <label className="text-sm text-zinc-400 mb-1 block">Вес тела, кг</label>
-            <Input type="number" inputMode="decimal" value={bodyWeightInput} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setBodyWeightInput(e.target.value)} />
+            <label htmlFor="settings-body-weight" className="text-sm text-zinc-400 mb-1 block">Вес тела, кг</label>
+            <Input id="settings-body-weight" type="number" inputMode="decimal" value={bodyWeightInput} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setBodyWeightInput(e.target.value)} />
             <p className="text-xs text-zinc-400 mt-1">Используется для гравитрона, брусьев и упражнений со своим весом.</p>
           </div>
           <div>
@@ -2819,8 +2646,9 @@ const App = () => {
                 return (
                   <button
                     key={plate}
+                    aria-pressed={on}
                     onClick={() => setPlatesDraft(on ? platesDraft.filter(v => v !== plate) : [...platesDraft, plate])}
-                    className={`px-3 py-2 rounded-xl text-sm border tabular-nums ${on ? 'bg-blue-600 border-blue-600 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-400'}`}
+                    className={`min-h-11 min-w-11 px-3 py-2 rounded-xl text-sm border tabular-nums ${on ? 'bg-blue-600 border-blue-600 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-400'}`}
                   >
                     {plate}
                   </button>
@@ -2840,11 +2668,11 @@ const App = () => {
               const set = (patch: Record<string, string>) => setPresetDraft({ ...presetDraft, [key]: { ...item, ...patch } });
               return (
                 <div key={key}>
-                  <label className="text-xs text-zinc-400 mb-1 block">{{ warmup: 'Разминка', abs: 'Пресс', cooldown: 'Заминка' }[key]}</label>
+                  <label htmlFor={`settings-preset-${key}`} className="text-xs text-zinc-400 mb-1 block">{{ warmup: 'Разминка', abs: 'Пресс', cooldown: 'Заминка' }[key]}</label>
                   {/* Список занимает всю строку, числа — узкие поля справа. Шрифт 16px:
                       на меньшем iOS приближает экран при фокусе. */}
                   <div className="flex items-center gap-2">
-                    <select value={item.exerciseId || ''} onChange={(e) => set({ exerciseId: e.target.value })} className="min-w-0 flex-1 h-12 rounded-xl bg-zinc-800 border border-zinc-700 px-3 text-base text-zinc-100">
+                    <select id={`settings-preset-${key}`} value={item.exerciseId || ''} onChange={(e) => set({ exerciseId: e.target.value })} className="min-w-0 flex-1 h-12 rounded-xl bg-zinc-800 border border-zinc-700 px-3 text-base text-zinc-100">
                       <option value="">— не добавлять —</option>
                       {options.map(ex => <option key={ex.id} value={ex.id}>{ex.name}</option>)}
                     </select>
@@ -2868,16 +2696,9 @@ const App = () => {
               <p className="text-xs text-amber-300">В каталоге нет кардио. «Все упражнения» → «+» → «Кардио», или у существующей дорожки: миниатюра → карандаш → «Кардио».</p>
             )}
           </div>
-          <Button className="w-full h-12" onClick={() => { const v = parseFloat(bodyWeightInput.replace(',', '.')); if (v >= 30 && v <= 250) { updateBodyWeight(v); updatePlates(platesDraft); savePreset(normalizePreset(presetDraft)); notify('success'); setIsSettingsOpen(false); } else { notify('error'); } }}>Сохранить</Button>
+
           {!telegramMode && <Button variant="secondary" className="w-full h-12" onClick={() => { logout(); setIsSettingsOpen(false); }}>Выйти из HealthOS</Button>}
-          <div className="border-t border-zinc-800 pt-4 space-y-3">
-            <div className="text-sm font-medium text-zinc-400">Данные</div>
-            <Button variant="secondary" className="w-full h-12" onClick={handleExport}>{dataBusy ? 'Готовлю…' : 'Экспорт (упражнения + тренировки)'}</Button>
-            <Button variant="secondary" className="w-full h-12" onClick={() => importInputRef.current?.click()}>{dataBusy ? 'Импортирую…' : 'Импорт из файла'}</Button>
-            <input ref={importInputRef} type="file" accept=".json,application/json" className="hidden" onChange={handleImportFile} />
-            {importReport && <p className="text-xs text-zinc-400">{importReport}</p>}
-            <p className="text-xs text-zinc-400">Экспорт делает полный слепок таблицы. Импорт добавляет недостающее и не создаёт дубли.</p>
-          </div>
+
         </div>
       </Modal>
       <Modal isOpen={isFinishConfirmOpen} onClose={() => setIsFinishConfirmOpen(false)} title="Закончить тренировку?">

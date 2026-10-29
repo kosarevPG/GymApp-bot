@@ -46,15 +46,18 @@ const waitFor = async fn => { for(let i=0;i<60;i++){ if(await fn()) return; awai
       const clockBefore = await page.evaluate(()=>JSON.parse(localStorage.getItem('gym_workout_clock_v1')));
       await page.waitForTimeout(1100);
       await page.reload();
-      await page.getByText('Подход идёт',{exact:true}).waitFor();
+      await page.getByRole('timer',{name:'Подход идёт',exact:true}).waitFor();
       assert.equal((await page.evaluate(()=>JSON.parse(localStorage.getItem('gym_workout_clock_v1')))).since,clockBefore.since);
       await page.getByRole('button',{name:'Подход выполнен',exact:true}).click();
       await page.getByText(/Время подхода 00:/).waitFor();
       const rest = await page.evaluate(()=>JSON.parse(localStorage.getItem('gym_workout_clock_v1')));
       await page.waitForTimeout(600); // Let row/accordion transitions settle before visual evidence.
       for(const label of ['Вес подхода','Повторения подхода','Отдых после подхода в минутах']) {
-        const box=await page.getByLabel(label,{exact:true}).first().boundingBox();
-        assert.ok(box.width>=44&&box.height>=44,`${name}: ${label} remains readable and touchable`);
+        const input=page.getByLabel(label,{exact:true}).first();
+        const box=await input.boundingBox();
+        const target=await input.locator('..').boundingBox();
+        assert.ok(box.height>=36&&target.width>=44&&target.height>=44,`${name}: compact field retains a 44px touch target`);
+        assert.ok(await input.evaluate(el=>parseFloat(getComputedStyle(el).fontSize)>=16),'input avoids automatic zoom on iOS');
         assert.ok(box.x>=0&&box.x+box.width<=viewport.width,`${name}: ${label} stays inside the viewport`);
       }
       await page.screenshot({path:path.join(OUTPUT,`${name}-set.png`),fullPage:true});
@@ -131,7 +134,7 @@ const waitFor = async fn => { for(let i=0;i<60;i++){ if(await fn()) return; awai
     await offlinePage.getByRole('button',{name:'Начать подход',exact:true}).click();
     await offlinePage.evaluate(()=>localStorage.setItem('gym_last_active',String(Date.now()-5*3600000)));
     await offlinePage.reload();
-    await offlinePage.getByText('Подход идёт',{exact:true}).waitFor();
+    await offlinePage.getByRole('timer',{name:'Подход идёт',exact:true}).waitFor();
     assert.equal(await offlinePage.evaluate(()=>localStorage.getItem('gym_session_id')),firstClient);
     await offlinePage.getByRole('button',{name:'Подход выполнен',exact:true}).click();
     const queued=await offlinePage.evaluate(()=>JSON.parse(localStorage.getItem('gym_offline_queue_v2')));

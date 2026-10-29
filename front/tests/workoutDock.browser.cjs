@@ -58,6 +58,7 @@ const until = async fn => {
       assert.equal(completeBox.y, startBox.y, 'start and finish stay under the same finger');
       const navBox = await page.getByRole('navigation', { name: 'Основная навигация' }).boundingBox();
       assert.ok(completeBox.height >= 56 && completeBox.y + completeBox.height <= navBox.y);
+      assert.ok((await dock().boundingBox()).height <= 88, 'horizontal controls stay compact');
       // Backdate only the local test clock, then reload: no real waiting or production writes.
       await page.evaluate(() => {
         const saved = JSON.parse(localStorage.getItem('gym_workout_clock_v1'));
@@ -85,6 +86,7 @@ const until = async fn => {
       await page.getByLabel('Длительность кардио в минутах').last().fill('7');
       const restSince = (await clock()).since;
       await action('Начать подход').click();
+      await dock().getByLabel('Действия с таймером', { exact: true }).click();
       await dock().getByRole('button', { name: 'Отменить замер' }).click();
       assert.equal((await clock()).since, restSince, 'cancel restores original rest');
       await page.getByRole('button', { name: 'Отметить кардиоотрезок выполненным', exact: true }).click();

@@ -39,13 +39,15 @@ const until = async fn => { for(let i=0;i<80;i++){ if(await fn())return; await n
     return route.fulfill({status:200,body:'',contentType:'application/javascript'});
    });
    const page=await ctx.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
+   // Keep relative analytics periods anchored to this fixture's October history.
+   await page.clock.install({time:new Date('2026-10-21T12:00:00+03:00')});
    const nav=()=>page.getByRole('navigation',{name:'Основная навигация'});
    const hasCache=kind=>page.evaluate(kind=>!!localStorage.getItem('gym_read_cache_v1:telegram:unknown:'+kind),kind);
    await page.goto(SITE);await until(()=>hasCache('journal'));
    assert.equal(await page.getByRole('button',{name:'Сводка для тренера',exact:false}).count(),0,'summary is nested under analytics');
    assert.ok(!(await page.locator('body').innerText()).includes('Паш'));
    await page.getByRole('button',{name:'Справочник упражнений',exact:false}).click();
-   await page.getByRole('heading',{name:'Упражнения',exact:true}).waitFor();
+   await page.getByRole('heading',{name:'Библиотека',exact:true}).waitFor();
    await page.waitForTimeout(300);await page.screenshot({path:path.join(OUTPUT,`${name}-catalogue.png`),fullPage:true});
    await page.getByRole('button',{name:'На главную',exact:true}).click();
    await nav().getByRole('button',{name:'Аналитика',exact:true}).click();
@@ -110,8 +112,9 @@ const until = async fn => { for(let i=0;i<80;i++){ if(await fn())return; await n
    await page.reload();await nav().getByRole('button',{name:'Главная',exact:true}).click();
    await page.getByRole('heading',{name:'Текущая тренировка',exact:true}).waitFor();
    const currentTop=(await page.getByRole('heading',{name:'Текущая тренировка',exact:true}).boundingBox()).y;
-   const sectionsTop=(await page.getByRole('navigation',{name:'Разделы приложения',exact:true}).boundingBox()).y;
-   assert.ok(currentTop<sectionsTop,'active workout is placed before secondary navigation');
+   const sectionsTop=(await nav().boundingBox()).y;
+   assert.ok(currentTop<sectionsTop,'active workout is placed above bottom navigation');
+   assert.equal(await page.getByRole('navigation',{name:'Разделы приложения',exact:true}).count(),0,'home does not duplicate the bottom destinations');
    await page.waitForTimeout(300);await page.screenshot({path:path.join(OUTPUT,`${name}-active-home.png`),fullPage:true});
    assert.deepEqual(await page.evaluate(()=>JSON.parse(localStorage.getItem('gym_offline_queue_v2')).map(q=>q.id)),queued);
    assert.equal(globalRequests,beforeOffline);
