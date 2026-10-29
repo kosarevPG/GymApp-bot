@@ -23,8 +23,6 @@ background. The backend deduplicates retries.
   the Supabase adapter.
 - `scripts/deploy_function.sh` — safe backend deployment; requires an explicit
   new `FUNCTION_ID`.
-- `bot.py` and `google_sheets.py` — legacy Render implementation. Do not deploy
-  these files against the current spreadsheet schema.
 
 ## Local checks
 
@@ -59,7 +57,8 @@ See `DEPLOY_PROD.md` for deployment.
 
 ## Backup
 
-The pre-v2 implementation is preserved in:
+The pre-v2 implementation — the aiogram bot on Render and its Google Sheets
+adapter — is preserved in:
 
 - Git branch `codex/backup-google-sheets-2026-07-01`
 - local backup directory `D:\Projects\GymApp-backups\2026-07-01-before-v2`
