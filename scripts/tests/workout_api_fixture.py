@@ -55,6 +55,10 @@ def reset():
             source="gymapp", source_key=key, name_ru=name, muscle_group="Грудь" if key=="bar" else "Ноги",
             weight_type=kind, base_weight_kg=base, multiplier=mult, is_active=True, measure="strength",
             tonnage_mode="external_load", source_payload={}))
+    client.tables["gym_exercises"].append(dict(id=str(uuid.uuid5(uuid.NAMESPACE_DNS, "treadmill")), user_id=USER_ID,
+        source="gymapp", source_key="treadmill", name_ru="Беговая дорожка", muscle_group="Кардио",
+        weight_type="Other", base_weight_kg=0, multiplier=1, is_active=True, measure="cardio",
+        tonnage_mode="excluded", source_payload={}))
     store = supabase_store.SupabaseStore(client)
     supabase_store._default_store = store
     index.authenticate_request = lambda headers: SimpleNamespace(user_id=USER_ID)

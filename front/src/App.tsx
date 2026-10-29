@@ -919,7 +919,7 @@ const lastCardioSession = (history: CardioHistoryItem[] | undefined) => {
 const CardioRow = ({ set, isActive, syncMark, onUpdate, onDelete, onComplete }: { set: WorkoutSet; isActive: boolean; syncMark?: SyncMark; onUpdate: (sid: string, field: string, value: string) => void; onDelete: (sid: string) => void; onComplete: (sid: string) => void }) => (
   <div className={`mb-3 ${set.completed ? (syncMark ? 'opacity-80' : 'opacity-60 grayscale') : ''}`}>
     <div className="grid grid-cols-[auto_1fr_1fr_1fr_auto] gap-2 items-center">
-      <button onClick={() => onComplete(set.id)} className={`relative w-12 h-12 rounded-xl border flex items-center justify-center transition-colors ${set.completed ? 'bg-green-500 border-green-500' : 'bg-zinc-900 border-zinc-700'}`}>
+      <button aria-label={set.completed ? 'Изменить кардиоотрезок' : 'Отметить кардиоотрезок выполненным'} onClick={() => onComplete(set.id)} className={`relative w-12 h-12 rounded-xl border flex items-center justify-center transition-colors ${set.completed ? 'bg-green-500 border-green-500' : 'bg-zinc-900 border-zinc-700'}`}>
         <Check className={`w-6 h-6 ${set.completed ? 'text-white' : 'text-zinc-700'}`} />
         <SyncDot mark={syncMark} />
       </button>
@@ -928,6 +928,7 @@ const CardioRow = ({ set, isActive, syncMark, onUpdate, onDelete, onComplete }: 
           key={field}
           type="number"
           inputMode="decimal"
+          aria-label={field === 'minutes' ? 'Длительность кардио в минутах' : field === 'speed' ? 'Скорость кардио в км/ч' : 'Наклон кардио в процентах'}
           placeholder={field === 'minutes' ? 'мин' : '—'}
           value={set[field] ?? ''}
           disabled={set.completed}
@@ -935,7 +936,7 @@ const CardioRow = ({ set, isActive, syncMark, onUpdate, onDelete, onComplete }: 
           className="w-full h-12 bg-zinc-800 rounded-xl text-center text-lg font-semibold text-zinc-50 disabled:text-zinc-400 outline-none focus:ring-1 focus:ring-blue-500"
         />
       ))}
-      <button onClick={() => onDelete(set.id)} className="p-2 text-zinc-600 hover:text-red-500"><Trash2 className="w-5 h-5" /></button>
+      <button aria-label="Удалить кардиоотрезок" onClick={() => onDelete(set.id)} className="p-2 text-zinc-600 hover:text-red-500"><Trash2 className="w-5 h-5" /></button>
     </div>
     {isActive && !set.completed && (
       <div className="flex gap-2 mt-2 pl-14">
@@ -1391,6 +1392,17 @@ const WorkoutScreen = ({ initialExercise, allExercises, clock, onClockChange, st
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [supersetSearchQuery, setSupersetSearchQuery] = useState('');
   const [syncMarks, setSyncMarks] = useState<Record<string, SyncMark>>(readSyncMarks);
+  const dockRef = useRef<HTMLDivElement>(null);
+  const [dockHeight, setDockHeight] = useState(0);
+  useEffect(() => {
+    const dock = dockRef.current;
+    if (!dock) return;
+    const measure = () => setDockHeight(dock.getBoundingClientRect().height);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(dock);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     const update = () => setSyncMarks(readSyncMarks());
@@ -1534,7 +1546,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, clock, onClockChange, st
     && clock.blockKey === blockKey(clock.exerciseId)
     ? { exId: clock.exerciseId, set: sessionData[clock.exerciseId]?.sets.find((s: WorkoutSet) => s.id === clock.setId && !s.completed) } : null;
   const nextSet = activeExercises.map(exId => ({ exId, set: sessionData[exId]?.sets.find(s => !s.completed) }))
-    .find(item => item.set && !isCardio(item.exId));
+    .find(item => item.set);
   const beginSet = (exId: string, setId: string) => {
     if (clock?.kind === 'set') { notify('warning'); return; }
     onClockChange(startSetClock(clock, sessionId, blockKey(exId), exId, setId));
@@ -1554,12 +1566,15 @@ const WorkoutScreen = ({ initialExercise, allExercises, clock, onClockChange, st
     }
     const exercise = sessionData[exId].exercise;
     const cardio = exercise?.measure === 'cardio';
-    const seconds = cardio ? durationSeconds(set.minutes) : null;
-    if (cardio ? seconds === null : (!set.weight || !set.reps)) { notify('error'); return; }
-
     const isEdit = !!set.requestId;
     const ended = Date.now();
-    const timing = cardio ? undefined : isEdit ? set.timing : completeSetTiming(clock, sessionId, blockKey(exId), setId, ended);
+    const measured = !isEdit ? completeSetTiming(clock, sessionId, blockKey(exId), setId, ended) : undefined;
+    const seconds = cardio ? measured?.duration_seconds !== undefined
+      ? Math.max(1, measured.duration_seconds) : durationSeconds(set.minutes) : null;
+    if (cardio ? seconds === null : (!set.weight || !set.reps)) { notify('error'); return; }
+
+    const timing = cardio ? undefined : isEdit ? set.timing : measured;
+    const completedSet = cardio && seconds !== null ? { ...set, minutes: String(Math.round(seconds / 60 * 10000) / 10000) } : set;
     const inputWeight = parseFloat(set.weight);
     const payload = { ...(location ? { location } : {}), ...(cardio ? {
       kind: 'cardio',
@@ -1592,11 +1607,11 @@ const WorkoutScreen = ({ initialExercise, allExercises, clock, onClockChange, st
     try {
       if (isEdit) {
         api.updateSet({ ...payload, client_request_id: set.requestId, order: set.order });
-        saved = { ...set, completed: true, timing, load: set.load || loadRulesOf(exercise, bodyWeight) };
+        saved = { ...completedSet, completed: true, timing, load: set.load || loadRulesOf(exercise, bodyWeight) };
       } else {
         const order = incrementOrder();
         const requestId = api.saveSet({ ...payload, order, client_request_id: set.id });
-        saved = { ...set, completed: true, requestId, order, timing, load: loadRulesOf(exercise, bodyWeight) };
+        saved = { ...completedSet, completed: true, requestId, order, timing, load: loadRulesOf(exercise, bodyWeight) };
       }
     } catch (e) {
       notify('error');
@@ -1609,7 +1624,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, clock, onClockChange, st
     setSessionData(prev => ({ ...prev, [exId]: { ...prev[exId], sets: prev[exId].sets.map(s => s.id === setId ? saved : s) } }));
 
     haptic('medium');
-    if (!isEdit && !cardio) {
+    if ((!isEdit && !cardio) || (clock?.kind === 'set' && clock.blockKey === blockKey(exId) && clock.setId === setId)) {
       onClockChange(nextRestClock(sessionId, parseFloat(set.rest) || 0, ended));
     }
     notify('success');
@@ -1695,16 +1710,10 @@ const WorkoutScreen = ({ initialExercise, allExercises, clock, onClockChange, st
   };
 
   return (
-    <div className="min-h-screen bg-zinc-950 pb-20">
+    <div className="min-h-screen bg-zinc-950" style={{ paddingBottom: dockHeight + 16 }}>
       <div className="sticky top-0 z-40 bg-zinc-950 pb-3 pt-safe-2">
         <ScreenContent>
         <div className="flex items-center justify-between gap-3 py-3 text-sm text-zinc-300"><span>{stepTitle || 'Тренировка'}</span><button onClick={onWorkoutOverview} className="min-h-11 text-blue-300">Вся тренировка</button></div>
-        {(nextSet || runningSet?.set || clock) && <WorkoutClockPanel clock={clock} runningHere={!!runningSet?.set}
-          perSide={!!runningSet && sessionData[runningSet.exId]?.exercise.unilateral}
-          onStart={nextSet && clock?.kind !== 'set' ? () => beginSet(nextSet.exId, nextSet.set!.id) : undefined}
-          onContinue={clock?.kind === 'set' && !runningSet?.set ? onResumeRunning : undefined}
-          onComplete={runningSet?.set ? () => handleCompleteSet(runningSet.exId, runningSet.set!.id) : undefined}
-          onCancel={() => onClockChange(cancelSetClock(clock))} notify={() => { haptic('heavy'); notify('warning'); }} />}
         </ScreenContent>
       </div>
       <ScreenContent className="space-y-4">
@@ -1715,11 +1724,23 @@ const WorkoutScreen = ({ initialExercise, allExercises, clock, onClockChange, st
           return <WorkoutCard key={exId} exerciseData={data} bodyWeight={bodyWeight} plates={plates} syncMarks={syncMarks} onAddSet={() => handleAddSet(exId)} onUpdateSet={(sid: string, f: string, v: string) => handleUpdateSet(exId, sid, f, v)} onDeleteSet={(sid: string) => handleDeleteSet(exId, sid)} onCompleteSet={(sid: string) => handleCompleteSet(exId, sid)} onStartSet={activeExercises.length > 1 ? (sid: string) => beginSet(exId, sid) : undefined} onNoteChange={(val: string) => { dirtyExercises.current.add(exId); setSessionData(p => ({...p, [exId]: {...p[exId], note: val}})); }} onAddSuperset={() => setIsAddModalOpen(true)} onRemove={() => requestRemoveExercise(exId)} />;
         })}
       </ScreenContent>
-      <ScreenContent className="mt-6 mb-20 space-y-2">
-        <Button variant="primary" onClick={onFinish} className="w-full h-14 text-lg font-semibold">{stepTitle ? 'Завершить и перейти дальше' : 'Завершить упражнение'}</Button>
+      <ScreenContent className="mt-6 space-y-2">
+        {nextSet && <Button variant="secondary" onClick={onFinish} className="w-full min-h-12">{stepTitle ? 'Завершить и перейти дальше' : 'Завершить упражнение'}</Button>}
         {onReplace && <Button variant="secondary" onClick={onReplace} icon={Replace} className="w-full min-h-12">Заменить упражнение</Button>}
         {onSkip && <Button variant="ghost" onClick={onSkip} className="w-full min-h-12">Пропустить оставшееся</Button>}
       </ScreenContent>
+      <div ref={dockRef} className="fixed inset-x-0 above-app-navigation z-40 border-t border-zinc-800 bg-zinc-950 py-3" aria-label="Управление подходом">
+        <ScreenContent>
+          <WorkoutClockPanel docked clock={clock} runningHere={!!runningSet?.set}
+            cardio={!!runningSet && isCardio(runningSet.exId)}
+            perSide={!!runningSet && sessionData[runningSet.exId]?.exercise.unilateral}
+            onStart={nextSet && clock?.kind !== 'set' ? () => beginSet(nextSet.exId, nextSet.set!.id) : undefined}
+            onContinue={clock?.kind === 'set' ? onResumeRunning : !nextSet ? onFinish : undefined}
+            continueLabel={clock?.kind !== 'set' && !nextSet ? (stepTitle ? 'Завершить и перейти дальше' : 'Завершить упражнение') : undefined}
+            onComplete={runningSet?.set ? () => handleCompleteSet(runningSet.exId, runningSet.set!.id) : undefined}
+            onCancel={() => onClockChange(cancelSetClock(clock))} notify={() => { haptic('heavy'); notify('warning'); }} />
+        </ScreenContent>
+      </div>
       <Modal isOpen={!!removeTarget} onClose={() => setRemoveTarget(null)} title="Убрать упражнение?">
         {removeTarget && (
           <div className="space-y-4">
