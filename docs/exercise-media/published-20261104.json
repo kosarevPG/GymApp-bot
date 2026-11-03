@@ -1,0 +1,441 @@
+[
+  {
+    "ordinal": 1,
+    "name": "Концентрированный подъём на бицепс",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/c8da9fdbb11bc09ca8f60a0f21d661eddb24786300751dbf1df5b924480edc10.gif"
+    },
+    "sha256": "c8da9fdbb11bc09ca8f60a0f21d661eddb24786300751dbf1df5b924480edc10",
+    "source_page": "https://fitnessprogramer.com/exercise/concentration-curl/",
+    "match": "movement_match",
+    "note": "Концентрированный подъём сидя, по одной руке."
+  },
+  {
+    "ordinal": 3,
+    "name": "Подъем гантелей на бицепс сидя",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/4967b8193520f616862386151efa08e9401d2e76d94e5e08311f20eaffae83ac.gif"
+    },
+    "sha256": "4967b8193520f616862386151efa08e9401d2e76d94e5e08311f20eaffae83ac",
+    "source_page": "https://fitnessprogramer.com/exercise/seated-biceps-curl/",
+    "match": "movement_match",
+    "note": "Сгибание с гантелями сидя."
+  },
+  {
+    "ordinal": 4,
+    "name": "Сгибание рук с гантелями (Скамья 30°)",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/578f78fa999c9e1c50d03e5fd9c36ad0ae56a84db8c763c6ee2f5adb959a6228.gif"
+    },
+    "sha256": "578f78fa999c9e1c50d03e5fd9c36ad0ae56a84db8c763c6ee2f5adb959a6228",
+    "source_page": "https://fitnessprogramer.com/exercise/seated-incline-dumbbell-curl/",
+    "match": "variant_review",
+    "note": "Наклонная скамья; точные 30° у анимации не подтверждены."
+  },
+  {
+    "ordinal": 5,
+    "name": "Сгибание рук с гантелями молотковым хватом у стены",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/551aa9a10b21863dab78ec8e39d5aba5d8ff938fdb771eb4a06ae291ac9aad23.gif"
+    },
+    "sha256": "551aa9a10b21863dab78ec8e39d5aba5d8ff938fdb771eb4a06ae291ac9aad23",
+    "source_page": "https://fitnessprogramer.com/exercise/hammer-curl/",
+    "match": "variant_review",
+    "note": "Молотковый хват совпадает; упора спиной в стену нет."
+  },
+  {
+    "ordinal": 6,
+    "name": "Сгибание рук с гантелями стоя",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/c263baf392cb86809b0613739e8a6734f4c36c1949e837632eba645c2ca6d563.gif"
+    },
+    "sha256": "c263baf392cb86809b0613739e8a6734f4c36c1949e837632eba645c2ca6d563",
+    "source_page": "https://fitnessprogramer.com/exercise/dumbbell-curl/",
+    "match": "movement_match",
+    "note": "Сгибание с гантелями стоя."
+  },
+  {
+    "ordinal": 8,
+    "name": "Бабочка",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/053248e1e0b373ef3caec0c780e52bc7e08944a1fbfeb54d798c40a08bdbd7eb.gif"
+    },
+    "sha256": "053248e1e0b373ef3caec0c780e52bc7e08944a1fbfeb54d798c40a08bdbd7eb",
+    "source_page": "https://github.com/kosarevPG/GymApp",
+    "match": "movement_match",
+    "note": "В каталоге есть второй Pec fly с работающим GIF; один материал для обоих названий, записи не объединяются."
+  },
+  {
+    "ordinal": 12,
+    "name": "Жим гантелей вверх (Скамья 90°)",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/e7c68ce6d703d890e15051d0503abdb75fe357b3f049209f7eca865ed02aba93.gif"
+    },
+    "sha256": "e7c68ce6d703d890e15051d0503abdb75fe357b3f049209f7eca865ed02aba93",
+    "source_page": "https://fitnessprogramer.com/exercise/dumbbell-shoulder-press/",
+    "match": "movement_match",
+    "note": "Жим вверх сидя. Записан в группе «Грудь», но движение плечевое; группу автоматически не меняем."
+  },
+  {
+    "ordinal": 15,
+    "name": "Жим штанги (наклон 30°)",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/dc138127178710a9404a26664b00076ef3e0e356ffb8589c8833d81a5cde8c08.gif"
+    },
+    "sha256": "dc138127178710a9404a26664b00076ef3e0e356ffb8589c8833d81a5cde8c08",
+    "source_page": "https://fitnessprogramer.com/exercise/incline-barbell-bench-press/",
+    "match": "variant_review",
+    "note": "Наклонный жим штанги; точные 30° не подтверждены."
+  },
+  {
+    "ordinal": 16,
+    "name": "Жим штанги в смите (Скамья 40°)",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/6de08b7a778aa994e6ddfb2631ca88d8cd74dc4bf9291db04a43ad8b9aee4bd7.gif"
+    },
+    "sha256": "6de08b7a778aa994e6ddfb2631ca88d8cd74dc4bf9291db04a43ad8b9aee4bd7",
+    "source_page": "https://fitnessprogramer.com/exercise/smith-machine-incline-bench-press/",
+    "match": "variant_review",
+    "note": "Жим в Смите на наклонной скамье; точные 40° не подтверждены."
+  },
+  {
+    "ordinal": 17,
+    "name": "Отжимания от грифа",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/214016c8464b2f67ec20f06c93c9256053d0292daf3ed377413a870878d2f081.gif"
+    },
+    "sha256": "214016c8464b2f67ec20f06c93c9256053d0292daf3ed377413a870878d2f081",
+    "source_page": "https://fitnessprogramer.com/exercise/incline-push-up/",
+    "match": "variant_review",
+    "note": "Отжимание от возвышения; на GIF опора не гриф."
+  },
+  {
+    "ordinal": 18,
+    "name": "Разводка гантелей (наклон 40°)",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/71af076b77f933ae44c1b1e27905f61a39cc6e17212b2e3188151c548a5f97f1.gif"
+    },
+    "sha256": "71af076b77f933ae44c1b1e27905f61a39cc6e17212b2e3188151c548a5f97f1",
+    "source_page": "https://fitnessprogramer.com/exercise/incline-dumbbell-fly/",
+    "match": "variant_review",
+    "note": "Разводка на наклонной скамье; точные 40° не подтверждены."
+  },
+  {
+    "ordinal": 20,
+    "name": "Дорожка",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/643204256c8a36a93e32fba282fdf4b3876f302223040f4899e4933b840dbe3f.gif"
+    },
+    "sha256": "643204256c8a36a93e32fba282fdf4b3876f302223040f4899e4933b840dbe3f",
+    "source_page": "https://fitnessprogramer.com/exercise/treadmill/",
+    "match": "movement_match",
+    "note": "Дорожка."
+  },
+  {
+    "ordinal": 22,
+    "name": "Выпады при ходьбе",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/b6d9e40cb194a755216b1011de5c86a2b948a8fbbdac451d5e9d0e86fb5c7daa.gif"
+    },
+    "sha256": "b6d9e40cb194a755216b1011de5c86a2b948a8fbbdac451d5e9d0e86fb5c7daa",
+    "source_page": "https://fitnessprogramer.com/exercise/dumbbell-walking-lunge/",
+    "match": "movement_match",
+    "note": "Выпады с продвижением вперёд."
+  },
+  {
+    "ordinal": 24,
+    "name": "Жим ногами (блок)",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/b82fd828d846e6e9574d396a90abc8930430e0beecee5a6bd50894d0f28e727c.gif",
+      "image_url_2": "https://kosarevPG.github.io/GymApp-frontend/img/Leg_press_2.jpg"
+    },
+    "sha256": "b82fd828d846e6e9574d396a90abc8930430e0beecee5a6bd50894d0f28e727c",
+    "source_page": "https://fitnessprogramer.com/exercise/horizontal-leg-press/",
+    "match": "variant_review",
+    "note": "Горизонтальный жим ногами; сравнить с блочным тренажёром на текущем фото."
+  },
+  {
+    "ordinal": 25,
+    "name": "Икры (в Гакке)",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/64b21fa23bc8c1eb2418f4799331a5b3e37a757405fbe9f715b4c7a6858c967e.gif"
+    },
+    "sha256": "64b21fa23bc8c1eb2418f4799331a5b3e37a757405fbe9f715b4c7a6858c967e",
+    "source_page": "https://fitnessprogramer.com/exercise/hack-squat-calf-raise/",
+    "match": "movement_match",
+    "note": "Подъём на носки в гакк-тренажёре."
+  },
+  {
+    "ordinal": 29,
+    "name": "Блин перед собой на уровень глаз",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/fc7034d845763383cccdaf34e42427f524285e13e461119dbcfadba87f9bdace.gif"
+    },
+    "sha256": "fc7034d845763383cccdaf34e42427f524285e13e461119dbcfadba87f9bdace",
+    "source_page": "https://fitnessprogramer.com/exercise/weight-plate-front-raise/",
+    "match": "movement_match",
+    "note": "Подъём блина перед собой."
+  },
+  {
+    "ordinal": 33,
+    "name": "Жим штанги в смите сидя",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/9170b362177df86a05f708b83ff09e01c29adfd63e771c3b8d3b4fd383e1b5e0.gif"
+    },
+    "sha256": "9170b362177df86a05f708b83ff09e01c29adfd63e771c3b8d3b4fd383e1b5e0",
+    "source_page": "https://fitnessprogramer.com/exercise/smith-machine-shoulder-press/",
+    "match": "movement_match",
+    "note": "Замена недоступного SM_PRESS.gif, который отвечает HTTP 404."
+  },
+  {
+    "ordinal": 35,
+    "name": "Махи в стороны (сидя)",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/b5267840ba53a0aa016487973c2b29a82227bad25217f6364466a7503e30912d.gif",
+      "image_url_2": "https://res.cloudinary.com/dzhbor5oj/image/upload/v1764368358/gymapp/exercises/qovtsxhx0t2uy5e3zti3.jpg"
+    },
+    "sha256": "b5267840ba53a0aa016487973c2b29a82227bad25217f6364466a7503e30912d",
+    "source_page": "https://fitnessprogramer.com/exercise/seated-dumbbell-lateral-raise/",
+    "match": "movement_match",
+    "note": "Разведение гантелей сидя вместо фотографии."
+  },
+  {
+    "ordinal": 36,
+    "name": "Махи в стороны (стоя)",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/0bf65931e27cd3ca057106280e69093aa5872f0fb1e254d67e839e38def7e8bc.gif"
+    },
+    "sha256": "0bf65931e27cd3ca057106280e69093aa5872f0fb1e254d67e839e38def7e8bc",
+    "source_page": "https://fitnessprogramer.com/exercise/dumbbell-lateral-raise/",
+    "match": "movement_match",
+    "note": "Разведение гантелей стоя."
+  },
+  {
+    "ordinal": 37,
+    "name": "Махи гантелями в сторону и перед собой",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/694613894801e3aed6243ff38003efe9bc6fda9121fd55e2903347c0eb2c6090.gif"
+    },
+    "sha256": "694613894801e3aed6243ff38003efe9bc6fda9121fd55e2903347c0eb2c6090",
+    "source_page": "https://fitnessprogramer.com/exercise/dumbbell-lateral-to-front-raise/",
+    "match": "movement_match",
+    "note": "Комбинированное движение в стороны и перед собой."
+  },
+  {
+    "ordinal": 40,
+    "name": "Подъем гантелей перед собой сидя (по одной руке)",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/2e0d279a0205447292f132ccc9f9b2c823a0cc686e25a33ebcbeaaef1da0bb85.gif"
+    },
+    "sha256": "2e0d279a0205447292f132ccc9f9b2c823a0cc686e25a33ebcbeaaef1da0bb85",
+    "source_page": "https://fitnessprogramer.com/exercise/dumbbell-seated-alternate-front-raise/",
+    "match": "movement_match",
+    "note": "Подъём перед собой сидя, попеременно."
+  },
+  {
+    "ordinal": 41,
+    "name": "Подъём рук перед собой в кроссовере",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/38111f3987bf261f4226ebbd3adc64f96321c501c1634ec636085988dc9f7ebd.gif"
+    },
+    "sha256": "38111f3987bf261f4226ebbd3adc64f96321c501c1634ec636085988dc9f7ebd",
+    "source_page": "https://fitnessprogramer.com/exercise/double-cable-front-raise/",
+    "match": "variant_review",
+    "note": "Подъём двух рук с нижних блоков; хват и рукоятки нужно сравнить."
+  },
+  {
+    "ordinal": 43,
+    "name": "Скручивания",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/77af4db4ca1c60c5628e8b9279a273e259f80d8267c740f5f4a7f6737acf5a7b.gif"
+    },
+    "sha256": "77af4db4ca1c60c5628e8b9279a273e259f80d8267c740f5f4a7f6737acf5a7b",
+    "source_page": "https://fitnessprogramer.com/exercise/crunch/",
+    "match": "movement_match",
+    "note": "Обычные скручивания на полу."
+  },
+  {
+    "ordinal": 46,
+    "name": "Пуловер в блочном тренажере стоя",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/6b1143ef5f1aa8e0dc1ba63617d70dbd239ee02ecba674a2a195702a6d3db61e.gif"
+    },
+    "sha256": "6b1143ef5f1aa8e0dc1ba63617d70dbd239ee02ecba674a2a195702a6d3db61e",
+    "source_page": "https://fitnessprogramer.com/exercise/cable-straight-arm-pulldown/",
+    "match": "movement_match",
+    "note": "Пуловер стоя на блоке, прямые руки."
+  },
+  {
+    "ordinal": 47,
+    "name": "Разогрев спины длинная косичка",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/35e77fc4db0df696daaefb1f68c67b82cccf12c766887b1cd5168d1212f48fa1.gif"
+    },
+    "sha256": "35e77fc4db0df696daaefb1f68c67b82cccf12c766887b1cd5168d1212f48fa1",
+    "source_page": "https://fitnessprogramer.com/exercise/rope-straight-arm-pulldown/",
+    "match": "variant_review",
+    "note": "Уточнение пользователя: «как трицепс косичкой, только косичка была длиннее». Вероятный вариант — тяга каната сверху вниз прямыми руками; по длине каната движение не подтверждено. Face pull убран."
+  },
+  {
+    "ordinal": 49,
+    "name": "Тяга верхнего блока (независимые рукоятки)",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/ed1ae4ddadfbb866ec60f5a97512dd0667f98cc70af22cbf69721a9afed8a23d.gif",
+      "image_url_2": "https://kosarevPG.github.io/GymApp-frontend/img/photo_2025-11-24_15-45-17.jpg"
+    },
+    "sha256": "ed1ae4ddadfbb866ec60f5a97512dd0667f98cc70af22cbf69721a9afed8a23d",
+    "source_page": "https://fitnessprogramer.com/exercise/lever-front-pulldown/",
+    "match": "variant_review",
+    "note": "Рычажная тяга сверху с независимыми рукоятками; сравнить с тренажёром на фото."
+  },
+  {
+    "ordinal": 50,
+    "name": "Тяга верхнего блока, краб",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/839f6bf4b11f9fbe210e23115978893052d843eaeb278094503afb6574ab89e6.gif"
+    },
+    "sha256": "839f6bf4b11f9fbe210e23115978893052d843eaeb278094503afb6574ab89e6",
+    "source_page": "https://github.com/kosarevPG/GymApp",
+    "match": "variant_review",
+    "note": "MAG-рукоятка; название «краб» не задаёт точную ширину хвата."
+  },
+  {
+    "ordinal": 51,
+    "name": "Тяга верхнего блока, краб малый",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/839f6bf4b11f9fbe210e23115978893052d843eaeb278094503afb6574ab89e6.gif",
+      "image_url_2": "https://res.cloudinary.com/dzhbor5oj/image/upload/v1764196973/gymapp/exercises/dppjupuslvk0uomilyxp.jpg"
+    },
+    "sha256": "839f6bf4b11f9fbe210e23115978893052d843eaeb278094503afb6574ab89e6",
+    "source_page": "https://github.com/kosarevPG/GymApp",
+    "match": "variant_review",
+    "note": "На текущем фото компактная MAG-рукоятка; ширину и хват анимации нужно подтвердить."
+  },
+  {
+    "ordinal": 52,
+    "name": "Тяга гантелей к поясу",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/d494127f4c95b74da0d6a1e94e839bf94c80281349df399fb6aad1e7c6b55568.gif"
+    },
+    "sha256": "d494127f4c95b74da0d6a1e94e839bf94c80281349df399fb6aad1e7c6b55568",
+    "source_page": "https://fitnessprogramer.com/exercise/bent-over-dumbbell-row/",
+    "match": "variant_review",
+    "note": "Две гантели в наклоне; если тяга по одной руке с опорой, нужен другой вариант."
+  },
+  {
+    "ordinal": 53,
+    "name": "Тяга гантелей на наклонной скамье 30°",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/0cfa5bff8805819dfad4f473de777200a580e9d13b1adaba475b26b67e472edf.gif",
+      "image_url_2": "https://kosarevPG.github.io/GymApp-frontend/img/photo_2025-11-24_15-59-02.jpg"
+    },
+    "sha256": "0cfa5bff8805819dfad4f473de777200a580e9d13b1adaba475b26b67e472edf",
+    "source_page": "https://fitnessprogramer.com/exercise/45-degree-incline-row/",
+    "match": "variant_review",
+    "note": "Тяга с опорой на наклонную скамью, но источник показывает 45°, в каталоге 30°."
+  },
+  {
+    "ordinal": 54,
+    "name": "Тяга нижнего блока",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/8631a2cf83853ef6394956a24b29d1470cbfe2ea2b82f25806e260797d2c603b.gif"
+    },
+    "sha256": "8631a2cf83853ef6394956a24b29d1470cbfe2ea2b82f25806e260797d2c603b",
+    "source_page": "https://github.com/kosarevPG/GymApp",
+    "match": "movement_match",
+    "note": "У одноимённой записи уже есть GIF; записи и историю не объединяем."
+  },
+  {
+    "ordinal": 56,
+    "name": "Тяга нижнего блока (Seated Cable Row), V-образная ручка",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/954f34b1b8d880976e433f81b8947bff1bfed85900af239a20e6f67ea2108635.gif",
+      "image_url_2": "https://res.cloudinary.com/dzhbor5oj/image/upload/v1764197468/gymapp/exercises/rczl93wtg0cnjtsiannt.webp"
+    },
+    "sha256": "954f34b1b8d880976e433f81b8947bff1bfed85900af239a20e6f67ea2108635",
+    "source_page": "https://fitnessprogramer.com/exercise/close-grip-cable-row/",
+    "match": "movement_match",
+    "note": "Тяга нижнего блока с узкой/V-образной рукояткой."
+  },
+  {
+    "ordinal": 57,
+    "name": "Тяга нижнего блока (Seated Cable Row), прямая ручка с круглыми захватами",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/961f6b7e825040126b1f7c0e148f5cf4c6b2e0ac88d84760b37f8965aca223d8.gif",
+      "image_url_2": "https://res.cloudinary.com/dzhbor5oj/image/upload/v1764196582/gymapp/exercises/vidmxexm10y325gyizyc.png"
+    },
+    "sha256": "961f6b7e825040126b1f7c0e148f5cf4c6b2e0ac88d84760b37f8965aca223d8",
+    "source_page": "https://fitnessprogramer.com/exercise/seated-cable-row/",
+    "match": "variant_review",
+    "note": "Тяга нижнего блока; конкретная прямая рукоятка с круглыми захватами может отличаться."
+  },
+  {
+    "ordinal": 58,
+    "name": "Тяга нижнего блока одной рукой",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/d88588017c234d028f38046fb670356cca3e6728e3941f04d7121da95b9abe04.gif"
+    },
+    "sha256": "d88588017c234d028f38046fb670356cca3e6728e3941f04d7121da95b9abe04",
+    "source_page": "https://fitnessprogramer.com/exercise/one-arm-cable-row/",
+    "match": "variant_review",
+    "note": "Одноручная тяга блока; вращение корпуса на GIF может отличаться от привычного исполнения."
+  },
+  {
+    "ordinal": 59,
+    "name": "Тяга с упором в грудь",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/f7d9f277be42ab63b6f2dff4aa14caf7fa7f62a7d96e0a00b59794979a0860b4.gif",
+      "image_url_2": "https://res.cloudinary.com/dzhbor5oj/image/upload/v1764368669/gymapp/exercises/boxnotoxprjkytk3m0zp.jpg"
+    },
+    "sha256": "f7d9f277be42ab63b6f2dff4aa14caf7fa7f62a7d96e0a00b59794979a0860b4",
+    "source_page": "https://fitnessprogramer.com/exercise/plate-loaded-seated-row/",
+    "match": "variant_review",
+    "note": "Сидя, упор грудью, рычажный тренажёр с блинами; сравнить конструкцию с текущим фото."
+  },
+  {
+    "ordinal": 61,
+    "name": "Отжимания",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/b23f712f5b46bb63cbb2c71a9ab8244fdde913dbf7e2e7cf68d77ffef4e314de.gif",
+      "image_url_2": "https://kosarevPG.github.io/GymApp/images/exercises/BENCH_DIPS.png"
+    },
+    "sha256": "b23f712f5b46bb63cbb2c71a9ab8244fdde913dbf7e2e7cf68d77ffef4e314de",
+    "source_page": "https://fitnessprogramer.com/exercise/bench-dips/",
+    "match": "movement_match",
+    "note": "По текущей BENCH_DIPS.png это обратные отжимания от скамьи, а не от пола."
+  },
+  {
+    "ordinal": 62,
+    "name": "Разгибание рук с гантелями на трицепс в наклоне",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/73d3b6f884a8e7a4d80e66207e5999578b2e68b58fc34a1b363e2f52990c7824.gif"
+    },
+    "sha256": "73d3b6f884a8e7a4d80e66207e5999578b2e68b58fc34a1b363e2f52990c7824",
+    "source_page": "https://fitnessprogramer.com/exercise/dumbbell-kickback/",
+    "match": "variant_review",
+    "note": "Разгибание руки назад в наклоне; если GIF одноручный, в каталоге указаны две гантели."
+  },
+  {
+    "ordinal": 63,
+    "name": "Трицепс (косичка)",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/b28a283588ffb26882081c53ceab0b0d20b50d8faf8c147c57961dc499486e90.gif"
+    },
+    "sha256": "b28a283588ffb26882081c53ceab0b0d20b50d8faf8c147c57961dc499486e90",
+    "source_page": "https://fitnessprogramer.com/exercise/rope-pushdown/",
+    "match": "movement_match",
+    "note": "Разгибание на трицепс с канатом."
+  },
+  {
+    "ordinal": 65,
+    "name": "Французский жим, гантели (Скамья 0°)",
+    "new": {
+      "image_url": "https://storage.yandexcloud.net/gymapp-kpg-photos/exercises/catalogue/20261104/01e47749c7aa841d935a826793712697edf51056ab1ed0e838d713f4afe2cdc4.gif",
+      "image_url_2": "https://kosarevPG.github.io/GymApp-frontend/img/photo_2025-11-24_15-45-04.jpg"
+    },
+    "sha256": "01e47749c7aa841d935a826793712697edf51056ab1ed0e838d713f4afe2cdc4",
+    "source_page": "https://fitnessprogramer.com/exercise/dumbbell-skull-crusher/",
+    "match": "movement_match",
+    "note": "Французский жим с гантелями лёжа на горизонтальной скамье."
+  }
+]
