@@ -37,4 +37,21 @@ CSS-переменная `--safe-area-top` получает значение `en
 
 ## Публикация
 
-Результаты проверки production добавляются после публикации.
+- Исходники: [`82d607b`](https://github.com/kosarevPG/GymApp-bot/commit/82d607bcdd054bdf5ca8ae3110aba96febb4ac02), ветка `main`.
+- [CI 41730952436](https://github.com/kosarevPG/GymApp-bot/actions/runs/41730952436):
+  все четыре задания успешны.
+- `npm run deploy`: проверены четыре VITE-переменные, production-сборка успешна.
+  Shell cache: `1014df623344c849c3b6`; основные файлы `index-KBjc_6OV.js`,
+  `App-sY1115XR.js`, `index-CfS71Jeb.css`.
+- `gh-pages`: `52a4d5fcc09eefd7868249f85b5f9cef67f00b26`.
+  [GitHub Pages 41731117050](https://github.com/kosarevPG/GymApp-bot/actions/runs/41731117050) — успешно.
+- Все десять публичных файлов доступны по HTTP 200; девять побайтово совпадают
+  с локальной production-сборкой, manifest совпадает как JSON.
+- `topNotice.browser.cjs` прошёл на опубликованной версии для всех четырёх
+  конфигураций без ошибок JavaScript. С production загружались только статические
+  GET-ресурсы; вызовы API перенаправлялись в локальный MemoryClient.
+- Артефакты production: `published/results.json`, снимки в `published/`,
+  `published-assets.json` в приватном каталоге, указанном выше.
+
+В установленной PWA новая версия применяется кнопкой «Обновить приложение»
+после завершения тренировки и отправки очереди.
