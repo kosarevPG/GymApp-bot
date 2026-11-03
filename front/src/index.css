@@ -30,3 +30,13 @@
 .set-entry-number:focus-visible { outline: 2px solid #60a5fa; outline-offset: 1px; }
 .set-metadata { min-height: 1.125rem; font-size: 0.6875rem; line-height: 1.125rem; font-variant-numeric: tabular-nums; }
 @media (max-width: 379px) { .workout-controls { grid-template-columns: 6.25rem minmax(0, 1fr); gap: 0.5rem; } }
+
+/* Two bounded cues at the deadline; the amber timer remains after motion stops. */
+.rest-ready-pulse { animation: rest-ready-pulse 900ms cubic-bezier(0.16, 1, 0.3, 1) 2; }
+@keyframes rest-ready-pulse {
+  0%, 100% { background-color: #2563eb; }
+  50% { background-color: #1d4ed8; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rest-ready-pulse { animation: none; }
+}
