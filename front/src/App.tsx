@@ -1099,7 +1099,11 @@ const ExercisesListScreen = ({ exercises, groups, selectedGroup, onSelectGroup, 
       <Modal isOpen={!!infoModalEx} onClose={() => setInfoModalEx(null)} title={infoModalEx?.name} headerAction={<button onClick={() => { if (infoModalEx) { onEditExercise(infoModalEx); setInfoModalEx(null); } }} className="p-2 bg-zinc-800 rounded-full text-zinc-400 hover:text-blue-400"><Pencil className="w-5 h-5" /></button>}>
         {infoModalEx && (
           <div className="space-y-4">
-            <div className="aspect-video bg-zinc-800 rounded-2xl overflow-hidden">{infoModalEx.imageUrl && <img src={infoModalEx.imageUrl} className="w-full h-full object-cover" alt="" />}</div>
+            <div className="mx-auto flex aspect-square max-h-[50vh] items-center justify-center overflow-hidden rounded-2xl bg-zinc-800">{infoModalEx.imageUrl && <img src={infoModalEx.imageUrl} className="h-full w-full object-contain" alt={`Техника: ${infoModalEx.name}`} />}</div>
+            {infoModalEx.imageUrl2 && infoModalEx.imageUrl2 !== infoModalEx.imageUrl && <details>
+              <summary className="min-h-11 cursor-pointer py-3 text-sm text-blue-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400">Фото тренажёра / дополнительное изображение</summary>
+              <img src={infoModalEx.imageUrl2} className="mt-2 max-h-[50vh] w-full rounded-xl object-contain" alt={`Дополнительное изображение: ${infoModalEx.name}`} loading="lazy" />
+            </details>}
             <div className="text-zinc-400 leading-relaxed">{infoModalEx.description || 'Описание отсутствует.'}</div>
             <div className="pt-4"><div className="text-xs text-zinc-400 uppercase font-bold tracking-wider mb-2">Группа</div><div className="px-3 py-1 bg-zinc-800 rounded-lg inline-block text-zinc-300 text-sm">{infoModalEx.muscleGroup}</div></div>
           </div>

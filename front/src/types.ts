@@ -9,6 +9,7 @@ export interface Exercise {
   tonnageMode?: string;
   description?: string;
   imageUrl?: string;
+  imageUrl2?: string;
   secondaryMuscles?: string;
   weightType?: string;
   baseWeight?: number;
