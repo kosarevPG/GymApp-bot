@@ -5,12 +5,15 @@
 /* Safe-area: внутри Telegram inset = 0 (webview ниже шапки клиента),
    в standalone-режиме (с домашнего экрана) — реальный вырез под чёлку.
    Одни и те же утилиты подстраивают оба режима без ветвления. */
-.pt-safe { padding-top: env(safe-area-inset-top); }
+:root { --safe-area-top: env(safe-area-inset-top, 0px); }
+.pt-safe { padding-top: var(--safe-area-top); }
 .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
-.pt-safe-2 { padding-top: calc(0.5rem + env(safe-area-inset-top)); }
-.pt-safe-4 { padding-top: calc(1rem + env(safe-area-inset-top)); }
+.pt-safe-2 { padding-top: calc(0.5rem + var(--safe-area-top)); }
+.pt-safe-4 { padding-top: calc(1rem + var(--safe-area-top)); }
 .pb-app-navigation { padding-bottom: calc(5rem + env(safe-area-inset-bottom)); }
 .above-app-navigation { bottom: calc(4rem + env(safe-area-inset-bottom)); }
+/* Global notices sit before screen headers, so they need their own safe area. */
+.app-top-notices:not(:empty) { padding-top: var(--safe-area-top); }
 
 /* Match labels and entry columns; small phones keep all three values readable. */
 .set-entry-grid { display: grid; grid-template-columns: 2.75rem repeat(3, minmax(0, 1fr)) 2.75rem; column-gap: 0.375rem; row-gap: 0; }
