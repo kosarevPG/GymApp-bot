@@ -34,3 +34,6 @@ scripts/tests/node_modules/
 supabase/.temp/
 front/dist/
 backend-deploy.zip
+
+# Supabase CLI: временные файлы привязки к проекту
+supabase/.temp/
