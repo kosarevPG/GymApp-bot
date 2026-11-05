@@ -12,6 +12,8 @@ void prepareTelegram().then(async () => {
     </React.StrictMode>
   );
   registerOfflineShell();
+  // Просим браузер не стирать данные приложения при нехватке места на устройстве.
+  void navigator.storage?.persist?.().catch(() => false);
 }).catch(() => {
   const root = document.getElementById('root')!;
   root.className = 'min-h-screen flex flex-col items-center justify-center gap-4 p-6 text-zinc-100';

@@ -35,8 +35,8 @@ class UploadError(Exception):
     """Загрузка невозможна: ошибка конфигурации, данных или хранилища."""
 
 
-def _config() -> Tuple[str, str, str, str]:
-    bucket = os.getenv("S3_BUCKET", "").strip()
+def _config(bucket: str = "") -> Tuple[str, str, str, str]:
+    bucket = bucket or os.getenv("S3_BUCKET", "").strip()
     key_id = os.getenv("S3_ACCESS_KEY_ID", "").strip()
     secret = os.getenv("S3_SECRET_ACCESS_KEY", "").strip()
     endpoint = os.getenv("S3_ENDPOINT", DEFAULT_ENDPOINT).strip().rstrip("/")
@@ -111,6 +111,13 @@ def upload_image(data_base64: str, content_type: str) -> str:
 
     bucket, key_id, secret, endpoint = _config()
     key = f"exercises/{uuid.uuid4()}.{ALLOWED_TYPES[content_type]}"
+    put_object(bucket, key, payload, content_type)
+    return f"{endpoint}/{bucket}/{key}"
+
+
+def put_object(bucket: str, key: str, payload: bytes, content_type: str) -> None:
+    """Один подписанный PUT в бакет теми же ключами, что и загрузка фото."""
+    _, key_id, secret, endpoint = _config(bucket)
     host = endpoint.split("://", 1)[-1]
     canonical_uri = f"/{bucket}/{key}"
 
@@ -143,5 +150,3 @@ def upload_image(data_base64: str, content_type: str) -> str:
         raise UploadError(f"Storage rejected upload (HTTP {error.code}): {detail}") from error
     except URLError as error:
         raise UploadError(f"Storage is unreachable: {error.reason}") from error
-
-    return f"{endpoint}/{bucket}/{key}"

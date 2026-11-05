@@ -13,6 +13,8 @@ from typing import Any, Dict
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
+import supabase_store
+from backup import is_backup_event, run_backup
 from object_storage import UploadError, upload_image
 from request_auth import authenticate_request
 from supabase_store import (
@@ -216,9 +218,23 @@ def _telegram_webhook(data: Dict[str, Any], headers: Dict[str, str]) -> Dict[str
     return response({"ok": True})
 
 
+def _nightly_backup() -> Dict[str, Any]:
+    try:
+        store = supabase_store._store()
+        results = run_backup(store, store._now())
+    except Exception as error:
+        # Ошибка остаётся в логах функции; таймер повторит завтра.
+        logger.exception("Nightly backup failed: %s", error)
+        return response({"error": "Backup failed"}, 500)
+    logger.info("Nightly backup written: %s", json.dumps(results, ensure_ascii=False))
+    return response({"status": "success", "backups": results})
+
+
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     del context
     event = event or {}
+    if is_backup_event(event):
+        return _nightly_backup()
     method = _method(event)
     if method == "OPTIONS":
         return {"statusCode": 204, "headers": CORS_HEADERS, "body": ""}
