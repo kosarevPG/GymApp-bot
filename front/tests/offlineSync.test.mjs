@@ -224,6 +224,49 @@ test('a rejected set does not block the rest; a network failure stops the pass',
 });
 
 
+test('a set the server keeps failing on with HTTP 500 stops holding the others back', async () => {
+  installEnv();
+  offlineSync.addToQueue('saveSet', { client_request_id: SET_A, reps: 10 });
+  offlineSync.addToQueue('saveSet', { client_request_id: SET_B, reps: 8 });
+  const send = async (item) => {
+    sent.push(item.id);
+    return item.id === SET_A
+      ? { ok: false, error: 'ошибка сервера (HTTP 500)', stop: true, itemSuspect: true }
+      : { ok: true };
+  };
+  let sent = [];
+
+  // Первые ответы 500 могут быть временными: порядок ещё соблюдается.
+  for (let attempt = 1; attempt < offlineSync.STUCK_AFTER_ATTEMPTS; attempt += 1) {
+    await offlineSync.syncQueue(send);
+    assert.deepEqual(sent, [SET_A]);
+    sent = [];
+  }
+
+  await offlineSync.syncQueue(send);
+  assert.deepEqual(sent, [SET_A, SET_B]);
+  const queue = offlineSync.getQueue();
+  assert.deepEqual(queue.map((item) => item.id), [SET_A]);
+  assert.equal(queue[0].rejected, false);
+  assert.equal(queue[0].attempts, offlineSync.STUCK_AFTER_ATTEMPTS);
+});
+
+
+test('an outage keeps stopping the pass however many attempts have failed', async () => {
+  installEnv();
+  offlineSync.addToQueue('saveSet', { client_request_id: SET_A, reps: 10 });
+  offlineSync.addToQueue('saveSet', { client_request_id: SET_B, reps: 8 });
+  const sent = [];
+  for (let attempt = 0; attempt < offlineSync.STUCK_AFTER_ATTEMPTS + 2; attempt += 1) {
+    await offlineSync.syncQueue(async (item) => {
+      sent.push(item.id);
+      return { ok: false, error: 'сервер недоступен (HTTP 503)', stop: true };
+    });
+  }
+  assert.ok(sent.every((id) => id === SET_A));
+});
+
+
 test('a throwing sender counts as a network failure and keeps the set', async () => {
   installEnv();
   offlineSync.addToQueue('saveSet', { client_request_id: SET_A, reps: 10 });

@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { loadTs } from './loadTs.mjs';
-const {journalVersions,mergeJournalDelta}=await loadTs('../src/journalSync.ts');
+const {backgroundJournalReadNeeded,journalVersions,mergeJournalDelta}=await loadTs('../src/journalSync.ts');
+test('during a workout the journal is read only for a screen that shows it',()=>{
+ assert.equal(backgroundJournalReadNeeded(false,true),false);
+ assert.equal(backgroundJournalReadNeeded(true,true),true);
+ assert.equal(backgroundJournalReadNeeded(false,false),true);
+});
 const session=(id,date,version='v1')=>({id,date,exercises:[],syncVersion:version});
 test('unchanged sessions stay local; only changed sessions replace them and missing IDs are removed',()=>{
  const a=session('a','2026.10.12'),b=session('b','2026.10.16'),c=session('c','2026.10.20','v2');

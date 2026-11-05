@@ -5,6 +5,11 @@ export function journalVersions(history: SyncedSession[]) {
   return Object.fromEntries(history.filter(row => typeof row.syncVersion === 'string').map(row => [row.id, row.syncVersion!]));
 }
 
+/** На тренировке история нужна только тому экрану, который её сейчас показывает. */
+export function backgroundJournalReadNeeded(observed: boolean, workoutActive: boolean) {
+  return observed || !workoutActive;
+}
+
 /** Versions travel inside each session, so a journal write is atomic with its versions. */
 export function mergeJournalDelta<T extends SyncedSession>(cached: T[], response: any): T[] | null {
   if (response?.mode === 'full') return Array.isArray(response.history) ? response.history : null;

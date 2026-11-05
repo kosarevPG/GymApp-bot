@@ -17,6 +17,8 @@ from object_storage import UploadError, upload_image
 from request_auth import authenticate_request
 from supabase_store import (
     ConflictError,
+    DataRejectedError,
+    StorageUnavailableError,
     create_exercise,
     delete_cardio,
     delete_set,
@@ -344,6 +346,14 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     except ConflictError as error:
         logger.warning("Ambiguous workout deletion rejected: %s", error)
         return response({"error": str(error), "code": "ambiguous_workout_date"}, 409)
+    except DataRejectedError as error:
+        return response({"error": str(error)}, 400)
+    except (StorageUnavailableError, OSError) as error:
+        # Сбой сети или хранилища, а не этого запроса. Код 500 остаётся за ошибками
+        # в самой обработке: клиент отличает их, чтобы очередь не вставала из-за
+        # одного элемента, который сервер не может обработать.
+        logger.warning("Storage is unavailable: %s", error)
+        return response({"error": "Storage is unavailable"}, 503)
     except Exception as error:
         logger.exception("Request failed: %s", error)
         return response({"error": "Internal server error"}, 500)

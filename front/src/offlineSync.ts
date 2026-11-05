@@ -42,10 +42,17 @@ export interface QueuedItem {
  * Итог одной отправки. stop=true — сеть, сервер или авторизация: проход
  * прерывается, чтобы не перепрыгивать через неотправленные подходы. stop=false —
  * сервер отклонил именно этот элемент, остальные можно отправлять дальше.
+ * itemSuspect — сервер работает, но упал на обработке этого запроса (HTTP 500).
  */
 export type SendOutcome =
   | { ok: true }
-  | { ok: false; error: string; stop: boolean };
+  | { ok: false; error: string; stop: boolean; itemSuspect?: boolean };
+
+/**
+ * После стольких ответов 500 подряд элемент считается застрявшим: он остаётся в
+ * очереди, но следующие подходы идут мимо него, а не ждут его вечно.
+ */
+export const STUCK_AFTER_ATTEMPTS = 3;
 
 let inFlightId: string | null = null;
 let running: Promise<void> | null = null;
@@ -302,7 +309,8 @@ async function runPass(send: (item: QueuedItem) => Promise<SendOutcome>): Promis
       continue;
     }
     markAttempt(id, outcome.error, !outcome.stop);
-    if (outcome.stop) return true;
+    const stuck = outcome.itemSuspect && item.attempts + 1 >= STUCK_AFTER_ATTEMPTS;
+    if (outcome.stop && !stuck) return true;
   }
   return false;
 }
