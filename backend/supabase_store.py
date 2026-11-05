@@ -1319,7 +1319,8 @@ class SupabaseStore:
         group_by_id = {row["id"]: row for row in groups}
         exercise_by_id = {row["id"]: row for row in exercises}
         ex_headers = ["ID", "Name", "Muscle Group", "Description", "Image_URL", "Image_URL2", "Weight_Type", "Base_Wt", "Multiplier", "Secondary_Muscles"]
-        log_headers = ["Date", "Exercise_ID", "Exercise_Name_Calc", "Input_Weight", "Total_Weight", "Reps", "Rest", "Set_Group_ID", "Note", "Order", "Set_Type", "RPE", "RIR", "Session_ID", "Client_Request_ID"]
+        # New columns go at the end: readers of older backups address them by position.
+        log_headers = ["Date", "Exercise_ID", "Exercise_Name_Calc", "Input_Weight", "Total_Weight", "Reps", "Rest", "Set_Group_ID", "Note", "Order", "Set_Type", "RPE", "RIR", "Session_ID", "Client_Request_ID", "Legacy_Note", "Session_UUID", "Group_Type", "Load", "Timing"]
         ex_rows = [ex_headers]
         for row in exercises:
             api = self._exercise_to_api(row)
@@ -1329,8 +1330,18 @@ class SupabaseStore:
             session = session_by_id.get(row["session_id"], {})
             group = group_by_id.get(row.get("set_group_id"), {})
             exercise = exercise_by_id.get(row["exercise_id"], {})
-            log_rows.append([_api_date(session.get("workout_date")), exercise.get("source_key"), exercise.get("name_ru"), row.get("input_weight_kg"), row.get("total_weight_kg"), row.get("reps"), round(_to_float(row.get("rest_seconds")) / 60, 2), group.get("legacy_group_id"), row.get("note") or "", row.get("position"), row.get("set_type"), row.get("rpe") or "", row.get("rir") or "", (session.get("source_payload") or {}).get("client_session_id", ""), row.get("client_request_id")])
-        return {"format": "gymapp-backup-v1", "exported_at": self._now().isoformat(), "exercises": ex_rows, "log": log_rows}
+            log_rows.append([_api_date(session.get("workout_date")), exercise.get("source_key"), exercise.get("name_ru"), row.get("input_weight_kg"), row.get("total_weight_kg"), row.get("reps"), round(_to_float(row.get("rest_seconds")) / 60, 2), group.get("legacy_group_id"), row.get("note") or "", row.get("position"), row.get("set_type"), row.get("rpe") or "", row.get("rir") or "", (session.get("source_payload") or {}).get("client_session_id", ""), row.get("client_request_id"), row.get("legacy_note") or "", row["session_id"], group.get("group_type") or "", (row.get("source_payload") or {}).get("load") or "", (row.get("source_payload") or {}).get("timing") or ""])
+        session_rows = [["ID", "Date", "Started_At", "Ended_At", "Name", "Location", "Duration_Minutes", "Duration_Is_Approximate", "Elapsed_Seconds", "Session_Note", "Repeated_From_Session_ID"]]
+        for session in sessions:
+            payload = session.get("source_payload") or {}
+            session_rows.append([session["id"], _api_date(session.get("workout_date")), session.get("started_at"), session.get("ended_at"), session.get("name") or "", session.get("location") or "", session.get("duration_minutes"), bool(session.get("duration_is_approximate")), payload.get("elapsed_seconds"), session.get("session_note") or "", payload.get("repeated_from_session_id") or ""])
+        cardio_rows = [["Date", "Exercise_ID", "Exercise_Name_Calc", "Minutes", "Speed", "Incline", "Order", "Session_UUID", "Client_Request_ID"]]
+        for row in self._select(CARDIO_TABLE, filters={"user_id": user_id}):
+            session = session_by_id.get(row["session_id"], {})
+            exercise = exercise_by_id.get(row["exercise_id"], {})
+            api = self._cardio_to_api(row)
+            cardio_rows.append([_api_date(session.get("workout_date")), exercise.get("source_key"), exercise.get("name_ru"), api["minutes"], api.get("speed", ""), api.get("incline", ""), api["order"], row["session_id"], row.get("client_request_id")])
+        return {"format": "gymapp-backup-v1", "exported_at": self._now().isoformat(), "exercises": ex_rows, "log": log_rows, "sessions": session_rows, "cardio": cardio_rows}
 
     @staticmethod
     def import_data(user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
