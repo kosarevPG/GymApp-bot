@@ -1,20 +1,10 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-import ts from 'typescript';
+import { loadTs } from './loadTs.mjs';
 
 
-const source = await readFile(new URL('../src/offlineSync.ts', import.meta.url), 'utf8');
-const compiled = ts.transpileModule(source, {
-  compilerOptions: {
-    module: ts.ModuleKind.ESNext,
-    target: ts.ScriptTarget.ES2020,
-  },
-}).outputText;
-const offlineSync = await import(
-  `data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`
-);
+const offlineSync = await loadTs('../src/offlineSync.ts');
 
 
 class MemoryStorage {

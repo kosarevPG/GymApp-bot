@@ -1,23 +1,11 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-import ts from 'typescript';
+import { loadTs } from './loadTs.mjs';
 
 
-async function importTypescript(relativeUrl) {
-  const source = await readFile(new URL(relativeUrl, import.meta.url), 'utf8');
-  const compiled = ts.transpileModule(source, {
-    compilerOptions: {
-      module: ts.ModuleKind.ESNext,
-      target: ts.ScriptTarget.ES2020,
-    },
-  }).outputText;
-  return import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
-}
-
-const authModule = await importTypescript('../src/authenticatedFetch.ts');
-const offlineSync = await importTypescript('../src/offlineSync.ts');
+const authModule = await loadTs('../src/authenticatedFetch.ts');
+const offlineSync = await loadTs('../src/offlineSync.ts');
 
 
 class MemoryStorage {

@@ -65,6 +65,7 @@ import {
 import { AuthRequiredError, createAuthenticatedFetch } from './authenticatedFetch';
 import { LOCATION_LABELS, pendingSessionMetadata, pendingTimingEdits, type WorkoutLocation } from './sessionMetadata';
 import { completableSet, rpeForSave } from './setInput';
+import { removeLegacyCopies, setItemFreeingSpace } from './storageSpace';
 import { exerciseThumbnailUrl } from './exerciseImage';
 
 // --- TYPES ---
@@ -117,8 +118,10 @@ let apiReady = !!getTelegramInitData();
 const cacheExercises = (data: any) => {
   try { writeLocalCache(localStorage, cacheOwner, 'catalogue', { data, updatedAt: Date.now() }); } catch { /* Network data remains usable. */ }
   try { rememberOfflineOwner(localStorage, cacheOwner); } catch { /* Offline access is optional when storage is full. */ }
-  try { localStorage.setItem('gym_exercises_cache', JSON.stringify(data)); } catch (_) {}
 };
+
+/** Очередь, черновик и таймер: при нехватке места уступают им копии для чтения. */
+const saveDurable = (key: string, value: string) => setItemFreeingSpace(localStorage, key, value);
 
 const getCachedExercises = () => {
   const saved = readLocalCache<any>(localStorage, cacheOwner, 'catalogue');
@@ -133,7 +136,6 @@ const getCachedHistory = (exerciseId: string) => {
   return readLocalCache<any>(localStorage, cacheOwner, `exercise:${exerciseId}`)?.data || null;
 };
 
-const GLOBAL_HISTORY_CACHE_KEY = 'gym_global_history_cache';
 const EXERCISE_REST_KEY = 'gym_exercise_rest_v1';
 
 const historyLoader = createHistoryLoader({
@@ -159,7 +161,6 @@ const readLocalFinished = (): GlobalWorkoutSession[] => {
 };
 const writeLocalFinished = (data: GlobalWorkoutSession[]) => {
   writeLocalCache(localStorage, cacheOwner, 'finished', { data, updatedAt: Date.now() });
-  try { localStorage.setItem('gym_finished_local', JSON.stringify(data)); } catch { /* The scoped copy is saved. */ }
 };
 const journals = new Map<string, ReturnType<typeof createLocalResource<GlobalWorkoutSession[]>>>();
 const journalResource = () => {
@@ -169,7 +170,6 @@ const journalResource = () => {
     write: saved => {
       writeLocalCache(localStorage, owner, 'journal', saved);
       if (owner === cacheOwner) try {
-        localStorage.setItem(GLOBAL_HISTORY_CACHE_KEY, JSON.stringify(saved.data));
         localStorage.setItem('gym_read_cache_owner', owner);
       } catch { /* The account-scoped copy is already saved. */ }
     },
@@ -548,8 +548,8 @@ const useSession = () => {
       setSessionId(newId);
       setOrderCounter(0);
       orderCounterRef.current = 0;
-      localStorage.setItem(SESSION_ID_KEY, newId);
-      localStorage.setItem(ORDER_COUNTER_KEY, '0');
+      saveDurable(SESSION_ID_KEY, newId);
+      saveDurable(ORDER_COUNTER_KEY, '0');
       updateLocation('gym');
       // Тренировка не может пережить свою сессию: иначе восстановленный
       // setGroupId встретится с обнулённым Order, и подходы уйдут в дубли.
@@ -574,8 +574,8 @@ const useSession = () => {
     setSessionId(newId);
     setOrderCounter(0);
     orderCounterRef.current = 0;
-    localStorage.setItem(SESSION_ID_KEY, newId);
-    localStorage.setItem(ORDER_COUNTER_KEY, '0');
+    saveDurable(SESSION_ID_KEY, newId);
+    saveDurable(ORDER_COUNTER_KEY, '0');
     localStorage.setItem(LAST_ACTIVE_KEY, Date.now().toString());
   };
 
@@ -583,7 +583,7 @@ const useSession = () => {
     const next = orderCounterRef.current + 1;
     orderCounterRef.current = next;
     setOrderCounter(next);
-    localStorage.setItem(ORDER_COUNTER_KEY, next.toString());
+    saveDurable(ORDER_COUNTER_KEY, next.toString());
     localStorage.setItem(LAST_ACTIVE_KEY, Date.now().toString());
     return next;
   };
@@ -594,7 +594,7 @@ const useSession = () => {
     if (!Number.isFinite(value) || value <= orderCounterRef.current) return;
     orderCounterRef.current = value;
     setOrderCounter(value);
-    localStorage.setItem(ORDER_COUNTER_KEY, value.toString());
+    saveDurable(ORDER_COUNTER_KEY, value.toString());
   };
   const bodyWeightKey = 'gym_body_weight';
   const [bodyWeight, setBodyWeight] = useState(() => {
@@ -1182,7 +1182,7 @@ const patchDraft = (patch: (draft: any) => void) => {
     if (!saved?.exercises) return;
     patch(saved);
     saved.timestamp = Date.now();
-    localStorage.setItem(WORKOUT_STORAGE_KEY, JSON.stringify(saved));
+    saveDurable(WORKOUT_STORAGE_KEY, JSON.stringify(saved));
   } catch (_) {}
 };
 
@@ -1382,7 +1382,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, onSaveTechnique, clock, 
       Object.entries(sessionData).forEach(([id, d]) => {
         blocks[blockKey(id)] = { exerciseId: id, sets: d.sets, note: d.note, setGroupId, entryRules: loadRulesOf(d.exercise, bodyWeight) };
       });
-      localStorage.setItem(WORKOUT_STORAGE_KEY, JSON.stringify({
+      saveDurable(WORKOUT_STORAGE_KEY, JSON.stringify({
         timestamp: Date.now(),
         setGroupId,
         activeExercises,
@@ -1393,7 +1393,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, onSaveTechnique, clock, 
       // Открытое упражнение = тренировка де-факто идёт: отмечаем её активной,
       // чтобы на главной появилась кнопка «Закончить тренировку».
       if (!localStorage.getItem(ACTIVE_WORKOUT_KEY)) {
-        localStorage.setItem(ACTIVE_WORKOUT_KEY, JSON.stringify({ startedAt: Date.now() }));
+        saveDurable(ACTIVE_WORKOUT_KEY, JSON.stringify({ startedAt: Date.now() }));
       }
     } catch (_) {}
   }, [sessionData, activeExercises, setGroupId]);
@@ -1800,7 +1800,6 @@ const HistoryScreen = ({ onBack, onRepeat, allExercises = [], bodyWeight = USER_
     try {
       api.updateSet({ ...locator(editTarget), timing: null });
       const next = pendingTimingEdits(history, getQueue());
-      localStorage.setItem(GLOBAL_HISTORY_CACHE_KEY, JSON.stringify(next));
       journalResource().update(() => next); setEditTarget(null); notify?.('success');
     } catch { notify?.('error'); }
   };
@@ -2188,6 +2187,8 @@ const App = () => {
   const telegramMode = isTelegramMode();
   const [ownerKey, setOwnerKey] = useState(cacheOwner);
   const activateCacheOwner = (owner: string) => { cacheOwner = owner; setOwnerKey(owner); };
+  // Старые общие копии истории и каталога дублируют копии владельца и только занимают место.
+  useEffect(() => { try { removeLegacyCopies(localStorage, ownerKey); } catch { /* Not critical. */ } }, [ownerKey]);
   const [authState, setAuthState] = useState<'loading' | 'authenticated' | 'local' | 'anonymous'>(
     telegramMode ? 'authenticated' : offlineAccessLocked(localStorage) ? 'anonymous' : readOfflineOwner(localStorage) ? 'local' : 'loading'
   );
@@ -2240,7 +2241,7 @@ const App = () => {
   const [workoutError, setWorkoutError] = useState('');
   const changeClock = (value: WorkoutClock | null) => {
     try {
-      if (value) localStorage.setItem(WORKOUT_CLOCK_KEY, JSON.stringify(value));
+      if (value) saveDurable(WORKOUT_CLOCK_KEY, JSON.stringify(value));
       else localStorage.removeItem(WORKOUT_CLOCK_KEY);
       localStorage.removeItem(EXERCISE_REST_KEY);
       setClock(value);
@@ -2339,7 +2340,7 @@ const App = () => {
   const persistPlan = (next: PlanItem[]) => {
     const active = JSON.parse(localStorage.getItem(ACTIVE_WORKOUT_KEY) || 'null');
     if (!active) throw new Error('Тренировка не начата');
-    localStorage.setItem(ACTIVE_WORKOUT_KEY, JSON.stringify({ ...active, plan: next }));
+    saveDurable(ACTIVE_WORKOUT_KEY, JSON.stringify({ ...active, plan: next }));
     setPlan(next);
     setPlanDone(next.map(item => planItemDone(item, next, readSavedWorkout())));
   };
@@ -2348,7 +2349,7 @@ const App = () => {
     const exercise = allExercises.find(ex => ex.id === item.exerciseId);
     if (!exercise) { setWorkoutError('Упражнения больше нет в справочнике. Замените его в списке тренировки.'); setScreen('home'); return; }
     const active = JSON.parse(localStorage.getItem(ACTIVE_WORKOUT_KEY) || 'null');
-    if (active) localStorage.setItem(ACTIVE_WORKOUT_KEY, JSON.stringify({ ...active, currentStepKey: item.key }));
+    if (active) saveDurable(ACTIVE_WORKOUT_KEY, JSON.stringify({ ...active, currentStepKey: item.key }));
     setActiveStepKey(item.key);
     setPlanDefaults(planDefaultsFor(item, plan));
     setCurrentExercise(exercise);
@@ -2378,8 +2379,8 @@ const App = () => {
       const active = { sessionId: id, startedAt, plan: next, sourceDate: source?.date,
         sourceSessionId: source?.id, currentStepKey: next[0]?.key };
       // Persist the new draft before exposing it or attempting a network request.
-      localStorage.setItem(WORKOUT_STORAGE_KEY, JSON.stringify({ sessionId: id, timestamp: startedAt, activeExercises: [], exercises: {} }));
-      localStorage.setItem(ACTIVE_WORKOUT_KEY, JSON.stringify(active));
+      saveDurable(WORKOUT_STORAGE_KEY, JSON.stringify({ sessionId: id, timestamp: startedAt, activeExercises: [], exercises: {} }));
+      saveDurable(ACTIVE_WORKOUT_KEY, JSON.stringify(active));
       resetSession(id, place);
       api.saveSession({ session_id: id, started_at: new Date(startedAt).toISOString(), location: place,
         ...(source?.id ? { repeated_from_session_id: source.id } : {}) });
@@ -2444,7 +2445,7 @@ const App = () => {
       const active = JSON.parse(localStorage.getItem(ACTIVE_WORKOUT_KEY) || 'null');
       const endedAt = active?.finishedAt || Date.now();
       if (active) {
-        localStorage.setItem(ACTIVE_WORKOUT_KEY, JSON.stringify({ ...active, finishedAt: endedAt }));
+        saveDurable(ACTIVE_WORKOUT_KEY, JSON.stringify({ ...active, finishedAt: endedAt }));
         api.saveSession({ session_id: sessionId, started_at: new Date(active.startedAt).toISOString(), ended_at: new Date(endedAt).toISOString(),
           ...(active.sourceSessionId ? { repeated_from_session_id: active.sourceSessionId } : {}) });
         const local = finishedSession(readSavedWorkout(), allExercises, sessionId, location, active.startedAt, endedAt, bodyWeight);

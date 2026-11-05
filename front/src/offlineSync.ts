@@ -14,6 +14,8 @@
  * that set is already on the wire, so a late save cannot bring the row back.
  */
 
+import { setItemFreeingSpace } from './storageSpace';
+
 const QUEUE_KEY = 'gym_offline_queue_v2';
 const LEGACY_QUEUE_KEY = 'gym_offline_queue';
 export const QUEUE_CHANGED_EVENT = 'gym-offline-queue-changed';
@@ -73,7 +75,7 @@ function notifyChanged(pending: number): void {
 }
 
 function persist(queue: QueuedItem[]): void {
-  localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
+  setItemFreeingSpace(localStorage, QUEUE_KEY, JSON.stringify(queue));
   notifyChanged(queue.length);
 }
 
@@ -138,7 +140,7 @@ export function getQueue(): QueuedItem[] {
         rev: 0,
       };
     });
-    localStorage.setItem(QUEUE_KEY, JSON.stringify(migrated));
+    setItemFreeingSpace(localStorage, QUEUE_KEY, JSON.stringify(migrated));
     localStorage.removeItem(LEGACY_QUEUE_KEY);
     return migrated;
   } catch {
