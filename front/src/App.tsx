@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useRef, useMemo, useSyncExternalStore } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback, useSyncExternalStore } from 'react';
 import { 
   Search, ChevronRight, Plus, X, Info, 
-  Check, Trash2, StickyNote, ChevronDown, Dumbbell, Calendar, 
+  Check, Trash2, StickyNote, BookOpen, ChevronDown, Dumbbell, Calendar,
   Settings, ArrowLeft, Camera, Pencil, Trophy,
   History as HistoryIcon, Activity, Link as LinkIcon, Target
   , Play, Repeat2, SkipForward, Replace, ClipboardList
@@ -14,6 +14,7 @@ import { readExerciseRest, formatRestTime } from './exerciseRest';
 import { DEFAULT_PRESET, normalizePreset, planDefaultsFor, planFromPreset, planItemDone, type PlanDefaults, type PlanItem, type PlanKey, type WorkoutPreset } from './workoutPlan';
 import { readSessionDeeplink, stripSessionParam } from './deeplink';
 import { lastSessionWorkingSets, formatLastSessionSets, personalBest } from './progression';
+import { joinNotes, lastSessionNote, noteUpdates, shortNoteDate } from './exerciseNotes';
 import { buildTrainerSummary, formatTrainerSummaryText, isoDaysAgo } from './trainerSummary';
 import { SetDisplayRow } from './components/SetDisplayRow';
 import { WorkoutClockPanel } from './components/WorkoutClockPanel';
@@ -679,23 +680,57 @@ const Modal = ({ isOpen, onClose, title, children, headerAction, fullScreen = fa
 
 // --- FEATURES ---
 
-const NoteWidget = ({ initialValue, onChange }: any) => {
+/** Заметка этой тренировки: в новой тренировке поле снова пустое. */
+const NoteWidget = ({ initialValue, onChange, onCommit }: any) => {
   const [isOpen, setIsOpen] = useState(false);
   const [value, setValue] = useState(initialValue);
   useEffect(() => setValue(initialValue), [initialValue]);
 
   return (
     <div className="mb-4">
-      <button onClick={() => setIsOpen(!isOpen)} className="flex items-center gap-2 text-yellow-500 text-sm font-medium mb-2 w-full">
-        <StickyNote className="w-4 h-4" /><span>Заметка</span><ChevronDown className={`w-4 h-4 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+      <button onClick={() => setIsOpen(!isOpen)} aria-expanded={isOpen} className="flex items-center gap-2 text-yellow-500 text-sm font-medium mb-2 w-full min-w-0">
+        <StickyNote className="w-4 h-4 shrink-0" /><span className="shrink-0">Сегодня</span>
+        {!isOpen && value && <span className="truncate font-normal text-yellow-200/80">{value}</span>}
+        <ChevronDown className={`w-4 h-4 shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </button>
       <AnimatePresence>
         {isOpen && (
           <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
-            <textarea value={value} onChange={(e) => { setValue(e.target.value); onChange(e.target.value); }} placeholder="Настройки..." className="w-full bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-3 text-yellow-200 text-sm focus:outline-none min-h-[80px]" />
+            <textarea aria-label="Заметка на сегодня" value={value} onChange={(e) => { setValue(e.target.value); onChange(e.target.value); }} onBlur={onCommit} placeholder="Что было сегодня: тяжело, заменили, болело…" className="w-full bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-3 text-yellow-200 text-sm focus:outline-none min-h-[80px]" />
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  );
+};
+
+/** Постоянная заметка упражнения. Меняется только явным сохранением. */
+const TechniqueNote = ({ value, onSave }: { value?: string; onSave: (text: string) => Promise<boolean> }) => {
+  const [draft, setDraft] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    if (draft === null || busy) return;
+    setBusy(true);
+    const saved = await onSave(draft.trim());
+    setBusy(false);
+    if (saved) setDraft(null);
+  };
+
+  if (draft === null) {
+    return (
+      <button onClick={() => setDraft(value || '')} className="mb-2 flex w-full items-start gap-2 text-left text-sm text-zinc-300">
+        <BookOpen className="mt-0.5 w-4 h-4 shrink-0 text-zinc-400" />
+        {value ? <span className="whitespace-pre-wrap break-words"><span className="text-zinc-400">Техника: </span>{value}</span> : <span className="text-zinc-400">Добавить технику</span>}
+      </button>
+    );
+  }
+  return (
+    <div className="mb-3">
+      <textarea aria-label="Техника" autoFocus value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Хват, положение, настройки тренажёра" className="w-full bg-zinc-800/50 border border-zinc-700 rounded-xl p-3 text-zinc-100 text-sm focus:outline-none min-h-[80px]" />
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        <Button variant="secondary" disabled={busy} onClick={() => setDraft(null)} className="min-h-11">Отмена</Button>
+        <Button disabled={busy} onClick={() => void save()} className="min-h-11">Сохранить</Button>
+      </div>
     </div>
   );
 };
@@ -722,6 +757,7 @@ const HistoryListModal = ({ isOpen, onClose, history, exerciseName, exercise, bo
             <div className="flex items-center gap-2 mb-2 sticky top-0 bg-zinc-900 py-1 z-10">
               <Calendar className="w-4 h-4 text-zinc-500" /><span className="text-sm font-bold text-zinc-400 uppercase tracking-wider">{group.date}</span>
             </div>
+            {joinNotes(group.items) && <p className="mb-2 text-sm text-yellow-200/80 whitespace-pre-wrap break-words">{joinNotes(group.items)}</p>}
             <div className="bg-zinc-800/30 border border-zinc-800 rounded-xl overflow-hidden">
               {group.items.map((item, idx) => (
                 <div key={idx} className="p-3 border-b border-zinc-800 last:border-0">
@@ -759,19 +795,20 @@ const SyncDot = ({ mark }: { mark?: SyncMark }) => (mark ? (
  * the app has no business arguing with it — it shows the previous session and
  * stops. What it can do that a coach cannot is remember every set exactly.
  */
-const LastTimeBlock = ({ exercise, history, bodyWeight = USER_BODY_WEIGHT_DEFAULT }: any) => {
+const LastTimeBlock = ({ exercise, history, sessionId, bodyWeight = USER_BODY_WEIGHT_DEFAULT }: any) => {
   const line = useMemo(() => {
     const sets = lastSessionWorkingSets(history, exercise?.targetWorkingSets ?? null);
     if (!sets.length) return null;
-    const date = String(sets[0].date || '').slice(5).replace('-', '.');
-    return `${date} · ${formatLastSessionSets(sets, exercise, bodyWeight)}`;
+    return `${shortNoteDate(sets[0].date)} · ${formatLastSessionSets(sets, exercise, bodyWeight)}`;
   }, [exercise, history, bodyWeight]);
+  const note = useMemo(() => lastSessionNote(history, sessionId), [history, sessionId]);
 
-  if (!line) return null;
+  if (!line && !note) return null;
   return (
     <div className="mb-3 rounded-xl bg-zinc-800/40 px-3 py-2">
       <div className="text-xs text-zinc-400">Прошлый раз</div>
-      <div className="text-xs text-zinc-200">{line}</div>
+      {line && <div className="text-xs text-zinc-200">{line}</div>}
+      {note && <div className="mt-1 text-xs text-yellow-200/80 whitespace-pre-wrap break-words">{note.date}: {note.text}</div>}
     </div>
   );
 };
@@ -872,7 +909,7 @@ const CardioCard = ({ exerciseData, syncMarks = {}, onAddSet, onUpdateSet, onDel
   );
 };
 
-const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates = DEFAULT_PLATES, syncMarks = {}, onAddSet, onUpdateSet, onDeleteSet, onCompleteSet, onStartSet, onNoteChange, onAddSuperset, onRemove }: any) => {
+const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates = DEFAULT_PLATES, syncMarks = {}, onAddSet, onUpdateSet, onDeleteSet, onCompleteSet, onStartSet, onNoteChange, onNoteCommit, onSaveTechnique, onAddSuperset, onRemove }: any) => {
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   // Лучший рабочий подход, записанный так же, как в истории: «2×12 кг»,
   // «помощь 20 кг». Нулевой вес рекордом не считается.
@@ -897,8 +934,9 @@ const WorkoutCard = ({ exerciseData, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plat
           <button onClick={onRemove} title="Убрать из тренировки" className="p-2 bg-zinc-800/50 rounded-lg text-zinc-500 hover:text-red-500"><X className="w-5 h-5" /></button>
         </div>
       </div>
-      <LastTimeBlock exercise={exerciseData.exercise} history={exerciseData.history} bodyWeight={bodyWeight} />
-      <NoteWidget initialValue={exerciseData.note} onChange={onNoteChange} />
+      <TechniqueNote value={exerciseData.exercise.techniqueNote} onSave={onSaveTechnique} />
+      <LastTimeBlock exercise={exerciseData.exercise} history={exerciseData.history} sessionId={exerciseData.sessionId} bodyWeight={bodyWeight} />
+      <NoteWidget initialValue={exerciseData.note} onChange={onNoteChange} onCommit={onNoteCommit} />
       <HistoryListModal isOpen={showHistoryModal} onClose={() => setShowHistoryModal(false)} history={exerciseData.history} exerciseName={exerciseData.exercise.name} exercise={exerciseData.exercise} bodyWeight={bodyWeight} />
       <div className="set-entry-grid set-entry-labels mb-2">
         <div className="set-label-type" />
@@ -1185,7 +1223,7 @@ const cardioRow = (minutes: unknown, like?: { minutes?: unknown; speed?: unknown
   incline: like?.incline != null && like.incline !== '' ? String(like.incline) : '',
 });
 
-const WorkoutScreen = ({ initialExercise, allExercises, clock, onClockChange, stepTitle, onReplace, onSkip, onWorkoutOverview, onResumeRunning, onGroupChange, planDefaults = null, onBack, onFinish, sessionId, location, incrementOrder, ensureOrderAtLeast, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates = DEFAULT_PLATES, haptic, notify }: any) => {
+const WorkoutScreen = ({ initialExercise, allExercises, onSaveTechnique, clock, onClockChange, stepTitle, onReplace, onSkip, onWorkoutOverview, onResumeRunning, onGroupChange, planDefaults = null, onBack, onFinish, sessionId, location, incrementOrder, ensureOrderAtLeast, bodyWeight = USER_BODY_WEIGHT_DEFAULT, plates = DEFAULT_PLATES, haptic, notify }: any) => {
   const blockKey = (id: string) => draftKey(id, planDefaults?.blockId);
   const savedWorkoutRef = useRef<any>(null);
   if (savedWorkoutRef.current === null) {
@@ -1234,7 +1272,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, clock, onClockChange, st
 
   const isCardio = (exId: string) => allExercises.find((e: Exercise) => e.id === exId)?.measure === 'cardio';
 
-  const buildExerciseData = (exId: string, { history, cardio, note }: ExerciseHistory): ExerciseSessionData => {
+  const buildExerciseData = (exId: string, { history, cardio }: ExerciseHistory): ExerciseSessionData => {
     const exercise = allExercises.find((e: Exercise) => e.id === exId);
     // Значения плана — только для упражнения, с которого экран открыли.
     const plan: PlanDefaults | null = exId === initialExercise.id ? planDefaults : null;
@@ -1246,19 +1284,19 @@ const WorkoutScreen = ({ initialExercise, allExercises, clock, onClockChange, st
       // Заминка на тренажёре разминки: разминка уже отмечена — к ней
       // добавляется новый отрезок, а не открывается она же ещё раз.
       if (shouldAppendCardio(exercise!, sets, !!plan?.append)) sets = [...sets, cardioRow(plan?.minutes, sets[sets.length - 1])];
-      return { exercise: entryExercise, note: savedEx.note ?? note ?? '', history, cardioHistory: cardio, sets, sessionId };
+      return { exercise: entryExercise, note: savedEx.note ?? '', history, cardioHistory: cardio, sets, sessionId };
     }
     const template = planDefaults?.templates?.find((t: any) => t.exerciseId === exId);
     if (template) {
       const sets = templateSets(template, entryExercise, bodyWeight);
-      return { exercise: entryExercise, note: note || '', history, cardioHistory: cardio, sets: sets.length ? sets : [blankSet()], sessionId };
+      return { exercise: entryExercise, note: '', history, cardioHistory: cardio, sets: sets.length ? sets : [blankSet()], sessionId };
     }
     if (exercise?.measure === 'cardio') {
       const last = lastCardioSession(cardio);
       const initialSegments = plan?.minutes
         ? [cardioRow(plan.minutes, plan.append ? last[last.length - 1] : last[0])]
         : [cardioRow(null, last[0])];
-      return { exercise: entryExercise, note: note || '', history, cardioHistory: cardio, sets: initialSegments, sessionId };
+      return { exercise: entryExercise, note: '', history, cardioHistory: cardio, sets: initialSegments, sessionId };
     }
     let initialSets: WorkoutSet[] = [];
     // Шаблон берём с прошлой тренировки. Сегодняшние подходы уже в журнале:
@@ -1292,7 +1330,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, clock, onClockChange, st
         ...blankSet(), weight: like?.weight ?? '0', reps: String(plan.reps ?? like?.reps ?? ''), rest: like?.rest ?? '', setType: 'working' as SetType,
       }));
     }
-    return { exercise: entryExercise, note: note || '', history, sets: initialSets, sessionId };
+    return { exercise: entryExercise, note: '', history, sets: initialSets, sessionId };
   };
 
   const [sessionData, setSessionData] = useState<Record<string, ExerciseSessionData>>(() =>
@@ -1314,7 +1352,6 @@ const WorkoutScreen = ({ initialExercise, allExercises, clock, onClockChange, st
             && cached.history.length === 0 && cached.cardio.length === 0;
           const data = canFillTemplate ? buildExerciseData(id, fresh) : {
             ...prev[id], history: fresh.history, cardioHistory: fresh.cardio,
-            note: !restored && !dirtyExercises.current.has(id) ? fresh.note : prev[id].note,
           };
           return { ...prev, [id]: data };
         });
@@ -1363,6 +1400,45 @@ const WorkoutScreen = ({ initialExercise, allExercises, clock, onClockChange, st
     });
     return total;
   }, [sessionData, activeExercises, allExercises, bodyWeight]);
+
+  // Заметка уходит на сервер сразу, даже если подходов больше не будет.
+  // Подходы, отмеченные позже, получают её вместе со своими данными.
+  const latestSessionData = useRef(sessionData);
+  latestSessionData.current = sessionData;
+  const latestNotify = useRef(notify);
+  latestNotify.current = notify;
+  const noteTimers = useRef(new Map<string, number>());
+  const flushNote = useCallback((exId: string) => {
+    const timer = noteTimers.current.get(exId);
+    if (timer === undefined) return;
+    window.clearTimeout(timer);
+    noteTimers.current.delete(exId);
+    const data = latestSessionData.current[exId];
+    if (!data) return;
+    try {
+      noteUpdates(data.sets, data.note, { exercise_id: exId, exercise_name: data.exercise?.name }).forEach(update => api.updateSet(update));
+    } catch {
+      latestNotify.current('error');
+    }
+  }, []);
+  const flushNotes = useCallback(() => { [...noteTimers.current.keys()].forEach(flushNote); }, [flushNote]);
+  const changeNote = (exId: string, value: string) => {
+    dirtyExercises.current.add(exId);
+    setSessionData(p => ({ ...p, [exId]: { ...p[exId], note: value } }));
+    const pending = noteTimers.current.get(exId);
+    if (pending !== undefined) window.clearTimeout(pending);
+    noteTimers.current.set(exId, window.setTimeout(() => flushNote(exId), 800));
+  };
+  useEffect(() => {
+    const onHide = () => { if (document.visibilityState === 'hidden') flushNotes(); };
+    document.addEventListener('visibilitychange', onHide);
+    return () => { document.removeEventListener('visibilitychange', onHide); flushNotes(); };
+  }, [flushNotes]);
+  const saveTechnique = async (exId: string, text: string) => {
+    const saved = await onSaveTechnique(exId, text);
+    if (saved) setSessionData(p => p[exId] ? { ...p, [exId]: { ...p[exId], exercise: { ...p[exId].exercise, techniqueNote: text } } } : p);
+    return saved;
+  };
 
   const runningSet = clock?.kind === 'set' && activeExercises.includes(clock.exerciseId)
     && clock.blockKey === blockKey(clock.exerciseId)
@@ -1543,7 +1619,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, clock, onClockChange, st
           const data = sessionData[exId];
           if (!data) return <div key={exId} className="h-40 bg-zinc-900 rounded-2xl animate-pulse" />;
           if (isCardio(exId)) return <CardioCard key={exId} exerciseData={data} syncMarks={syncMarks} onAddSet={() => handleAddSet(exId)} onUpdateSet={(sid: string, f: string, v: string) => handleUpdateSet(exId, sid, f, v)} onDeleteSet={(sid: string) => handleDeleteSet(exId, sid)} onCompleteSet={(sid: string) => handleCompleteSet(exId, sid)} onRemove={() => requestRemoveExercise(exId)} />;
-          return <WorkoutCard key={exId} exerciseData={data} bodyWeight={bodyWeight} plates={plates} syncMarks={syncMarks} onAddSet={() => handleAddSet(exId)} onUpdateSet={(sid: string, f: string, v: string) => handleUpdateSet(exId, sid, f, v)} onDeleteSet={(sid: string) => handleDeleteSet(exId, sid)} onCompleteSet={(sid: string) => handleCompleteSet(exId, sid)} onStartSet={activeExercises.length > 1 ? (sid: string) => beginSet(exId, sid) : undefined} onNoteChange={(val: string) => { dirtyExercises.current.add(exId); setSessionData(p => ({...p, [exId]: {...p[exId], note: val}})); }} onAddSuperset={() => setIsAddModalOpen(true)} onRemove={() => requestRemoveExercise(exId)} />;
+          return <WorkoutCard key={exId} exerciseData={data} bodyWeight={bodyWeight} plates={plates} syncMarks={syncMarks} onAddSet={() => handleAddSet(exId)} onUpdateSet={(sid: string, f: string, v: string) => handleUpdateSet(exId, sid, f, v)} onDeleteSet={(sid: string) => handleDeleteSet(exId, sid)} onCompleteSet={(sid: string) => handleCompleteSet(exId, sid)} onStartSet={activeExercises.length > 1 ? (sid: string) => beginSet(exId, sid) : undefined} onNoteChange={(val: string) => changeNote(exId, val)} onNoteCommit={() => flushNote(exId)} onSaveTechnique={(text: string) => saveTechnique(exId, text)} onAddSuperset={() => setIsAddModalOpen(true)} onRemove={() => requestRemoveExercise(exId)} />;
         })}
       </ScreenContent>
       <ScreenContent className="mt-6 space-y-2">
@@ -1794,6 +1870,7 @@ const HistoryScreen = ({ onBack, onRepeat, allExercises = [], bodyWeight = USER_
                         <div key={i} className={`${paddingClass} ${borderClass} last:border-b-0`}>
                           {supersetIndicator}
                           <div className="font-medium text-zinc-300 mb-2">{ex.name}</div>
+                          {joinNotes(ex.sets || []) && <p className="mb-2 text-sm text-yellow-200/80 whitespace-pre-wrap break-words">{joinNotes(ex.sets || [])}</p>}
                           {Array.isArray(ex.cardio) && ex.cardio.length > 0 ? (
                             <div className="space-y-1">
                               {ex.cardio.map((segment: any, j: number) => (
@@ -2554,6 +2631,17 @@ const App = () => {
     } else { notify('error'); }
   };
 
+  // Текст показывается только после ответа сервера: постоянная заметка не
+  // должна выглядеть сохранённой, если её не приняли. Без сети поле остаётся открытым.
+  const handleTechniqueNote = async (id: string, text: string): Promise<boolean> => {
+    const result = await api.updateExercise(id, { techniqueNote: text });
+    if (!result) { notify('error'); return false; }
+    setAllExercises(p => p.map(ex => ex.id === id ? { ...ex, techniqueNote: text } : ex));
+    notify('success');
+    void api.getInit(true);
+    return true;
+  };
+
   if (!isAuthenticated) {
     return (
       <div className="bg-zinc-950 min-h-screen flex items-center justify-center p-4">
@@ -2598,7 +2686,7 @@ const App = () => {
       {screen === 'summary' && <TrainerSummaryScreen onBack={() => setScreen('analytics')} notify={notify} allExercises={allExercises} period={analyticsPeriod} onPeriodChange={setAnalyticsPeriod} />}
       {screen === 'history' && <HistoryScreen onRepeat={(source: GlobalWorkoutSession) => beginWorkout(source)} onBack={() => { setDeeplinkSession(null); setScreen('home'); }} allExercises={allExercises} bodyWeight={bodyWeight} notify={notify} haptic={haptic} focusSessionId={deeplinkSession} />}
       {screen === 'exercises' && <ExercisesListScreen restBanner={restBanner} exercises={filteredExercises} groups={groups} selectedGroup={selectedGroup} onSelectGroup={setSelectedGroup} title={selection?.kind === 'replace' ? 'Заменить упражнение' : selection ? 'Добавить упражнение' : 'Библиотека'} searchQuery={searchQuery} onSearch={(q: string) => setSearchQuery(q)} onBack={() => { setSelection(null); setSearchQuery(''); setSelectedGroup(null); setScreen('home'); }} onSelectExercise={selectExercise} onAddExercise={() => setIsCreateModalOpen(true)} onEditExercise={(ex: Exercise) => setExerciseToEdit(ex)} />}
-      {screen === 'workout' && currentExercise && <WorkoutScreen clock={clock} onClockChange={changeClock} onResumeRunning={resumeClock} onGroupChange={changeGroup} key={`${planDefaults?.blockId || ''}:${currentExercise.id}`} stepTitle={activeStep ? `Упражнение ${plan.indexOf(activeStep) + 1} из ${plan.length}` : undefined} onWorkoutOverview={() => setScreen('home')} onReplace={activeStep ? () => chooseExercise('replace', activeStep.key) : undefined} onSkip={activeStep ? () => finishStep(activeStep.key, 'skipped') : undefined} onFinish={finishExercise} initialExercise={currentExercise} allExercises={allExercises} planDefaults={planDefaults} sessionId={sessionId} location={location} incrementOrder={incrementOrder} ensureOrderAtLeast={ensureOrderAtLeast} bodyWeight={bodyWeight} plates={plates} haptic={haptic} notify={notify} onBack={() => setScreen('home')} />}
+      {screen === 'workout' && currentExercise && <WorkoutScreen onSaveTechnique={handleTechniqueNote} clock={clock} onClockChange={changeClock} onResumeRunning={resumeClock} onGroupChange={changeGroup} key={`${planDefaults?.blockId || ''}:${currentExercise.id}`} stepTitle={activeStep ? `Упражнение ${plan.indexOf(activeStep) + 1} из ${plan.length}` : undefined} onWorkoutOverview={() => setScreen('home')} onReplace={activeStep ? () => chooseExercise('replace', activeStep.key) : undefined} onSkip={activeStep ? () => finishStep(activeStep.key, 'skipped') : undefined} onFinish={finishExercise} initialExercise={currentExercise} allExercises={allExercises} planDefaults={planDefaults} sessionId={sessionId} location={location} incrementOrder={incrementOrder} ensureOrderAtLeast={ensureOrderAtLeast} bodyWeight={bodyWeight} plates={plates} haptic={haptic} notify={notify} onBack={() => setScreen('home')} />}
       <Modal isOpen={!!pendingRepeat} onClose={() => setPendingRepeat(null)} title="Текущая тренировка ещё идёт">
         <p className="mb-4 text-sm text-zinc-300">Выполненные подходы будут сохранены перед началом выбранной тренировки.</p>
         <Button className="mb-2 w-full min-h-12" onClick={() => pendingRepeat && finishWorkoutConfirmed(pendingRepeat)}>Завершить текущую и повторить</Button>
@@ -2726,6 +2814,7 @@ const App = () => {
                 <div className="text-sm text-zinc-200 truncate">{item.type === 'updateSession' ? 'Место тренировки' : item.type === 'saveSession' ? 'Тренировка' : String(item.data.exercise_name || 'Подход')}</div>
                 <div className="text-xs text-zinc-400">{item.type === 'saveSession' ? (item.data.ended_at ? 'Завершение тренировки' : 'Начало тренировки') : item.type === 'updateSession' ? (LOCATION_LABELS[item.data.location as WorkoutLocation] || 'Не указано') : item.data.kind === 'cardio'
                   ? formatCardioSegment({ minutes: Number(item.data.duration_seconds || 0) / 60, speed: item.data.speed_kmh as number | null, incline: item.data.incline_pct as number | null })
+                  : item.type === 'updateSet' && item.data.reps == null && item.data.note !== undefined ? 'Заметка'
                   : `${item.data.input_weight != null || item.data.weight != null ? setLoadLabel(item.data as any, null) : '?'} × ${String(item.data.reps ?? '?')}`} · {item.type === 'saveSet' ? 'новый подход' : item.type === 'deleteSet' ? 'удаление' : 'правка'}</div>
                 {item.id === inFlightId
                   ? <div className="text-xs text-amber-300">отправляется…</div>

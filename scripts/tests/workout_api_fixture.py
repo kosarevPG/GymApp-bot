@@ -5,7 +5,7 @@ import hashlib
 import sys
 import threading
 import uuid
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
@@ -110,4 +110,4 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     print("Memory-only GymApp fixture: http://127.0.0.1:8766", flush=True)
-    HTTPServer(("127.0.0.1", 8766), Handler).serve_forever()
+    ThreadingHTTPServer(("127.0.0.1", 8766), Handler).serve_forever()

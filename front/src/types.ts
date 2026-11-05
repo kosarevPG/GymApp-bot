@@ -11,6 +11,8 @@ export interface Exercise {
   imageUrl?: string;
   imageUrl2?: string;
   secondaryMuscles?: string;
+  /** Постоянная заметка о технике; живёт у упражнения, а не у тренировки. */
+  techniqueNote?: string;
   weightType?: string;
   baseWeight?: number;
   weightMultiplier?: number;
@@ -75,6 +77,8 @@ export interface HistoryItem {
   set_type?: string;
   rpe?: number;
   rir?: number;
+  /** Заметка этой тренировки к упражнению. */
+  note?: string;
   /** Правила расчёта веса на момент подхода; у старых подходов нет. */
   load?: LoadRules | null;
   timing?: SetTiming;

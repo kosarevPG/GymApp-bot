@@ -1,25 +1,35 @@
 # Where a workout note belongs
 
-Three stores hold free text about training. They are not interchangeable, and
+Four stores hold free text about training. They are not interchangeable, and
 nothing should copy text between them. This file is kept identical in the
 HealthOS and GymApp repositories.
 
 | Store | Grain | Written by | Holds |
 |---|---|---|---|
-| `gym_sets.note` | one set | GymApp | What happened in **that set** |
+| `gym_exercises.technique_note` | one exercise, no date | GymApp | Standing technique: what stays true every time |
+| `gym_sets.note` | one exercise in one session | GymApp | What happened **that day** with that exercise |
 | `gym_workout_sessions.session_note` | one session | GymApp | Technical comment on **that session** |
 | `episodes` + `metadata.workout_reflection` | one session | HealthOS | Wellbeing, sleep, pain, reflection |
 
-## `gym_sets.note` — one set
+## `gym_exercises.technique_note` — one exercise
 
-Scope is a single set of a single exercise: "последний повтор с читингом",
-"сорвался хват", "сменил угол скамьи". If the remark is not about one specific
-set, it does not go here.
+Scope is what stays true every time: "хват прямой", "сиденье на 3", "вес = одна
+гантель". Shown in GymApp as «Техника» and changed only by an explicit save. It
+is never copied to sets.
+
+## `gym_sets.note` — one exercise in one session
+
+Shown in GymApp as «Сегодня»: "тяжеловато", "сделал сидя, потянул поясницу",
+"3-й подход сорвался". The same text is stored on every set of that exercise in
+that session, because a session has no row per exercise. Read it as one note,
+not one per set. A new session starts empty; earlier text appears only as
+history with its date.
 
 `gym_sets.legacy_note` sits beside it and is **read-only history**: it holds
 notes carried over from the Google Sheets era by the 2026-08-23 import. Nothing
-writes to it. As of that import 710 sets carry a `legacy_note` and 0 carry a
-`note`.
+writes to it. In that era the text moved from session to session, so it is not a
+reliable statement about the date it sits on, and GymApp does not show it. As of
+that import 710 sets carry a `legacy_note` and 0 carry a `note`.
 
 ## `gym_workout_sessions.session_note` — one session, technical
 
