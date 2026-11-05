@@ -13,6 +13,7 @@ export interface GlobalHistorySet {
   include_in_tonnage?: boolean;
   rpe?: number;
   rir?: number;
+  note?: string;
   load?: LoadRules | null;
   timing?: SetTiming;
 }

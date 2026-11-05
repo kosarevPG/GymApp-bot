@@ -440,6 +440,7 @@ class SupabaseStore:
             "weightMultiplier": _to_float(record.get("multiplier"), 1.0),
             "unilateral": source_payload.get("reps_per_side") is True,
             "secondaryMuscles": str(source_payload.get("secondary_muscles") or ""),
+            "techniqueNote": str(record.get("technique_note") or ""),
             # None rather than 0 — the difference between "no target" and "a
             # target of zero" is the whole point of these being nullable.
             "repRangeLow": _optional_int(record.get("rep_range_low")),
@@ -737,7 +738,7 @@ class SupabaseStore:
             "weight": ("total_weight_kg", _to_float),
             "reps": ("reps", _to_int),
             "rest": ("rest_seconds", lambda value: round(_to_float(value) * 60)),
-            "note": ("note", str),
+            "note": ("note", lambda value: str(value or "").strip() or None),
             "set_type": ("set_type", str),
             "rpe": ("rpe", _optional_float),
             "rir": ("rir", _optional_float),
@@ -987,6 +988,10 @@ class SupabaseStore:
             result["rpe"] = _to_float(row["rpe"])
         if row.get("rir") is not None:
             result["rir"] = _to_float(row["rir"])
+        # legacy_note stays out: until 2026-08-21 that text moved between
+        # sessions, so it cannot be shown as what happened on this date.
+        if row.get("note"):
+            result["note"] = str(row["note"])
         load = (row.get("source_payload") or {}).get("load")
         if isinstance(load, dict):
             result["load"] = load
@@ -1278,6 +1283,8 @@ class SupabaseStore:
             "baseWeight": "base_weight_kg", "weightMultiplier": "multiplier",
         }
         values = {column: updates[key] for key, column in mapping.items() if key in updates}
+        if "techniqueNote" in updates:
+            values["technique_note"] = str(updates["techniqueNote"] or "").strip() or None
         if "measure" in updates:
             if updates["measure"] not in ("strength", "cardio"):
                 raise ValueError("measure must be strength or cardio")
@@ -1318,13 +1325,13 @@ class SupabaseStore:
         session_by_id = {row["id"]: row for row in sessions}
         group_by_id = {row["id"]: row for row in groups}
         exercise_by_id = {row["id"]: row for row in exercises}
-        ex_headers = ["ID", "Name", "Muscle Group", "Description", "Image_URL", "Image_URL2", "Weight_Type", "Base_Wt", "Multiplier", "Secondary_Muscles"]
+        ex_headers = ["ID", "Name", "Muscle Group", "Description", "Image_URL", "Image_URL2", "Weight_Type", "Base_Wt", "Multiplier", "Secondary_Muscles", "Technique_Note"]
         # New columns go at the end: readers of older backups address them by position.
         log_headers = ["Date", "Exercise_ID", "Exercise_Name_Calc", "Input_Weight", "Total_Weight", "Reps", "Rest", "Set_Group_ID", "Note", "Order", "Set_Type", "RPE", "RIR", "Session_ID", "Client_Request_ID", "Legacy_Note", "Session_UUID", "Group_Type", "Load", "Timing"]
         ex_rows = [ex_headers]
         for row in exercises:
             api = self._exercise_to_api(row)
-            ex_rows.append([api["id"], api["name"], api["muscleGroup"], api["description"], api["imageUrl"], api["imageUrl2"], api["weightType"], api["baseWeight"], api["weightMultiplier"], api["secondaryMuscles"]])
+            ex_rows.append([api["id"], api["name"], api["muscleGroup"], api["description"], api["imageUrl"], api["imageUrl2"], api["weightType"], api["baseWeight"], api["weightMultiplier"], api["secondaryMuscles"], api["techniqueNote"]])
         log_rows = [log_headers]
         for row in sets:
             session = session_by_id.get(row["session_id"], {})
