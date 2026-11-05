@@ -1,6 +1,7 @@
 import { Check, MoreHorizontal, Trash2 } from 'lucide-react';
 import { calcEffectiveWeight, rulesAsExercise, USER_BODY_WEIGHT_DEFAULT, DEFAULT_PLATES } from '../exerciseConfig';
 import { formatSeconds } from '../workoutTiming';
+import { acceptRpeInput, rpeForSave } from '../setInput';
 import type { Exercise, WorkoutSet, SetType } from '../types';
 import { CompactLoadHint } from './CompactLoadHint';
 
@@ -37,7 +38,7 @@ export function WorkoutSetRow({ set, ordinal, exercise, bodyWeight = USER_BODY_W
           {isActive && !set.completed && <div className="mt-3">
             <p className="mb-1 text-xs text-zinc-300">Повторы в запасе</p>
             <div className="flex flex-wrap gap-1">{[0, 1, 2, 3].map(rir => <button type="button" key={rir} aria-pressed={String(set.rir) === String(rir)} onClick={() => onUpdate(set.id, 'rir', String(set.rir) === String(rir) ? '' : rir)} className={`min-h-11 rounded-lg px-2 text-xs ${String(set.rir) === String(rir) ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-300'}`}>RIR {rir}{rir === 3 ? '+' : ''}</button>)}</div>
-            <label className="mt-2 block text-xs text-zinc-300">RPE<input aria-label={`RPE подхода ${ordinal}`} type="number" min={1} max={10} value={set.rpe ?? ''} onChange={e => onUpdate(set.id, 'rpe', e.target.value)} className="mt-1 h-11 w-full rounded-lg bg-zinc-800 px-2 text-base text-zinc-100" /></label>
+            <label className="mt-2 block text-xs text-zinc-300">RPE<input aria-label={`RPE подхода ${ordinal}`} type="number" min={1} max={10} value={set.rpe ?? ''} onChange={e => onUpdate(set.id, 'rpe', acceptRpeInput(e.target.value, String(set.rpe ?? '')))} onBlur={e => { if (e.target.value && rpeForSave(e.target.value) === undefined) onUpdate(set.id, 'rpe', ''); }} className="mt-1 h-11 w-full rounded-lg bg-zinc-800 px-2 text-base text-zinc-100" /></label>
           </div>}
           {isActive && onStart && <button type="button" onClick={() => onStart(set.id)} className="mt-2 min-h-11 w-full text-left text-sm text-blue-300">Начать этот подход</button>}
           <button type="button" onClick={() => onDelete(set.id)} className="mt-2 flex min-h-11 w-full items-center gap-2 text-left text-sm text-red-300"><Trash2 className="h-4 w-4" />Удалить подход</button>

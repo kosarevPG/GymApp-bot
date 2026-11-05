@@ -8,6 +8,7 @@ though the backend secret bypasses RLS.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import uuid
@@ -25,6 +26,8 @@ from workload_trend import (
     sets_to_trend_sessions,
 )
 
+
+logger = logging.getLogger(__name__)
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 LIVE_NAMESPACE = uuid.UUID("7bd184da-f675-4d11-b7c9-cc795ab7975c")
@@ -145,6 +148,24 @@ def _set_timing(value: Any, now: datetime) -> Optional[Dict[str, Any]]:
     return result
 
 
+SET_LIMITS = {
+    "input_weight_kg": (0, 999999.99, "вес"),
+    "total_weight_kg": (0, 999999.99, "вес"),
+    "reps": (1, 2147483647, "повторы"),
+    "rest_seconds": (0, 2147483647, "отдых"),
+    "rpe": (1, 10, "RPE"),
+    "rir": (0, 10, "RIR"),
+}
+
+
+def _check_set_ranges(values: Dict[str, Any]) -> None:
+    """Те же границы, что и в ограничениях gym_sets, но до обращения к базе."""
+    for column, (low, high, label) in SET_LIMITS.items():
+        value = values.get(column)
+        if value is not None and not low <= value <= high:
+            raise ValueError(f"{label}: значение вне допустимого диапазона ({low}–{high})")
+
+
 def _valid_client_request_id(value: Any) -> str:
     try:
         return str(uuid.UUID(str(value or "").strip()))
@@ -172,6 +193,27 @@ def _aware_datetime(value: Any, field: str) -> datetime:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ValueError(f"{field} must include a timezone offset")
     return parsed.astimezone(MOSCOW_TZ)
+
+
+class DataRejectedError(ValueError):
+    """База отклонила значения записи: повтор того же запроса ничего не изменит."""
+
+
+class StorageUnavailableError(RuntimeError):
+    """Хранилище ответило сбоем на своей стороне: тот же запрос можно повторить."""
+
+
+def _rejection_reason(detail: str) -> Optional[str]:
+    """Текст для клиента, если Postgres отклонил сами данные (классы 22 и 23)."""
+    try:
+        code = str(json.loads(detail).get("code") or "")
+    except (ValueError, AttributeError):
+        return None
+    if code == "23514":
+        return "значение вне допустимого диапазона"
+    if code == "22003":
+        return "слишком большое число"
+    return "база отклонила данные" if code[:2] in ("22", "23") else None
 
 
 class ConflictError(Exception):
@@ -237,7 +279,14 @@ class SupabaseRestClient:
                     continue
                 detail = error.read().decode("utf-8", errors="replace")
                 error.close()
-                raise RuntimeError(f"Supabase Data API returned {error.code}: {detail}") from error
+                reason = _rejection_reason(detail)
+                if reason:
+                    logger.warning("Supabase rejected %s %s: %s", method, table, detail)
+                    raise DataRejectedError(reason) from error
+                message = f"Supabase Data API returned {error.code}: {detail}"
+                if error.code >= 500:
+                    raise StorageUnavailableError(message) from error
+                raise RuntimeError(message) from error
             except (URLError, TimeoutError):
                 if attempt + 1 == attempts:
                     raise
@@ -627,6 +676,11 @@ class SupabaseStore:
             values["total_weight_kg"] = values["input_weight_kg"] + (load["base"] if load["inputMode"] == "plates_total" else 0)
         if values["reps"] <= 0:
             return {"status": "error", "error": "reps must be greater than zero"}
+        # До первой записи: иначе от отклонённого подхода останется пустая тренировка.
+        try:
+            _check_set_ranges(values)
+        except ValueError as error:
+            return {"status": "error", "error": str(error)}
         existing = self._select(
             "gym_sets",
             filters={"user_id": user_id, "client_request_id": request_id},
@@ -748,6 +802,7 @@ class SupabaseStore:
                 updates[column] = convert(data[api_name])
         if updates.get("reps", 1) <= 0 or updates.get("rest_seconds", 0) < 0:
             return False
+        _check_set_ranges(updates)
         load = _load_rules(data.get("load"))
         stored_rules = load or (existing.get("source_payload") or {}).get("load") or {}
         if "input_weight" in data and stored_rules.get("inputMode") in ("total", "plates_total"):

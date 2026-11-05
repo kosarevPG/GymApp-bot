@@ -34,7 +34,7 @@ import { calculateLocalAnalytics } from './localAnalytics';
 import { readOfflineOwner, rememberOfflineOwner, forgetOfflineOwner, offlineAccessLocked } from './offlineAccount';
 import { OfflineUpdateNotice } from './components/OfflineUpdateNotice';
 import { ChartBoundary } from './components/ChartBoundary';
-import { journalVersions, mergeJournalDelta } from './journalSync';
+import { backgroundJournalReadNeeded, journalVersions, mergeJournalDelta } from './journalSync';
 import { calcEffectiveWeight, weightInputLabel, WEIGHT_TYPE_OPTIONS, USER_BODY_WEIGHT_DEFAULT, DEFAULT_PLATES, PLATE_CHOICES, carryOverInput, loadRulesOf, rulesAsExercise, rulesForSet, setLoadLabel, forNewEntry } from './exerciseConfig';
 import type { Exercise, WorkoutSet, HistoryItem, CardioHistoryItem, ExerciseSessionData, SetType } from './types';
 import {
@@ -64,6 +64,8 @@ import {
 } from './auth';
 import { AuthRequiredError, createAuthenticatedFetch } from './authenticatedFetch';
 import { LOCATION_LABELS, pendingSessionMetadata, pendingTimingEdits, type WorkoutLocation } from './sessionMetadata';
+import { completableSet, rpeForSave } from './setInput';
+import { exerciseThumbnailUrl } from './exerciseImage';
 
 // --- TYPES ---
 
@@ -257,7 +259,8 @@ const sendQueuedItem = async (item: QueuedItem): Promise<SendOutcome> => {
       signal: controller.signal,
     });
     if (res.status === 401 || res.status === 403) return { ok: false, error: 'authorization', stop: true };
-    if (res.status >= 500) return { ok: false, error: `сервер недоступен (HTTP ${res.status})`, stop: true };
+    if (res.status === 500) return { ok: false, error: 'ошибка сервера (HTTP 500)', stop: true, itemSuspect: true };
+    if (res.status > 500) return { ok: false, error: `сервер недоступен (HTTP ${res.status})`, stop: true };
     const result = await res.json().catch(() => null);
     if (res.ok && result?.status === 'success') return { ok: true };
     const reason = typeof result?.error === 'string' && result.error
@@ -275,7 +278,8 @@ const sendQueuedItem = async (item: QueuedItem): Promise<SendOutcome> => {
 
 const initNetworkListeners = () => {
   const sync = () => {
-    void api.syncOfflineQueue(); void refreshJournal();
+    void api.syncOfflineQueue();
+    if (backgroundJournalReadNeeded(journalResource().observed(), !!localStorage.getItem(ACTIVE_WORKOUT_KEY))) void refreshJournal();
     for (const resource of analyticsResources.values()) if (resource.observed()) void resource.refresh();
   };
   const resume = () => { if (document.visibilityState === 'visible') sync(); };
@@ -1090,6 +1094,13 @@ const HomeScreen = (props: any) => {
   return <WorkoutHome {...props} localStatus={<LocalDataStatus snapshot={journal} onRefresh={() => void journalResource().refresh(true)} />} />;
 };
 
+/** Лёгкий кадр вместо анимации; если кадра нет, показывается сама картинка. */
+const ExerciseThumbnail = ({ url }: { url: string }) => {
+  const [failed, setFailed] = useState('');
+  const thumbnail = exerciseThumbnailUrl(url);
+  return <img src={failed === thumbnail ? url : thumbnail} onError={() => setFailed(thumbnail)} loading="lazy" decoding="async" width={56} height={56} className="w-full h-full object-cover" alt="" />;
+};
+
 const ExercisesListScreen = ({ exercises, groups, selectedGroup, onSelectGroup, title, restBanner, onBack, onSelectExercise, onAddExercise, onEditExercise, searchQuery, onSearch }: any) => {
   const [infoModalEx, setInfoModalEx] = useState<Exercise | null>(null);
   const visibleGroups = sortGroups([...new Set<string>(exercises.map((ex: Exercise) => ex.muscleGroup || 'Другое'))]);
@@ -1123,7 +1134,7 @@ const ExercisesListScreen = ({ exercises, groups, selectedGroup, onSelectGroup, 
           {exercises.filter((ex: Exercise) => (ex.muscleGroup || 'Другое') === group).map((ex: Exercise) => (
           <div key={ex.id} className="flex items-center p-2 rounded-2xl hover:bg-zinc-900 border border-transparent hover:border-zinc-800 transition-all">
             <button type="button" aria-label={`Техника упражнения: ${ex.name}`} onClick={() => setInfoModalEx(ex)} className="w-14 h-14 rounded-xl bg-zinc-800 flex-shrink-0 overflow-hidden active:scale-90 transition-transform relative group focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500">
-              {ex.imageUrl ? <img src={ex.imageUrl} className="w-full h-full object-cover" alt="" /> : <div className="w-full h-full flex items-center justify-center text-zinc-600"><Info /></div>}
+              {ex.imageUrl ? <ExerciseThumbnail url={ex.imageUrl} /> : <div className="w-full h-full flex items-center justify-center text-zinc-600"><Info /></div>}
               <div className="absolute inset-0 bg-black/30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><Settings className="w-5 h-5 text-white" /></div>
             </button>
             <button type="button" onClick={() => onSelectExercise(ex)} className="flex min-h-14 min-w-0 flex-1 items-center gap-2 rounded-xl py-2 pl-4 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500">
@@ -1469,7 +1480,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, onSaveTechnique, clock, 
     const measured = !isEdit ? completeSetTiming(clock, sessionId, blockKey(exId), setId, ended) : undefined;
     const seconds = cardio ? measured?.duration_seconds !== undefined
       ? Math.max(1, measured.duration_seconds) : durationSeconds(set.minutes) : null;
-    if (cardio ? seconds === null : (!set.weight || !set.reps)) { notify('error'); return; }
+    if (cardio ? seconds === null : !completableSet(set.weight, set.reps)) { notify('error'); return; }
 
     const timing = cardio ? undefined : isEdit ? set.timing : measured;
     const completedSet = cardio && seconds !== null ? { ...set, minutes: String(Math.round(seconds / 60 * 10000) / 10000) } : set;
@@ -1496,7 +1507,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, onSaveTechnique, clock, 
       set_group_id: setGroupId,
       session_id: sessionId,
       set_type: set.setType || 'working',
-      rpe: set.rpe != null && set.rpe !== '' ? parseFloat(String(set.rpe)) : undefined,
+      rpe: rpeForSave(set.rpe),
       rir: set.rir != null && set.rir !== '' ? parseInt(String(set.rir), 10) : undefined
     }) };
     // Галочка ставится только после того, как подход лёг в очередь на
@@ -2550,7 +2561,12 @@ const App = () => {
       const pending = getPendingCount();
       setPendingCount(pending); setQueueItems(getQueue()); setInFlightId(getInFlightId());
       if (previousPending > 0 && pending === 0) {
-        void refreshJournal(true);
+        // Копия устарела, но читать её заново незачем, пока историю никто не
+        // смотрит: на тренировке очередь пустеет после каждого подхода, а чтение
+        // заставляет сервер пересчитывать версии всей истории.
+        const journal = journalResource();
+        journal.invalidate();
+        if (journal.observed()) void journal.refresh();
         for (const resource of analyticsResources.values()) { resource.invalidate(); if (resource.observed()) void resource.refresh(); }
       }
       previousPending = pending;
