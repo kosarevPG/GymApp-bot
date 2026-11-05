@@ -1341,7 +1341,8 @@ class SupabaseStore:
             exercise = exercise_by_id.get(row["exercise_id"], {})
             api = self._cardio_to_api(row)
             cardio_rows.append([_api_date(session.get("workout_date")), exercise.get("source_key"), exercise.get("name_ru"), api["minutes"], api.get("speed", ""), api.get("incline", ""), api["order"], row["session_id"], row.get("client_request_id")])
-        return {"format": "gymapp-backup-v1", "exported_at": self._now().isoformat(), "exercises": ex_rows, "log": log_rows, "sessions": session_rows, "cardio": cardio_rows}
+        # v2: v1 columns unchanged, plus Legacy_Note and context in the log and the sessions and cardio sheets.
+        return {"format": "gymapp-backup-v2", "exported_at": self._now().isoformat(), "exercises": ex_rows, "log": log_rows, "sessions": session_rows, "cardio": cardio_rows}
 
     @staticmethod
     def import_data(user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:

@@ -67,6 +67,6 @@ class ExportTests(unittest.TestCase):
 
     def test_empty_account_exports_only_headers(self):
         export = self.store.export_data(USER_ID)
-        self.assertEqual(export["format"], "gymapp-backup-v1")
+        self.assertEqual(export["format"], "gymapp-backup-v2")
         for sheet in ("log", "sessions", "cardio"):
             self.assertEqual(rows_of(export[sheet]), [])
