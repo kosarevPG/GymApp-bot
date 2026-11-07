@@ -13,6 +13,8 @@ export interface SetDisplayRowProps {
   className?: string;
   durationSeconds?: number;
   restBeforeSeconds?: number;
+  /** «отдых перед ним», в суперсете — «отдых перед кругом» или «переход». */
+  restBeforeLabel?: string;
 }
 
 export const SetDisplayRow: React.FC<SetDisplayRowProps> = ({
@@ -25,6 +27,7 @@ export const SetDisplayRow: React.FC<SetDisplayRowProps> = ({
   className = '',
   durationSeconds,
   restBeforeSeconds,
+  restBeforeLabel = 'отдых перед ним',
 }) => {
   const r = typeof reps === 'number' ? reps : parseInt(String(reps || 0), 10);
   const restVal = typeof rest === 'number' ? rest : parseFloat(String(rest || 0));
@@ -51,7 +54,7 @@ export const SetDisplayRow: React.FC<SetDisplayRowProps> = ({
         <span className="ml-2 text-xs text-zinc-400">RIR {rir}</span>
       )}
       {durationSeconds != null && <span className="mt-1 block text-xs text-zinc-400">Подход {formatSeconds(durationSeconds)}
-        {restBeforeSeconds != null ? ` · отдых перед ним ${formatSeconds(restBeforeSeconds)}` : ''}</span>}
+        {restBeforeSeconds != null ? ` · ${restBeforeLabel} ${formatSeconds(restBeforeSeconds)}` : ''}</span>}
     </div>
   );
 };
