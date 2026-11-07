@@ -22,7 +22,8 @@ import { WorkoutSetRow as SetRow } from './components/WorkoutSetRow';
 import { WorkoutHome } from './components/WorkoutHome';
 import { WORKOUT_CLOCK_KEY, readClock, startSetClock, cancelSetClock, completeSetTiming, nextRestClock, betweenExercises, formatSeconds, type WorkoutClock } from './workoutTiming';
 import { repeatPlan, templateSets, draftKey, replaceStep, nextStep } from './workoutRepeat';
-import { finishedSession, reconcileFinished } from './workoutJournal';
+import { finishedSession, forgetWorkout, reconcileFinished } from './workoutJournal';
+import { historyBlocks } from './historyBlocks';
 import { createLocalResource } from './localResource';
 import { readLocalCache, writeLocalCache } from './cacheStorage';
 import { LocalDataStatus } from './components/LocalDataStatus';
@@ -398,9 +399,13 @@ const api = {
     queueMicrotask(() => { void api.syncOfflineQueue(); });
   },
 
-  deleteWorkout: (date: string, sessionId?: string): void => {
+  deleteWorkout: (date: string, sessionId?: string, clientSessionId?: string | null): void => {
     if (!sessionId) throw new Error('session_id is required');
-    upsertQueue('deleteWorkout', { date, session_id: sessionId, client_request_id: `workout:${sessionId}`, missing_ok: true });
+    const { local, discard } = forgetWorkout(readLocalFinished(), getQueue(), sessionId, clientSessionId);
+    // Запрос, который уже в пути, не отозвать — удаление уйдёт следом за ним.
+    discard.forEach(id => discardQueued(id));
+    writeLocalFinished(local);
+    upsertQueue('deleteWorkout',{ date, session_id: sessionId, client_request_id: `workout:${sessionId}`, missing_ok: true });
     queueMicrotask(() => { void api.syncOfflineQueue(); });
   },
 
@@ -1709,7 +1714,7 @@ const HistoryScreen = ({ onBack, onRepeat, allExercises = [], bodyWeight = USER_
   const [editW, setEditW] = useState('');
   const [editR, setEditR] = useState('');
   const [editRest, setEditRest] = useState('');
-  const [deleteDay, setDeleteDay] = useState<{ date: string; sessionId: string } | null>(null);
+  const [deleteDay, setDeleteDay] = useState<{ date: string; sessionId: string; clientSessionId?: string | null } | null>(null);
   const [busy, setBusy] = useState(false);
 
   const [focusState, setFocusState] = useState<'idle' | 'searching' | 'missing'>('idle');
@@ -1807,7 +1812,7 @@ const HistoryScreen = ({ onBack, onRepeat, allExercises = [], bodyWeight = USER_
   const deleteDayConfirmed = () => {
     if (!deleteDay || busy) return;
     try {
-      api.deleteWorkout(deleteDay.date, deleteDay.sessionId);
+      api.deleteWorkout(deleteDay.date, deleteDay.sessionId, deleteDay.clientSessionId);
       journalResource().update(() => pendingTimingEdits(history, getQueue()));
       haptic?.('medium'); notify?.('success'); setDeleteDay(null);
     } catch { notify?.('error'); }
@@ -1837,7 +1842,7 @@ const HistoryScreen = ({ onBack, onRepeat, allExercises = [], bodyWeight = USER_
               </div>
               <div className="flex items-center gap-1">
                 {expandedId === w.id && (
-                  <button disabled={w.pendingLocal} aria-label="Удалить тренировку" onClick={(e) => { e.stopPropagation(); setDeleteDay({ date: w.date, sessionId: w.id }); }} className="min-h-11 min-w-11 text-zinc-400 disabled:opacity-30 hover:text-red-400"><Trash2 className="mx-auto w-4 h-4" /></button>
+                  <button aria-label="Удалить тренировку" onClick={(e) => { e.stopPropagation(); setDeleteDay({ date: w.date, sessionId: w.id, clientSessionId: w.clientSessionId }); }} className="min-h-11 min-w-11 text-zinc-400 disabled:opacity-30 hover:text-red-400"><Trash2 className="mx-auto w-4 h-4" /></button>
                 )}
                 <ChevronDown className={`w-5 h-5 text-zinc-500 transition-transform ${expandedId === w.id ? 'rotate-180' : ''}`} />
               </div>
@@ -1863,10 +1868,10 @@ const HistoryScreen = ({ onBack, onRepeat, allExercises = [], bodyWeight = USER_
                     {w.pendingChanges && !w.pendingLocal && <p className="mt-2 text-sm text-amber-300">Изменения сохранены на устройстве и ожидают отправки.</p>}
                   </div>
                   {w.exercises && w.exercises.length > 0 ? (
-                    w.exercises.map((ex: any, i: number) => {
+                    historyBlocks(w.exercises).map((ex: any, i: number, blocks: any[]) => {
                       const isSuperset = !!ex.supersetId;
-                      const prevSupersetId = i > 0 ? w.exercises[i-1].supersetId : null;
-                      const nextSupersetId = i < w.exercises.length - 1 ? w.exercises[i+1].supersetId : null;
+                      const prevSupersetId = i > 0 ? blocks[i-1].supersetId : null;
+                      const nextSupersetId = i < blocks.length - 1 ? blocks[i+1].supersetId : null;
                       const isSupersetStart = isSuperset && prevSupersetId !== ex.supersetId;
                       let borderClass = "border-b border-zinc-800/50";
                       let paddingClass = "p-4";

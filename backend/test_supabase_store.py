@@ -467,6 +467,15 @@ class SupabaseStoreTests(unittest.TestCase):
             [("gym_workout_sessions", {"user_id": USER_ID, "id": morning["id"]})],
         )
 
+    def test_delete_workout_by_client_session_id(self):
+        self.store.save_set(USER_ID, self.payload(REQUEST_1, "session-morning"))
+        self.store.save_set(USER_ID, self.payload(REQUEST_2, "session-evening"))
+        self.assertEqual(self.store.delete_workout(USER_ID, "2026.08.22", "session-morning"), 1)
+        remaining = self.store.get_global_history(USER_ID)
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0]["exercises"][0]["sets"][0]["id"], REQUEST_2)
+        self.assertEqual(self.store.delete_workout(USER_ID, "2026.08.22", "session-morning"), 0)
+
     def test_date_only_delete_is_ambiguous_for_two_sessions(self):
         self.store.save_set(USER_ID, self.payload(REQUEST_1, "session-morning"))
         self.store.save_set(USER_ID, self.payload(REQUEST_2, "session-evening"))
