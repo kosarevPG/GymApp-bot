@@ -10,6 +10,21 @@ export function reconcileFinished(local: any[], remote: any[], queue: { data: Re
   return { remaining, history: [...remaining, ...remote.filter(r => !remaining.some(s => same(s, r)))] };
 }
 
+/**
+ * Удаление тренировки целиком. Её локальная копия уходит сразу: иначе, если
+ * сервер её уже не знает, она висела бы в истории вечно. Всё, что по ней ещё
+ * стоит в очереди, больше не нужно — а отклонённый сервером подход повторялся
+ * бы и после удаления и мог вернуть тренировку обратно.
+ */
+export function forgetWorkout(local: any[], queue: { id: string; type: string; data: Record<string, unknown> }[],
+  sessionId: string, clientSessionId?: string | null) {
+  const refs = [sessionId, clientSessionId].filter((ref): ref is string => !!ref);
+  return {
+    local: local.filter(s => !refs.includes(s.id) && !(s.clientSessionId && refs.includes(s.clientSessionId))),
+    discard: queue.filter(item => item.type !== 'deleteWorkout' && refs.includes(String(item.data.session_id ?? ''))).map(item => item.id),
+  };
+}
+
 /** A local history entry exists only for work that was actually recorded. */
 export function finishedSession(draft: any, catalogue: Exercise[], sessionId: string, location: WorkoutLocation | null,
   startedAt: number, endedAt: number, bodyWeight: number) {

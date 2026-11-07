@@ -1000,8 +1000,21 @@ class SupabaseStore:
 
     def delete_workout(self, user_id: str, date_text: str, session_id: str = "") -> int:
         if session_id:
+            try:
+                server_id: Optional[str] = str(uuid.UUID(session_id))
+            except ValueError:
+                server_id = None
+            if server_id:
+                deleted = self.client.delete(
+                    "gym_workout_sessions", filters={"user_id": user_id, "id": server_id}
+                )
+                if deleted:
+                    return len(deleted)
+            # Тренировка, которую телефон показывает из своей копии, знает
+            # только свой client session id — сервер хранит его в source_record_id.
             deleted = self.client.delete(
-                "gym_workout_sessions", filters={"user_id": user_id, "id": session_id}
+                "gym_workout_sessions",
+                filters={"user_id": user_id, "source": "gymapp", "source_record_id": f"live:{session_id}"},
             )
             return len(deleted)
 
