@@ -1,8 +1,8 @@
 /* Generated at build time. Only the public app shell is cached here. */
 const BASE = "/GymApp-bot/";
 const PREFIX = `gymapp-shell:${BASE}:`;
-const CACHE = PREFIX + "d016d1fd34c9c127e103";
-const URLS = ["/GymApp-bot/","/GymApp-bot/assets/AnalyticsVolumeChart-rE72iI3N.js","/GymApp-bot/assets/App-DkCM7cTy.js","/GymApp-bot/assets/index-C8dSFgSG.css","/GymApp-bot/assets/index-CPy2v0zh.js","/GymApp-bot/icons/zal-180.png","/GymApp-bot/icons/zal-192.png","/GymApp-bot/icons/zal-512.png","/GymApp-bot/index.html","/GymApp-bot/manifest.json"];
+const CACHE = PREFIX + "d7610d2756f62d3545a2";
+const URLS = ["/GymApp-bot/","/GymApp-bot/assets/AnalyticsVolumeChart-DLQ1Fr3P.js","/GymApp-bot/assets/App-DrBUlW34.js","/GymApp-bot/assets/index-Cy7-2xix.css","/GymApp-bot/assets/index-DPsfEYvw.js","/GymApp-bot/icons/zal-180.png","/GymApp-bot/icons/zal-192.png","/GymApp-bot/icons/zal-512.png","/GymApp-bot/index.html","/GymApp-bot/manifest.json"];
 const PUBLIC_PATHS = new Set(URLS);
 
 self.addEventListener('install', event => {
