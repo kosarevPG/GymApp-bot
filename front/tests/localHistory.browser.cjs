@@ -68,8 +68,8 @@ const until = async fn => { for(let i=0;i<80;i++){ if(await fn())return; await n
    const historyMs=Date.now()-start;assert.ok(historyMs<1200);
    assert.equal(globalRequests,1,'one background request is shared while the API is stalled');
    await page.getByText('2026.10.12',{exact:false}).first().click();
-   await page.getByLabel('Место тренировки 2026.10.12').waitFor();
-   assert.equal(await page.getByLabel('Место тренировки 2026.10.12').inputValue(),'home');
+   await page.getByRole('group',{name:'Место тренировки 2026.10.12',exact:true}).waitFor();
+   assert.equal(await page.getByRole('group',{name:'Место тренировки 2026.10.12',exact:true}).getByRole('button',{name:'Дома',exact:true}).getAttribute('aria-pressed'),'true');
    await page.waitForTimeout(300);await page.screenshot({path:path.join(OUTPUT,`${name}-history.png`),fullPage:true});
    await nav().getByRole('button',{name:'Главная',exact:true}).click();
    await nav().getByRole('button',{name:'Аналитика',exact:true}).click();
@@ -78,7 +78,7 @@ const until = async fn => { for(let i=0;i<80;i++){ if(await fn())return; await n
    assert.equal(await nav().getByRole('button',{name:'Аналитика',exact:true}).getAttribute('aria-current'),'page');
    assert.equal(await page.getByRole('button',{name:'Неделя',exact:true}).getAttribute('aria-pressed'),'true','summary inherits the analytics period');
    await page.getByRole('button',{name:'2 недели',exact:true}).click();
-   await page.getByText('12.10 · 🏠 Дома · ≈61м',{exact:true}).waitFor({timeout:1200});
+   await page.getByText('12.10 · Дома · ≈61м',{exact:true}).waitFor({timeout:1200});
    await page.waitForTimeout(300);await page.screenshot({path:path.join(OUTPUT,`${name}-summary.png`),fullPage:true});
    const analyticsStart=Date.now();await page.getByRole('button',{name:'Назад к аналитике',exact:true}).click();
    await page.getByRole('heading',{name:'Подходы по мышцам',exact:true}).waitFor({timeout:1200});

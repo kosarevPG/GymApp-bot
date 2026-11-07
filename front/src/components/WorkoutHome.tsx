@@ -1,10 +1,10 @@
-import { Check, Dumbbell, Home, MapPin, MoreHorizontal, Plus, Settings, ArrowUp, ArrowDown, Play } from 'lucide-react';
+import { Check, MoreHorizontal, Plus, Settings, ArrowUp, ArrowDown, Play } from 'lucide-react';
 import { ScreenContent, ScreenHeader } from './ScreenLayout';
+import { LocationPicker } from './Location';
 import { planTargetText, type PlanItem } from '../workoutPlan';
 import { recordedSets } from '../workoutRepeat';
 
 export function WorkoutHome({ workoutActive, location, onLocationChange, restBanner, plan = [], planDone = [], draft, resumeStep, onOpenPlanItem, onStartWorkout, onFinishWorkout, onAllExercises, onHistory, onSettings, onMove, onReplace, onSkip, sourceDate, localStatus }: any) {
-  const places = [{ value: 'gym', label: 'Зал', icon: Dumbbell }, { value: 'home', label: 'Дома', icon: Home }, { value: 'other', label: 'Другое', icon: MapPin }];
   const count = plan.filter((p: PlanItem, i: number) => p.status === 'done' || planDone[i]).length;
   return <div className="min-h-screen bg-zinc-950">
     <ScreenHeader title={workoutActive ? 'Текущая тренировка' : 'Главная'} action={<button type="button" aria-label="Настройки" onClick={onSettings} className="flex min-h-11 min-w-11 items-center justify-center rounded-xl text-zinc-300 hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400"><Settings className="h-6 w-6" /></button>} />
@@ -19,7 +19,7 @@ export function WorkoutHome({ workoutActive, location, onLocationChange, restBan
         {sourceDate && <p className="text-sm text-zinc-300">Повтор тренировки от {String(sourceDate).replace(/^(\d{4})[.-](\d{2})[.-](\d{2})$/, '$3.$2.$1')}</p>}
         <section aria-label="Место тренировки">
           <p className="mb-2 text-sm text-zinc-300">Место тренировки</p>
-          <div role="group" aria-label="Место новой тренировки" className="grid grid-cols-3 gap-1 rounded-xl bg-zinc-900 p-1">{places.map(place => <button type="button" key={place.value} aria-pressed={location === place.value} onClick={() => onLocationChange(place.value)} className={`flex min-h-12 min-w-0 items-center justify-center gap-2 rounded-lg px-2 text-sm font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 ${location === place.value ? 'bg-slate-700 text-blue-100' : 'text-zinc-300 hover:bg-zinc-800'}`}><place.icon className="h-4 w-4 shrink-0" />{place.label}</button>)}</div>
+          <LocationPicker label="Место новой тренировки" value={location} onChange={onLocationChange} />
         </section>
         <section>
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><h2 className="text-lg font-semibold">Упражнения</h2><span className="text-sm text-zinc-300">{count} из {plan.length} завершено{plan.some((p: PlanItem) => p.status === 'skipped') ? ` · ${plan.filter((p: PlanItem) => p.status === 'skipped').length} пропущено` : ''}</span></div>

@@ -1,6 +1,6 @@
 export type WorkoutLocation = 'gym' | 'home' | 'other';
 export const LOCATION_LABELS: Record<WorkoutLocation, string> = {
-  gym: '🏋️ Зал', home: '🏠 Дома', other: '📍 Другое',
+  gym: 'Зал', home: 'Дома', other: 'Другое',
 };
 
 export function pendingSessionMetadata<T extends { id: string }>(

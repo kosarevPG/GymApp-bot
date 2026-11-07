@@ -48,6 +48,35 @@ export function completeSetTiming(clock: WorkoutClock | null, sessionId: string,
   } : {}) };
 }
 
+/**
+ * Следующий подход. Суперсет идёт кругами: подход за упражнением, которое
+ * сделало меньше всех (при равенстве — первое по порядку): А1 → Б1 → А2 → Б2.
+ * Для одного упражнения это просто его первый невыполненный подход.
+ */
+export function nextInRound<T extends { completed?: boolean }>(blocks: { exId: string; sets: T[] }[]) {
+  let next: { exId: string; set: T; done: number } | null = null;
+  for (const block of blocks) {
+    const set = block.sets.find(s => !s.completed);
+    if (!set) continue;
+    const done = block.sets.filter(s => s.completed).length;
+    if (!next || done < next.done) next = { exId: block.exId, set, done };
+  }
+  return next;
+}
+
+/**
+ * После галочки в суперсете: если в этом круге ещё есть упражнение, сразу
+ * идёт его подход, без отдыха. Иначе круг закончен — начинается отдых.
+ */
+export function continueRound<T extends { id: string; completed?: boolean }>(blocks: { exId: string; sets: T[] }[],
+  exId: string, setId: string) {
+  if (blocks.length < 2) return null;
+  const doneBefore = blocks.find(b => b.exId === exId)?.sets.filter(s => s.completed).length ?? 0;
+  const next = nextInRound(blocks.map(b => b.exId === exId
+    ? { ...b, sets: b.sets.map(s => s.id === setId ? { ...s, completed: true } : s) } : b));
+  return next && next.exId !== exId && next.done <= doneBefore ? next : null;
+}
+
 export function nextRestClock(sessionId: string, restMinutes: number, now = Date.now()): WorkoutClock {
   return { sessionId, kind: 'rest', since: now, restTargetSeconds: Math.max(0, restMinutes * 60) };
 }

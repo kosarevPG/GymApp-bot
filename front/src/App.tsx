@@ -20,10 +20,11 @@ import { SetDisplayRow } from './components/SetDisplayRow';
 import { WorkoutClockPanel } from './components/WorkoutClockPanel';
 import { WorkoutSetRow as SetRow } from './components/WorkoutSetRow';
 import { WorkoutHome } from './components/WorkoutHome';
-import { WORKOUT_CLOCK_KEY, readClock, startSetClock, cancelSetClock, completeSetTiming, nextRestClock, betweenExercises, formatSeconds, type WorkoutClock } from './workoutTiming';
+import { WORKOUT_CLOCK_KEY, readClock, startSetClock, cancelSetClock, completeSetTiming, nextRestClock, betweenExercises, formatSeconds, nextInRound, continueRound, type WorkoutClock } from './workoutTiming';
 import { repeatPlan, templateSets, draftKey, replaceStep, nextStep } from './workoutRepeat';
 import { finishedSession, forgetWorkout, reconcileFinished } from './workoutJournal';
 import { historyBlocks } from './historyBlocks';
+import { LocationLabel, LocationPicker } from './components/Location';
 import { createLocalResource } from './localResource';
 import { readLocalCache, writeLocalCache } from './cacheStorage';
 import { LocalDataStatus } from './components/LocalDataStatus';
@@ -1037,7 +1038,7 @@ const TrainerSummaryScreen = ({ onBack, notify, allExercises = [], period, onPer
         {summary && summary.sessions.map((session: any) => (
           <Card key={session.date} className="p-4">
             <div className="flex items-baseline justify-between">
-              <div className="text-sm font-semibold text-zinc-100">{session.date.slice(8)}.{session.date.slice(5, 7)}{session.location && ` · ${LOCATION_LABELS[session.location as WorkoutLocation]}`}{session.duration && ` · ${session.duration}`}</div>
+              <div className="text-sm font-semibold text-zinc-100">{session.date.slice(8)}.{session.date.slice(5, 7)}{session.location && <> · <LocationLabel location={session.location} className="align-[-2px]" /></>}{session.duration && ` · ${session.duration}`}</div>
               <div className="text-xs text-zinc-400">{session.totalSets} подх.</div>
             </div>
             <div className="mt-2 space-y-2">
@@ -1459,8 +1460,8 @@ const WorkoutScreen = ({ initialExercise, allExercises, onSaveTechnique, clock, 
   const runningSet = clock?.kind === 'set' && activeExercises.includes(clock.exerciseId)
     && clock.blockKey === blockKey(clock.exerciseId)
     ? { exId: clock.exerciseId, set: sessionData[clock.exerciseId]?.sets.find((s: WorkoutSet) => s.id === clock.setId && !s.completed) } : null;
-  const nextSet = activeExercises.map(exId => ({ exId, set: sessionData[exId]?.sets.find(s => !s.completed) }))
-    .find(item => item.set);
+  const roundBlocks = () => activeExercises.map(exId => ({ exId, sets: sessionData[exId]?.sets || [] }));
+  const nextSet = nextInRound(roundBlocks());
   const beginSet = (exId: string, setId: string) => {
     if (clock?.kind === 'set') { notify('warning'); return; }
     onClockChange(startSetClock(clock, sessionId, blockKey(exId), exId, setId));
@@ -1539,7 +1540,11 @@ const WorkoutScreen = ({ initialExercise, allExercises, onSaveTechnique, clock, 
 
     haptic('medium');
     if ((!isEdit && !cardio) || (clock?.kind === 'set' && clock.blockKey === blockKey(exId) && clock.setId === setId)) {
-      onClockChange(nextRestClock(sessionId, parseFloat(set.rest) || 0, ended));
+      // Суперсет: следующее упражнение круга начинается сразу, отдых — после последнего.
+      const following = !isEdit && !cardio ? continueRound(roundBlocks(), exId, setId) : null;
+      onClockChange(following && !isCardio(following.exId)
+        ? startSetClock(null, sessionId, blockKey(following.exId), following.exId, following.set.id, ended)
+        : nextRestClock(sessionId, parseFloat(set.rest) || 0, ended));
     }
     notify('success');
   };
@@ -1649,6 +1654,7 @@ const WorkoutScreen = ({ initialExercise, allExercises, onSaveTechnique, clock, 
             completionLabel={!nextSet && clock?.kind !== 'set' && activeExercises.some(id => sessionData[id]?.sets.length) ? `${activeExercises.reduce((n, id) => n + (sessionData[id]?.sets.filter(s => s.completed).length || 0), 0)} / ${activeExercises.reduce((n, id) => n + (sessionData[id]?.sets.length || 0), 0)}` : undefined} runningHere={!!runningSet?.set}
             cardio={!!runningSet && isCardio(runningSet.exId)}
             perSide={!!runningSet && sessionData[runningSet.exId]?.exercise.unilateral}
+            subject={activeExercises.length > 1 ? sessionData[(runningSet?.set ? runningSet.exId : nextSet?.exId) || '']?.exercise.name : undefined}
             onStart={nextSet && clock?.kind !== 'set' ? () => beginSet(nextSet.exId, nextSet.set!.id) : undefined}
             onContinue={clock?.kind === 'set' ? onResumeRunning : !nextSet ? onFinish : undefined}
             continueLabel={clock?.kind !== 'set' && !nextSet ? (stepTitle ? 'Завершить и перейти дальше' : 'Завершить упражнение') : undefined}
@@ -1836,7 +1842,7 @@ const HistoryScreen = ({ onBack, onRepeat, allExercises = [], bodyWeight = USER_
               <div>
                 <div className="flex items-center gap-2 text-zinc-400 text-sm"><Calendar className="w-3 h-3" />{w.date} {w.muscleGroups.join(' • ')}</div>
                 <div className="mt-1 flex flex-wrap gap-2 text-xs text-zinc-300">
-                  {w.location && <span className="rounded bg-zinc-800 px-2 py-1">{LOCATION_LABELS[w.location]}</span>}
+                  {w.location && <LocationLabel location={w.location} className="rounded bg-zinc-800 px-2 py-1" />}
                   <span className="py-1">{w.duration} · {w.exercises.length} упр. · {w.exercises.reduce((n, ex) => n + (ex.sets?.length || 0), 0)} подх.</span>
                 </div>
               </div>
@@ -1850,19 +1856,16 @@ const HistoryScreen = ({ onBack, onRepeat, allExercises = [], bodyWeight = USER_
             <AnimatePresence>
               {expandedId === w.id && (
                 <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }} className="border-t border-zinc-800 bg-zinc-900/30 overflow-hidden">
-                  <label className="flex items-center justify-between gap-3 p-4 text-sm text-zinc-300">
-                    Место тренировки
-                    <select disabled={w.pendingLocal} aria-label={`Место тренировки ${w.date}`} value={w.location || ''} className="min-h-11 rounded-lg bg-zinc-800 px-3 text-zinc-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500" onChange={e => {
-                      const location = (e.target.value || null) as WorkoutLocation | null;
+                  <div className="space-y-2 p-4 text-sm text-zinc-300">
+                    <div>Место тренировки</div>
+                    <LocationPicker label={`Место тренировки ${w.date}`} value={w.location} disabled={w.pendingLocal} onChange={location => {
+                      if (location === w.location) return;
                       try {
                         api.updateSession(w.id, location);
                         notify?.('success');
                       } catch { notify?.('error'); }
-                    }}>
-                      <option value="">Не указано</option>
-                      {Object.entries(LOCATION_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-                    </select>
-                  </label>
+                    }} />
+                  </div>
                   <div className="px-4 pb-4"><Button onClick={() => onRepeat(w)} icon={Repeat2} className="w-full min-h-12">Повторить тренировку</Button>
                     {w.pendingLocal && <p className="mt-2 text-sm text-zinc-300">Сохранено на устройстве. Изменение истории станет доступно после синхронизации.</p>}
                     {w.pendingChanges && !w.pendingLocal && <p className="mt-2 text-sm text-amber-300">Изменения сохранены на устройстве и ожидают отправки.</p>}
@@ -1905,6 +1908,7 @@ const HistoryScreen = ({ onBack, onRepeat, allExercises = [], bodyWeight = USER_
                                     rir={s.rir}
                                     durationSeconds={s.timing?.duration_seconds}
                                     restBeforeSeconds={s.timing?.rest_before_seconds}
+                                    restBeforeLabel={!isSuperset ? undefined : isSupersetStart ? 'отдых перед кругом' : 'переход'}
                                   />
                                   <Pencil className="w-3.5 h-3.5 text-zinc-600 flex-shrink-0 ml-2" />
                                 </button>
